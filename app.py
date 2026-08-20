@@ -533,6 +533,7 @@ else:
 
 if st.sidebar.button("Force Reconnect & Clear Cache", use_container_width=True, key="sb_reconnect"):
     st.cache_data.clear()
+    st.cache_resource.clear()  # also drops the live WebSocket connection object so it starts fully fresh
     st.rerun()
 
 # ==========================================
@@ -1916,6 +1917,16 @@ with st.sidebar.expander("Customize Header Tickers"):
 
 HAS_FRAGMENT = hasattr(st, "fragment")
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _get_prev_close(key, token):
+    """Yesterday's close, used as a change-% reference when the live quote
+    itself doesn't carry ohlc.close (common on REST-only quotes before the
+    WebSocket fully connects). Cached for 5 min since it only changes once a day."""
+    df = fetch_upstox_history(key, token, days=5)
+    if not df.empty:
+        return float(df.iloc[-1]['Close'])
+    return 0.0
+
 def _render_ticker_tape():
     if not selected_indices:
         return
@@ -1931,7 +1942,12 @@ def _render_ticker_tape():
                 quote = live_quotes[key]
                 ltp = quote.get('last_price', 0.0)
                 yest_close = quote.get('ohlc', {}).get('close', 0.0)
-                if yest_close > 0:
+                if not yest_close:
+                    # REST-only quotes (before WebSocket connects) often omit
+                    # ohlc.close — fall back to yesterday's historical close
+                    # instead of showing the price with no change at all.
+                    yest_close = _get_prev_close(key, access_token)
+                if yest_close > 0 and ltp > 0:
                     change = ltp - yest_close
                     pct_change = (change / yest_close) * 100
                     icon = "🟢" if change >= 0 else "🔴"
