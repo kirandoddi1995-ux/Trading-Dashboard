@@ -505,12 +505,11 @@ else:
 
 st.sidebar.markdown("---")
 st.sidebar.header("Engine Controls")
-refresh_secs = st.sidebar.select_slider(
-    "Auto-Refresh Interval", options=[5, 10, 15, 30, 60], value=15, key="sb_refresh_secs",
-    help="The header ticker (NIFTY/SENSEX/BANKNIFTY) refreshes independently every 5s regardless of this setting. "
-         "This controls how often the full page (option chain, screener, etc.) recomputes."
-)
-live_refresh = st.sidebar.toggle("Continuous Auto-Refresh", value=True, key="sb_refresh")
+
+# Background auto-refresh runs unconditionally at a fixed cadence — no user-facing
+# control for it. The header ticker fragment (elsewhere) refreshes independently every 5s;
+# this drives the full-page recompute (option chain, screener, etc.) every 15s.
+FULL_PAGE_REFRESH_SECS = 15
 
 AUTOREFRESH_AVAILABLE = False
 try:
@@ -519,21 +518,18 @@ try:
 except ImportError:
     AUTOREFRESH_AVAILABLE = False
 
-if live_refresh:
-    if AUTOREFRESH_AVAILABLE:
-        st_autorefresh(interval=refresh_secs * 1000, key="autorefresh_timer")
-    else:
-        # IMPORTANT: without this package the toggle above does nothing — the page will
-        # only ever update when you interact with a widget (e.g. switching tabs), which
-        # is exactly the "data only changes when I click something" symptom. Fix:
-        # add `streamlit-autorefresh` to requirements.txt and redeploy.
-        st.sidebar.error(
-            "⚠️ `streamlit-autorefresh` is NOT installed — auto-refresh is inactive. "
-            "Add `streamlit-autorefresh` to requirements.txt and redeploy, otherwise this page "
-            "will only update when you click something."
-        )
-        if st.sidebar.button("🔄 Refresh Now", key="manual_refresh_btn", use_container_width=True):
-            st.rerun()
+if AUTOREFRESH_AVAILABLE:
+    st_autorefresh(interval=FULL_PAGE_REFRESH_SECS * 1000, key="autorefresh_timer")
+else:
+    # Without this package the page only updates when you interact with a widget.
+    # Fix: add `streamlit-autorefresh` to requirements.txt and redeploy.
+    st.sidebar.error(
+        "⚠️ `streamlit-autorefresh` is NOT installed — auto-refresh is inactive. "
+        "Add `streamlit-autorefresh` to requirements.txt and redeploy, otherwise this page "
+        "will only update when you click something."
+    )
+    if st.sidebar.button("🔄 Refresh Now", key="manual_refresh_btn", use_container_width=True):
+        st.rerun()
 
 if st.sidebar.button("Force Reconnect & Clear Cache", use_container_width=True, key="sb_reconnect"):
     st.cache_data.clear()
@@ -832,6 +828,13 @@ class MarketDataBuffer:
         self.streamer = None
         self.thread = None
         self._start_lock = threading.Lock()
+        # Circuit breaker state: prevents hammering Upstox with rapid reconnect
+        # attempts when the failure is auth-related (403) rather than transient
+        # network noise — retrying a bad/expired token instantly in a loop just
+        # gets the API key flagged for abuse without ever fixing anything.
+        self.auth_failed = False
+        self.consecutive_failures = 0
+        self.last_attempt_ts = 0.0
 
     @staticmethod
     def _plain(obj):
@@ -919,6 +922,8 @@ class MarketDataBuffer:
     def on_open(self):
         self.connected=True
         self.last_error=None
+        self.auth_failed=False
+        self.consecutive_failures=0
         try:
             with self.lock:
                 keys=list(self.subscribed)
@@ -931,8 +936,16 @@ class MarketDataBuffer:
         self.connected=False
 
     def on_error(self, err):
-        self.last_error=str(err)
+        err_str=str(err)
+        self.last_error=err_str
         self.connected=False
+        self.consecutive_failures+=1
+        # A 403/Forbidden handshake means the token itself was rejected —
+        # this will NEVER succeed on retry until the token is fixed, so stop
+        # hammering Upstox's servers instead of retrying in a tight loop.
+        if '403' in err_str or 'Forbidden' in err_str:
+            self.auth_failed=True
+            LOGGER.warning("Upstox WebSocket auth rejected (403) — halting auto-reconnect until token is refreshed.")
 
     def _run(self):
         try:
@@ -943,14 +956,17 @@ class MarketDataBuffer:
             self.streamer.on('message', self.on_message)
             self.streamer.on('close', self.on_close)
             self.streamer.on('error', self.on_error)
-            try:
-                self.streamer.auto_reconnect(True, 5, 20)
-            except Exception:
-                pass
+            # NOTE: intentionally NOT using the SDK's built-in auto_reconnect() here.
+            # It was observed retrying failed (403) handshakes multiple times per
+            # second regardless of the configured interval, which risks the API key
+            # getting flagged for abuse. We manage reconnection ourselves in ensure()
+            # with a proper backoff + circuit breaker instead.
             self.streamer.connect()
         except Exception as e:
             self.last_error=str(e)
             self.connected=False
+            if '403' in str(e) or 'Forbidden' in str(e):
+                self.auth_failed=True
 
     def ensure(self, keys):
         keys=[k for k in dict.fromkeys(keys) if k]
@@ -959,15 +975,35 @@ class MarketDataBuffer:
         with self.lock:
             self.subscribed.update(keys)
         with self._start_lock:
-            if self.thread is None or not self.thread.is_alive():
-                self.thread=threading.Thread(target=self._run, daemon=True, name='upstox-market-stream')
-                self.thread.start()
-            elif self.connected:
+            if self.connected:
                 try:
                     if keys:
                         self.streamer.subscribe(keys, 'ltpc')
                 except Exception:
                     pass
+                return
+            if self.thread is not None and self.thread.is_alive():
+                return
+            if self.auth_failed:
+                # Don't auto-retry an auth failure — the token needs to change first.
+                # reset_auth_failure() (called from "Force Reconnect & Clear Cache") is
+                # the only way to clear this and allow another attempt.
+                return
+            # Exponential backoff for non-auth failures (network blips, timeouts, etc.):
+            # 5s, 10s, 20s, 40s... capped at 60s between attempts.
+            backoff = min(60.0, 5.0 * (2 ** self.consecutive_failures))
+            if time.time() - self.last_attempt_ts < backoff:
+                return
+            self.last_attempt_ts = time.time()
+            self.thread=threading.Thread(target=self._run, daemon=True, name='upstox-market-stream')
+            self.thread.start()
+
+    def reset_auth_failure(self):
+        """Call after the user supplies a fresh token to allow reconnect attempts again."""
+        with self.lock:
+            self.auth_failed=False
+            self.consecutive_failures=0
+            self.last_attempt_ts=0.0
 
     def snapshot(self, keys):
         with self.lock:
@@ -1951,39 +1987,14 @@ else:
 nifty_hist_df = fetch_upstox_history("NSE_INDEX|Nifty 50", access_token, days=400)
 
 # ==========================================
-# RISK & CAPITAL SETTINGS (Synced with Funds API)
+# TRADE SETUPS ONLY — NO CAPITAL/RISK SIZING
 # ==========================================
-st.sidebar.markdown("---")
-st.sidebar.header("Risk & Capital Settings")
-
-live_broker_funds = fetch_upstox_funds_and_margin(access_token) if access_token else None
-default_capital = live_broker_funds if live_broker_funds is not None and live_broker_funds > 0 else 500000.0
-
-investment_capital = st.sidebar.number_input(
-    "Investment Capital (₹)", min_value=0.0, value=default_capital, step=10000.0,
-    key="sb_investment_capital", help="Total capital used to size every trade recommendation in this app."
-)
-if live_broker_funds is not None:
-    st.sidebar.caption(f"💼 Synced from Upstox Funds API: ₹{live_broker_funds:,.2f}")
-
-max_risk_pct = st.sidebar.slider(
-    "Max Risk per Trade (%)", min_value=0.0, max_value=10.0, value=1.0, step=0.25,
-    key="sb_max_risk_pct", help="% of capital you're willing to lose on a single trade if the stop is hit."
-)
-max_position_pct = st.sidebar.slider(
-    "Max Position Size (% of Capital)", min_value=1.0, max_value=100.0, value=20.0, step=1.0,
-    key="sb_max_position_pct", help="Caps capital deployed into a single position, independent of the risk-based quantity."
-)
-max_portfolio_heat_pct = st.sidebar.slider(
-    "Max Portfolio Heat (%)", min_value=1.0, max_value=20.0, value=5.0, step=0.5,
-    key="sb_max_portfolio_heat_pct", help="Caps total capital-at-risk across all selected screener picks combined."
-)
-
-risk_engine = RiskEngine(
-    investment_capital=investment_capital,
-    max_risk_pct=max_risk_pct,
-    max_position_pct=max_position_pct,
-)
+# By design, this app no longer asks for capital or risk % and does not size positions
+# or display capital-at-risk anywhere. Every trade idea below is shown at a fixed
+# 1-lot / 1-share reference quantity — treat it as a setup (entry/target/stop/strike),
+# not a sized recommendation. Size your own position according to your own risk management.
+FIXED_REFERENCE_QTY = 1
+risk_engine = RiskEngine(investment_capital=0.0, max_risk_pct=0.0, max_position_pct=0.0)
 
 # ==========================================
 # STATE-MANAGED NAVIGATION
@@ -2114,7 +2125,12 @@ if selected_tab == "Options & Derivatives Chain":
 
     live_quotes = get_live_market_quotes([live_key], access_token)
     underlying_ltp = live_quotes.get(live_key, {}).get('last_price', 0.0) if live_quotes else 0.0
-    if underlying_ltp <= 0:
+    using_stale_price = underlying_ltp <= 0
+    if using_stale_price:
+        # IMPORTANT: this is a fallback, not live data. If the live quote fetch is
+        # failing (auth/websocket issues, rate limits, etc.) this silently freezes
+        # the price used for bias/recommendations at yesterday's close all day —
+        # we surface a visible warning below so that failure mode is never silent.
         hist_df = fetch_upstox_history(live_key, access_token, days=5)
         underlying_ltp = float(hist_df.iloc[-1]['Close']) if not hist_df.empty else 24500.0
 
@@ -2418,20 +2434,8 @@ if selected_tab == "Options & Derivatives Chain":
 
             ESTIMATED_ROUND_TRIP_COST_PCT = 0.7
             cost_buffer_per_unit = premium * (ESTIMATED_ROUND_TRIP_COST_PCT / 100.0)
-            risk_per_unit = risk_engine.calculate_risk_per_unit(premium, stop_premium, cost_buffer_per_unit)
-            if risk_per_unit <= 0:
-                return None
-
-            sizing = risk_engine.calculate_position_size(
-                risk_per_unit=risk_per_unit, price_per_unit=premium, unit_multiplier=lot_size
-            )
-            lots = sizing.qty
-            required_capital = risk_engine.calculate_capital_required(premium, lots, lot_size)
-            is_valid, _ = risk_engine.validate_trade(lots, required_capital)
-            if not is_valid:
-                return None
-
-            risk_per_lot = risk_per_unit * lot_size
+            # No capital/risk-based sizing — every idea is a fixed 1-lot reference setup.
+            lots = FIXED_REFERENCE_QTY
             estimated_costs_per_lot = cost_buffer_per_unit * lot_size
 
             reward_risk = round((target_mult - 1.0) / max(1.0 - stop_mult, 0.01), 2)
@@ -2440,9 +2444,6 @@ if selected_tab == "Options & Derivatives Chain":
                 "side": side, "strike": actual_strike, "premium": premium, "lots": lots,
                 "lot_size": lot_size, "target_premium": target_premium,
                 "stop_premium": stop_premium, "bias": bias,
-                "risk_per_lot": round(risk_per_lot, 2),
-                "total_risk": round(risk_per_lot * lots, 2),
-                "required_capital": round(required_capital, 2),
                 "target_pct": round((target_mult - 1.0) * 100, 0),
                 "stop_pct": round((1.0 - stop_mult) * 100, 0),
                 "spread_pct": spread_pct,
@@ -2474,6 +2475,12 @@ if selected_tab == "Options & Derivatives Chain":
     recommendations = generate_ranked_recommendations(market_bias) if using_live_chain else []
 
     st.markdown("### 🎯 Recommended Options Trades")
+    if using_stale_price:
+        st.error(
+            "⚠️ Live price feed unavailable right now — this recommendation is based on **yesterday's closing price**, "
+            "not the current market. It will NOT reflect today's price action until the live quote connection recovers. "
+            "Check the WEBSOCKET status in the sidebar."
+        )
     if not using_live_chain:
         st.warning("⚠️ Live option chain unavailable — trade recommendations are disabled rather than generated from simulated data.")
     elif recommendations:
@@ -2482,15 +2489,14 @@ if selected_tab == "Options & Derivatives Chain":
             label = strike_labels.get(r["strike_offset_steps"], f"{r['strike_offset_steps']}-OTM")
             st.success(
                 f"**#{rank} · {label} · {r['bias']} bias** → BUY **{selected_opt_asset} {int(r['strike'])} {r['side']}** "
-                f"@ ~₹{r['premium']:.2f} · **{r['lots']} lot(s)** ({r['lots'] * r['lot_size']} qty) · "
+                f"@ ~₹{r['premium']:.2f} (lot size {r['lot_size']}) · "
                 f"Target ~₹{r['target_premium']} (+{r['target_pct']:.0f}%) · Stop ~₹{r['stop_premium']} (-{r['stop_pct']:.0f}%) · "
-                f"Reward:Risk ~{r['reward_risk']}x · "
-                f"Capital at risk ~₹{r['total_risk']:,.0f} ({max_risk_pct:.1f}% budget) · "
-                f"Required capital ~₹{r['required_capital']:,.0f}"
+                f"Reward:Risk ~{r['reward_risk']}x"
             )
         st.caption(
-            "Ranked by reward:risk across ATM and nearby OTM strikes on the biased side. "
-            "This is a directional-bias screen, not investment advice — check liquidity (bid/ask spread) before sizing up."
+            "Ranked by reward:risk across ATM and nearby OTM strikes on the biased side. Setups only — no position "
+            "sizing or capital-at-risk shown; size your own quantity per your own risk management. "
+            "Not investment advice — check liquidity (bid/ask spread) before sizing up."
         )
     else:
         st.info(f"Market bias is currently **{market_bias}** — no high-conviction directional options trade to recommend right now.")
@@ -2596,39 +2602,18 @@ elif selected_tab == "Futures & Derivatives":
 
                 target = risk_engine.calculate_target(entry, atr_val, engine_direction, 2.0)
                 stop = risk_engine.calculate_stop(entry, atr_val, engine_direction, 1.5)
-                risk_per_lot_per_unit = risk_engine.calculate_risk_per_unit(entry, stop)
 
-                tx_type = "BUY" if engine_direction == "long" else "SELL"
-                live_margin_per_lot = fetch_upstox_instrument_margin(fut_instrument_key, lot_size, tx_type, "D", access_token) if fut_instrument_key and access_token else None
-                
-                if live_margin_per_lot is not None and live_margin_per_lot > 0:
-                    margin_per_lot = live_margin_per_lot
-                    actual_margin_unit = live_margin_per_lot / lot_size
-                else:
-                    actual_margin_unit = entry * 0.15
-                    margin_per_lot = actual_margin_unit * lot_size
-
-                sizing = risk_engine.calculate_position_size(
-                    risk_per_unit=risk_per_lot_per_unit, price_per_unit=entry,
-                    unit_multiplier=lot_size, actual_margin_required=actual_margin_unit,
+                # No capital/risk-based sizing — fixed 1-lot reference setup.
+                lots = FIXED_REFERENCE_QTY
+                st.success(
+                    f"**{fut_bias} trend** → {direction} **{fut_symbol}** @ ~₹{entry:,.2f} (lot size {lot_size}) · "
+                    f"Target ~₹{target:,.2f} · Stop ~₹{stop:,.2f}"
                 )
-                capital_required = risk_engine.calculate_capital_required(entry, sizing.qty, lot_size, actual_margin_required=actual_margin_unit)
-                is_valid, _ = risk_engine.validate_trade(sizing.qty, capital_required)
-                lots = sizing.qty if is_valid else None
-                risk_budget = risk_engine.risk_budget()
-
-                if lots is None:
-                    st.info(f"Trend is currently **{fut_bias}**, but sizing constraints prevent 1 lot.")
-                else:
-                    st.success(
-                        f"**{fut_bias} trend** → {direction} **{fut_symbol}** @ ~₹{entry:,.2f} · "
-                        f"**{lots} lot(s)** ({lots * lot_size} qty) · Target ~₹{target:,.2f} · Stop ~₹{stop:,.2f} · "
-                        f"~₹{margin_per_lot * lots:,.0f} {'live exchange margin' if live_margin_per_lot else 'estimated margin'}"
-                    )
-                    st.session_state["last_futures_summary"] = {
-                        "index": selected_fut_index, "symbol": fut_symbol, "direction": direction,
-                        "entry": entry, "target": target, "stop": stop, "lots": lots, "bias": fut_bias,
-                    }
+                st.caption("Setup only — no position sizing or capital/margin figures shown; size your own quantity per your own risk management.")
+                st.session_state["last_futures_summary"] = {
+                    "index": selected_fut_index, "symbol": fut_symbol, "direction": direction,
+                    "entry": entry, "target": target, "stop": stop, "lots": lots, "bias": fut_bias,
+                }
 
 # ==========================================
 # TAB 2: EQUITIES SCREENER & RISK MANAGEMENT
@@ -2847,16 +2832,8 @@ elif selected_tab == "Equities Screener & Risk":
                 risk_per_share = risk_engine.calculate_risk_per_unit(price, sl)
                 if risk_per_share <= 0:
                     return None
-                sizing = risk_engine.calculate_position_size(
-                    risk_per_unit=risk_per_share,
-                    price_per_unit=price,
-                    unit_multiplier=1,
-                )
-                qty_to_buy = sizing.qty
-                capital_required = risk_engine.calculate_capital_required(price, qty_to_buy, 1)
-                is_valid, _ = risk_engine.validate_trade(qty_to_buy, capital_required)
-                if not is_valid:
-                    return None
+                # No capital/risk-based sizing — fixed reference qty (per-share setup only).
+                qty_to_buy = FIXED_REFERENCE_QTY
 
                 exp_return_pct = ((tgt - price) / price) * 100.0
                 risk_pct = (risk_per_share / price) * 100.0 if price else 0.0
@@ -2955,7 +2932,6 @@ elif selected_tab == "Equities Screener & Risk":
                     "Action": "BUY",
                     "Target": f"₹{tgt:,.2f}",
                     "Stop Loss": f"₹{sl:,.2f}",
-                    "Qty (Position Sized)": qty_to_buy,
                     "Conviction": conviction,
                     "Signal Strength": signal_strength,
                     "Quality Ratio": r_multiple,
@@ -3016,7 +2992,8 @@ elif selected_tab == "Equities Screener & Risk":
     def select_diversified_top_n(signals, n=10, corr_threshold=0.75, max_sector_pct=30.0):
         if not signals:
             return []
-        heat_budget = investment_capital * (max_portfolio_heat_pct / 100.0) if investment_capital else float('inf')
+        # No capital-based heat budget anymore — diversification is by correlation/sector only.
+        heat_budget = float('inf')
         ranked = sorted(signals, key=lambda x: x['score'], reverse=True)
 
         returns_map = {
@@ -3080,7 +3057,7 @@ elif selected_tab == "Equities Screener & Risk":
 
         best = valid_signals[0]
         st.success(
-            f"🏆 **Top Pick: {best['Ticker']} ({best['Sector']})** — Buy at {best['Live Price']}, Qty {best['_qty']}, "
+            f"🏆 **Top Pick: {best['Ticker']} ({best['Sector']})** — Buy at {best['Live Price']}, "
             f"Target {best['Target']}, Stop {best['Stop Loss']} ({best['Conviction']} conviction, "
             f"OOS Win Prob {best['OOS Win Prob']}, R:R {best['Risk:Reward']})"
         )
@@ -3092,17 +3069,13 @@ elif selected_tab == "Equities Screener & Risk":
         st.download_button("⬇️ Download Screener Results (CSV)", df_top10_display.to_csv(index=False).encode(),
                             file_name="screener_results.csv", mime="text/csv", key="dl_screener")
 
-        st.markdown("### 📊 Portfolio Heat — Exposure If All Picks Are Taken")
-        total_deployed = sum(s["_price_val"] * s["_qty"] for s in valid_signals)
-        total_risk_amt = sum(s["_risk_amt"] for s in valid_signals)
-        portfolio_heat_pct = risk_engine.calculate_portfolio_heat([s["_risk_amt"] for s in valid_signals])
-        st.session_state["last_portfolio_heat"] = portfolio_heat_pct
+        st.markdown("### 📊 Watchlist Summary (per-share basis — no capital sizing)")
+        avg_risk_pct = sum(s["Risk %"] for s in valid_signals) / len(valid_signals) if valid_signals else 0.0
 
-        exp1, exp2, exp3, exp4 = st.columns(4)
-        exp1.metric("Capital Deployed", f"₹{total_deployed:,.0f}", f"{(total_deployed/investment_capital*100):.1f}% of capital" if investment_capital else None)
-        exp2.metric("Total ₹ at Risk", f"₹{total_risk_amt:,.0f}")
-        exp3.metric("Portfolio Heat", f"{portfolio_heat_pct:.2f}%")
-        exp4.metric("Picks", f"{len(valid_signals)}")
+        exp1, exp2 = st.columns(2)
+        exp1.metric("Avg Risk % to Stop", f"{avg_risk_pct:.2f}%")
+        exp2.metric("Picks", f"{len(valid_signals)}")
+        st.caption("No capital deployed or portfolio-heat figures shown — size each pick per your own risk management.")
 
         sector_counts = pd.Series([s["Sector"] for s in valid_signals]).value_counts()
         st.markdown("**Sector Concentration Breakdown:**")
@@ -3277,32 +3250,24 @@ elif selected_tab == "Commodities (MCX)":
                 mcx_col2.metric("ATR (14)", f"₹{curr_atr:,.2f}")
                 mcx_col3.metric("RSI (14)", f"{curr_rsi:.1f}")
 
-                st.markdown("### 🎯 Commodity Risk-Managed Setup")
+                st.markdown("### 🎯 Commodity Setup")
                 if mcx_ltp > 0 and curr_atr > 0:
                     c_stop = round(mcx_ltp - (1.5 * curr_atr), 2)
                     c_target = round(mcx_ltp + (3.0 * curr_atr), 2)
-                    c_risk_per_unit = risk_engine.calculate_risk_per_unit(mcx_ltp, c_stop)
-                    
+
                     c_lot_size = 1
                     if "GOLD" in selected_commodity: c_lot_size = 100
                     elif "SILVER" in selected_commodity: c_lot_size = 30
                     elif "CRUDEOIL" in selected_commodity: c_lot_size = 100
                     elif "NATURALGAS" in selected_commodity: c_lot_size = 1250
 
-                    c_margin = fetch_upstox_instrument_margin(mcx_key, c_lot_size, "BUY", "D", access_token) if access_token else None
-                    c_unit_margin = (c_margin / c_lot_size) if c_margin and c_margin > 0 else (mcx_ltp * 0.10)
-
-                    c_sizing = risk_engine.calculate_position_size(
-                        risk_per_unit=c_risk_per_unit, price_per_unit=mcx_ltp, unit_multiplier=c_lot_size, actual_margin_required=c_unit_margin
-                    )
-                    
                     st.success(
-                        f"**Setup for {selected_commodity}** → LONG @ ~₹{mcx_ltp:,.2f} · "
-                        f"**{c_sizing.qty} lot(s)** ({c_sizing.qty * c_lot_size} units) · "
+                        f"**Setup for {selected_commodity}** → LONG @ ~₹{mcx_ltp:,.2f} (lot size {c_lot_size}) · "
                         f"Target ~₹{c_target:,.2f} · Stop ~₹{c_stop:,.2f}"
                     )
+                    st.caption("Setup only — no position sizing or margin figures shown; size your own quantity per your own risk management.")
                 else:
-                    st.info("Insufficient price action data to derive risk setup for this commodity.")
+                    st.info("Insufficient price action data to derive setup for this commodity.")
 
                 fig = go.Figure(data=[go.Candlestick(
                     x=hist_df.index, open=hist_df['Open'], high=hist_df['High'],
@@ -3634,9 +3599,6 @@ elif selected_tab == "AI Copilot":
             top3 = screener_results[:3]
             summary = "; ".join([f"{s['Ticker']} @ {s['Live Price']} (target {s['Target']}, SL {s['Stop Loss']}, RR {s['Risk:Reward']}, signal strength {s.get('Signal Strength', 'N/A')}/100, historical win rate {s.get('Historical Win Rate', 'N/A')}, conviction {s['Conviction']})" for s in top3])
             parts.append(f"Most recent equities screener top picks: {summary}.")
-        heat = st.session_state.get("last_portfolio_heat")
-        if heat is not None:
-            parts.append(f"Current Portfolio Heat if all screener picks were taken: {heat:.2f}% of capital.")
         option_summary = st.session_state.get("last_option_chain_summary")
         if option_summary:
             pcr_disp = option_summary['pcr'] if option_summary['pcr'] is not None else "N/A"
