@@ -1951,8 +1951,9 @@ def _render_ticker_tape():
                     change = ltp - yest_close
                     pct_change = (change / yest_close) * 100
                     icon = "🟢" if change >= 0 else "🔴"
+                    color = "green" if change >= 0 else "red"
                     sign = "+" if change >= 0 else ""
-                    st.markdown(f"{icon} **{idx_name}** `{ltp:,.2f}` `{sign}{change:,.2f} ({sign}{pct_change:.2f}%)`")
+                    st.markdown(f"{icon} **{idx_name}** `{ltp:,.2f}` :{color}[{sign}{change:,.2f} ({sign}{pct_change:.2f}%)]")
                 else:
                     st.markdown(f"⚪ **{idx_name}** `{ltp:,.2f}`")
             elif key:
@@ -1963,8 +1964,9 @@ def _render_ticker_tape():
                     change = today_close - yest_close
                     pct_change = (change / yest_close) * 100
                     icon = "🟢" if change >= 0 else "🔴"
+                    color = "green" if change >= 0 else "red"
                     sign = "+" if change >= 0 else ""
-                    st.markdown(f"{icon} **{idx_name}** `{today_close:,.2f} (History Close)` `{sign}{change:,.2f} ({sign}{pct_change:.2f}%)`")
+                    st.markdown(f"{icon} **{idx_name}** `{today_close:,.2f} (History Close)` :{color}[{sign}{change:,.2f} ({sign}{pct_change:.2f}%)]")
 
 def _render_true_live_ticker(relay_url, relay_secret):
     """True push-based ticker: JS opens its own WebSocket straight to the relay
@@ -2215,11 +2217,72 @@ if selected_tab == "Options & Derivatives Chain":
             if used_fallback:
                 st.caption("Live quotes aren't available right now (market closed or feed still warming up) — ranked by the last completed session's move instead.")
             st.dataframe(
-                movers_df.style.format({"LTP": "₹{:.2f}", "Move %": "{:.2f}", "Day Range %": "{:.2f}"}),
+                movers_df.style.format({"LTP": "₹{:.2f}", "Move %": "{:.2f}", "Day Range %": "{:.2f}"})
+                .map(lambda v: f"color: {'#2ecc71' if v >= 0 else '#e74c3c'}", subset=["Move %"]),
                 use_container_width=True, hide_index=True
             )
             default_pick = top_movers[0]["ticker"]
             default_idx = stock_options_list.index(default_pick) if default_pick in stock_options_list else 0
+
+            # --- Quick multi-stock trade ideas: gives an actual "top list" of
+            # tradeable ATM setups across the top movers, instead of forcing a
+            # manual pick-and-check loop. Simplified vs the full detailed
+            # analysis below (ATM strike only, fixed 25%/20% target/stop) —
+            # meant as a fast overview to scan, not a replacement for the
+            # detailed per-stock analysis you get by selecting one below.
+            @st.cache_data(ttl=60, show_spinner=False)
+            def _quick_top_trade_ideas(movers_tuple, token):
+                def _one(row):
+                    ticker, momentum, spot = row
+                    if abs(momentum) < 0.5:
+                        return None  # no clear direction — skip rather than guess
+                    side = "CE" if momentum >= 0.5 else "PE"
+                    key = instrument_dict.get(ticker)
+                    if not key:
+                        return None
+                    try:
+                        contracts = fetch_option_contracts(key, token)
+                        expiries = get_available_expiries(contracts)
+                        if not expiries:
+                            return None
+                        nearest_expiry = expiries[0]
+                        chain = fetch_option_chain(key, nearest_expiry, token)
+                        if not chain:
+                            return None
+                        sorted_chain = sorted(chain, key=lambda x: x.get('strike_price', 0))
+                        atm_item = min(sorted_chain, key=lambda x: abs(x.get('strike_price', 0) - spot))
+                        opt_side = (atm_item.get('call_options') if side == "CE" else atm_item.get('put_options')) or {}
+                        premium = (opt_side.get('market_data') or {}).get('ltp')
+                        if not premium or premium <= 0:
+                            return None
+                        return {
+                            "Symbol": ticker, "Side": side, "Strike": atm_item.get('strike_price'),
+                            "Premium": round(float(premium), 2), "Target (+25%)": round(float(premium) * 1.25, 2),
+                            "Stop (-20%)": round(float(premium) * 0.80, 2), "Expiry": nearest_expiry,
+                        }
+                    except Exception:
+                        return None
+                ideas = []
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    for result in executor.map(_one, movers_tuple):
+                        if result:
+                            ideas.append(result)
+                return ideas
+
+            movers_for_ideas = tuple(
+                (m["ticker"], m["momentum_pct"], m["ltp"]) for m in top_movers[:5]
+            )
+            with st.spinner("Building quick trade ideas for top movers..."):
+                try:
+                    quick_ideas = _quick_top_trade_ideas(movers_for_ideas, access_token)
+                except Exception as exc:
+                    LOGGER.warning("Quick multi-stock trade ideas failed: %s", exc)
+                    quick_ideas = []
+
+            if quick_ideas:
+                st.markdown("#### 🎯 Quick Trade Ideas — Top Movers (ATM, no manual selection needed)")
+                st.caption("Fast overview across multiple stocks at once — ATM strike, fixed +25%/-20% target/stop. Select a stock below for the full detailed analysis (multiple strikes, real risk sizing).")
+                st.dataframe(pd.DataFrame(quick_ideas), use_container_width=True, hide_index=True)
         else:
             if auto_scan_on:
                 st.caption("Auto-scan couldn't rank anything right now (live and last-session data both unavailable) — pick a stock manually below.")
@@ -2422,6 +2485,13 @@ if selected_tab == "Options & Derivatives Chain":
             idx_hist_short = fetch_upstox_history(live_key, access_token, days=60)
             if idx_hist_short.empty or len(idx_hist_short) < 20:
                 return "Neutral"
+            # CRITICAL: Upstox's daily historical-candle endpoint does NOT include
+            # today's still-forming candle during live market hours — without this,
+            # EMA/RSI/MACD are frozen on yesterday's close all day, which is why the
+            # bias barely changed even as the market moved. Patch in today's live
+            # price so these indicators actually react to today's session.
+            if live_quotes and live_key in live_quotes:
+                idx_hist_short = prepare_live_daily_bar(idx_hist_short, live_quotes[live_key])
             ema20_series = ta.ema(idx_hist_short['Close'], length=20).dropna()
             if ema20_series.empty:
                 return "Neutral"
