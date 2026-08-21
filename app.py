@@ -1425,17 +1425,23 @@ def get_mcx_futures_instruments():
 # ==========================================
 @st.cache_data(ttl=86400)
 def get_fo_stock_symbols():
-    """Returns the list of NSE F&O-eligible stock (FUTSTK) underlying symbols."""
+    """Returns the list of NSE F&O-eligible stock (FUTSTK) underlying symbols.
+
+    IMPORTANT: must return tradingsymbol-compatible values (e.g. "ADANIPORTS"),
+    NOT the free-text company display name (e.g. "ADANI PORT & SEZ LTD") — the
+    latter does not exist as a key in instrument_dict (which is keyed by
+    tradingsymbol from the NSE_EQ instrument list) and silently breaks every
+    lookup for any stock whose display name differs from its trading symbol."""
     try:
         url = 'https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz'
         df = pd.read_csv(url)
         fo_df = df[(df['exchange'] == 'NSE_FO') & (df['instrument_type'] == 'FUTSTK')]
-        name_col = 'name' if 'name' in fo_df.columns else ('asset_symbol' if 'asset_symbol' in fo_df.columns else None)
-        if name_col and not fo_df.empty:
-            symbols = sorted(set(fo_df[name_col].dropna().astype(str).str.upper()))
-        else:
-            extracted = fo_df['tradingsymbol'].astype(str).str.extract(r'^([A-Za-z&\-]+)')[0]
-            symbols = sorted(set(extracted.dropna().str.upper()))
+        extracted = fo_df['tradingsymbol'].astype(str).str.extract(r'^([A-Za-z&\-]+)')[0]
+        symbols = sorted(set(extracted.dropna().str.upper()))
+        # Only keep symbols that actually resolve in instrument_dict — anything
+        # left over is a parsing edge case, not something safe to show as pickable.
+        if instrument_dict:
+            symbols = [s for s in symbols if s in instrument_dict]
         return symbols
     except Exception:
         return []
@@ -2287,6 +2293,23 @@ if selected_tab == "Options & Derivatives Chain":
             if auto_scan_on:
                 st.caption("Auto-scan couldn't rank anything right now (live and last-session data both unavailable) — pick a stock manually below.")
             default_idx = 0
+
+        # BUG FIX: Streamlit selectboxes ignore the `index=` parameter once a
+        # value already exists in session_state for that key — meaning the
+        # "auto-select top mover" only ever worked on the very first run, then
+        # got permanently stuck on whatever was picked once, even as the top
+        # mover changed on later reruns. Fix: explicitly update session_state
+        # ourselves, but ONLY if the current value still matches our last
+        # auto-pick (i.e. the user hasn't manually overridden it) — this keeps
+        # "auto-updates with the market" working while still respecting a
+        # manual override, matching what "override anytime" actually promises.
+        if top_movers:
+            auto_pick = top_movers[0]["ticker"]
+            last_auto_pick = st.session_state.get("_auto_picked_stock")
+            current_selection = st.session_state.get("opt_stock_select")
+            if "opt_stock_select" not in st.session_state or current_selection == last_auto_pick:
+                st.session_state["opt_stock_select"] = auto_pick
+            st.session_state["_auto_picked_stock"] = auto_pick
 
         selected_opt_asset = st.selectbox(
             "Select F&O Stock:" if not top_movers else "F&O Stock (auto-selected top mover, override anytime):",
