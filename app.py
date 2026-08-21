@@ -2123,6 +2123,7 @@ if selected_tab == "Options & Derivatives Chain":
         )
 
         top_movers = []
+        used_fallback = False
         if auto_scan_on:
             @st.cache_data(ttl=30, show_spinner=False)
             def _scan_fo_momentum(tickers_tuple, token):
@@ -2150,6 +2151,38 @@ if selected_tab == "Options & Derivatives Chain":
                 rows.sort(key=lambda r: abs(r["momentum_pct"]), reverse=True)
                 return rows
 
+            @st.cache_data(ttl=3600, show_spinner=False)
+            def _scan_fo_last_session_movers(tickers_tuple, token):
+                """Fallback for when live quotes are empty (market closed, or the
+                feed hasn't warmed up yet): rank by the last completed session's
+                move instead of leaving the person with nothing but the raw list.
+                Parallelized since this hits the historical-candle endpoint once
+                per ticker; cached for an hour since it only changes once a day."""
+                tickers = list(tickers_tuple)
+                rows = []
+                def _fetch_one(ticker):
+                    key = instrument_dict.get(ticker)
+                    if not key:
+                        return None
+                    df = fetch_upstox_history(key, token, days=5)
+                    if df.empty or len(df) < 2:
+                        return None
+                    last_close = float(df.iloc[-1]['Close'])
+                    prev_close = float(df.iloc[-2]['Close'])
+                    day_high = float(df.iloc[-1]['High']) if 'High' in df.columns else last_close
+                    day_low = float(df.iloc[-1]['Low']) if 'Low' in df.columns else last_close
+                    if prev_close <= 0:
+                        return None
+                    momentum_pct = (last_close / prev_close - 1.0) * 100.0
+                    range_pct = ((day_high - day_low) / prev_close) * 100.0
+                    return {"ticker": ticker, "ltp": last_close, "momentum_pct": momentum_pct, "range_pct": range_pct}
+                with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+                    for result in executor.map(_fetch_one, tickers):
+                        if result:
+                            rows.append(result)
+                rows.sort(key=lambda r: abs(r["momentum_pct"]), reverse=True)
+                return rows
+
             scan_universe = tuple(liquid_fo) if liquid_fo else tuple(stock_options_list[:100])
             with st.spinner("Scanning F&O universe for live momentum..."):
                 try:
@@ -2157,6 +2190,17 @@ if selected_tab == "Options & Derivatives Chain":
                 except Exception as exc:
                     LOGGER.warning("F&O auto-scan failed: %s", exc)
                     top_movers = []
+
+            if not top_movers:
+                # Live scan came up empty (market closed / feed warming up) —
+                # fall back to last-session movers instead of leaving a blank scan.
+                with st.spinner("Live data unavailable — checking last session's movers instead..."):
+                    try:
+                        top_movers = _scan_fo_last_session_movers(scan_universe, access_token)
+                        used_fallback = bool(top_movers)
+                    except Exception as exc:
+                        LOGGER.warning("F&O last-session fallback scan failed: %s", exc)
+                        top_movers = []
 
         if top_movers:
             movers_df = pd.DataFrame(top_movers[:10])[["ticker", "ltp", "momentum_pct", "range_pct"]]
@@ -2166,7 +2210,10 @@ if selected_tab == "Options & Derivatives Chain":
             movers_df = movers_df.rename(columns={
                 "ticker": "Symbol", "ltp": "LTP", "momentum_pct": "Move %", "range_pct": "Day Range %"
             })
-            st.markdown("#### Top F&O Movers (auto-ranked, live)")
+            heading = "Top F&O Movers (last completed session)" if used_fallback else "Top F&O Movers (auto-ranked, live)"
+            st.markdown(f"#### {heading}")
+            if used_fallback:
+                st.caption("Live quotes aren't available right now (market closed or feed still warming up) — ranked by the last completed session's move instead.")
             st.dataframe(
                 movers_df.style.format({"LTP": "₹{:.2f}", "Move %": "{:.2f}", "Day Range %": "{:.2f}"}),
                 use_container_width=True, hide_index=True
@@ -2175,7 +2222,7 @@ if selected_tab == "Options & Derivatives Chain":
             default_idx = stock_options_list.index(default_pick) if default_pick in stock_options_list else 0
         else:
             if auto_scan_on:
-                st.caption("Auto-scan returned no ranked candidates yet (market closed or quotes still warming up) — pick a stock manually below.")
+                st.caption("Auto-scan couldn't rank anything right now (live and last-session data both unavailable) — pick a stock manually below.")
             default_idx = 0
 
         selected_opt_asset = st.selectbox(
