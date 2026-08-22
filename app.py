@@ -510,10 +510,12 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.header("Engine Controls")
 
-# Background auto-refresh runs unconditionally at a fixed cadence — no user-facing
-# control for it. The header ticker fragment (elsewhere) refreshes independently every 5s;
-# this drives the full-page recompute (option chain, screener, etc.) every 15s.
-FULL_PAGE_REFRESH_SECS = 15
+refresh_secs = st.sidebar.select_slider(
+    "Auto-Refresh Interval", options=[5, 10, 15, 30, 60], value=15, key="sb_refresh_secs",
+    help="The header ticker refreshes independently every 5s regardless of this setting. "
+         "This controls how often the full page (option chain, screener, etc.) recomputes."
+)
+live_refresh = st.sidebar.toggle("Continuous Auto-Refresh", value=True, key="sb_refresh")
 
 AUTOREFRESH_AVAILABLE = False
 try:
@@ -522,18 +524,35 @@ try:
 except ImportError:
     AUTOREFRESH_AVAILABLE = False
 
-if AUTOREFRESH_AVAILABLE:
-    st_autorefresh(interval=FULL_PAGE_REFRESH_SECS * 1000, key="autorefresh_timer")
-else:
-    # Without this package the page only updates when you interact with a widget.
-    # Fix: add `streamlit-autorefresh` to requirements.txt and redeploy.
-    st.sidebar.error(
-        "⚠️ `streamlit-autorefresh` is NOT installed — auto-refresh is inactive. "
-        "Add `streamlit-autorefresh` to requirements.txt and redeploy, otherwise this page "
-        "will only update when you click something."
-    )
-    if st.sidebar.button("🔄 Refresh Now", key="manual_refresh_btn", use_container_width=True):
-        st.rerun()
+if live_refresh:
+    if AUTOREFRESH_AVAILABLE:
+        st_autorefresh(interval=refresh_secs * 1000, key="autorefresh_timer")
+    else:
+        # Without this package the toggle above does nothing — the page only
+        # updates when you interact with a widget. Fix: add `streamlit-autorefresh`
+        # to requirements.txt and redeploy.
+        st.sidebar.error(
+            "⚠️ `streamlit-autorefresh` is NOT installed — auto-refresh is inactive. "
+            "Add `streamlit-autorefresh` to requirements.txt and redeploy, otherwise this page "
+            "will only update when you click something."
+        )
+        if st.sidebar.button("🔄 Refresh Now", key="manual_refresh_btn", use_container_width=True):
+            st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("💰 Capital & Risk")
+investment_capital = st.sidebar.number_input(
+    "Investment Capital (₹)", min_value=0.0, value=1000000.0, step=10000.0, key="sb_investment_capital",
+    help="Total capital used to size every trade recommendation in this app."
+)
+max_risk_pct = st.sidebar.slider(
+    "Max Risk per Trade (%)", min_value=0.5, max_value=10.0, value=2.0, step=0.5, key="sb_max_risk_pct",
+    help="What % of your capital you're willing to lose if a single trade hits its stop loss."
+)
+max_position_pct = st.sidebar.slider(
+    "Max Capital per Position (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key="sb_max_position_pct",
+    help="Caps how much of your total capital any single position can use, even if the risk budget alone would allow more (e.g. very tight stops on a cheap option could otherwise size an oversized position)."
+)
 
 if st.sidebar.button("Force Reconnect & Clear Cache", use_container_width=True, key="sb_reconnect"):
     st.cache_data.clear()
@@ -2106,14 +2125,11 @@ else:
 nifty_hist_df = fetch_upstox_history("NSE_INDEX|Nifty 50", access_token, days=400)
 
 # ==========================================
-# TRADE SETUPS ONLY — NO CAPITAL/RISK SIZING
+# TRADE SETUPS — RISK-BASED POSITION SIZING
 # ==========================================
-# By design, this app no longer asks for capital or risk % and does not size positions
-# or display capital-at-risk anywhere. Every trade idea below is shown at a fixed
-# 1-lot / 1-share reference quantity — treat it as a setup (entry/target/stop/strike),
-# not a sized recommendation. Size your own position according to your own risk management.
-FIXED_REFERENCE_QTY = 1
-risk_engine = RiskEngine(investment_capital=0.0, max_risk_pct=0.0, max_position_pct=0.0)
+risk_engine = RiskEngine(
+    investment_capital=investment_capital, max_risk_pct=max_risk_pct, max_position_pct=max_position_pct
+)
 
 # ==========================================
 # STATE-MANAGED NAVIGATION
@@ -2741,9 +2757,28 @@ if selected_tab == "Options & Derivatives Chain":
 
             ESTIMATED_ROUND_TRIP_COST_PCT = 0.7
             cost_buffer_per_unit = premium * (ESTIMATED_ROUND_TRIP_COST_PCT / 100.0)
-            # No capital/risk-based sizing — every idea is a fixed 1-lot reference setup.
-            lots = FIXED_REFERENCE_QTY
             estimated_costs_per_lot = cost_buffer_per_unit * lot_size
+
+            # Risk-based position sizing: how many lots fit within both the risk
+            # budget (max loss if stop is hit) AND the capital budget (max ₹ tied
+            # up in this one position), whichever is more restrictive.
+            risk_per_unit_premium = max(premium - stop_premium, 0.01)
+            risk_per_lot = risk_per_unit_premium * lot_size + estimated_costs_per_lot
+            risk_qty = math.floor(risk_engine.risk_budget() / risk_per_lot) if risk_per_lot > 0 else 0
+
+            position_value_per_lot = premium * lot_size
+            cap_qty = math.floor(risk_engine.position_capital_budget() / position_value_per_lot) if position_value_per_lot > 0 else 0
+
+            lots = min(risk_qty, cap_qty)
+            if lots <= 0:
+                # Not enough risk/capital budget to take even 1 lot at current
+                # settings — skip rather than show a meaningless "buy 0 lots" idea.
+                # (This is the fix for "position size can become zero too easily":
+                # instead of silently showing qty=0, we filter it out entirely.)
+                return None
+
+            total_risk = round(risk_per_lot * lots, 2)
+            required_capital = round(position_value_per_lot * lots, 2)
 
             reward_risk = round((target_mult - 1.0) / max(1.0 - stop_mult, 0.01), 2)
 
@@ -2760,6 +2795,8 @@ if selected_tab == "Options & Derivatives Chain":
                 "estimated_costs_per_lot": round(estimated_costs_per_lot, 2),
                 "strike_offset_steps": strike_offset_steps,
                 "reward_risk": reward_risk,
+                "total_risk": total_risk,
+                "required_capital": required_capital,
             }
         except Exception as e:
             LOGGER.debug("Suppressed exception: %s", e)
@@ -2797,13 +2834,15 @@ if selected_tab == "Options & Derivatives Chain":
             label = strike_labels.get(r["strike_offset_steps"], f"{r['strike_offset_steps']}-OTM")
             st.success(
                 f"**#{rank} · {label} · {r['bias']} bias** → BUY **{selected_opt_asset} {int(r['strike'])} {r['side']}** "
-                f"@ ~₹{r['premium']:.2f} (lot size {r['lot_size']}) · "
+                f"@ ~₹{r['premium']:.2f} · **{r['lots']} lot(s)** ({r['lots'] * r['lot_size']} qty) · "
                 f"Target ~₹{r['target_premium']} (+{r['target_pct']:.0f}%) · Stop ~₹{r['stop_premium']} (-{r['stop_pct']:.0f}%) · "
-                f"Reward:Risk ~{r['reward_risk']}x"
+                f"Reward:Risk ~{r['reward_risk']}x · "
+                f"Capital at risk ~₹{r['total_risk']:,.0f} ({max_risk_pct:.1f}% budget) · "
+                f"Required capital ~₹{r['required_capital']:,.0f}"
             )
         st.caption(
-            "Ranked by reward:risk across ATM and nearby OTM strikes on the biased side. Setups only — no position "
-            "sizing or capital-at-risk shown; size your own quantity per your own risk management. "
+            "Ranked by reward:risk across ATM and nearby OTM strikes on the biased side. Position sized per your "
+            "sidebar Capital & Risk settings — ideas that don't fit even 1 lot within your risk budget are filtered out. "
             "Not investment advice — check liquidity (bid/ask spread) before sizing up."
         )
     else:
@@ -2912,8 +2951,9 @@ elif selected_tab == "Futures & Derivatives":
                 target = risk_engine.calculate_target(entry, atr_val, engine_direction, 2.0)
                 stop = risk_engine.calculate_stop(entry, atr_val, engine_direction, 1.5)
 
-                # No capital/risk-based sizing — fixed 1-lot reference setup.
-                lots = FIXED_REFERENCE_QTY
+                # Deliberately fixed 1-lot reference here (not risk-sized) — this
+                # tab's own caption below explains it's a setup only.
+                lots = 1
                 st.success(
                     f"**{fut_bias} trend** → {direction} **{fut_symbol}** @ ~₹{entry:,.2f} (lot size {lot_size}) · "
                     f"Target ~₹{target:,.2f} · Stop ~₹{stop:,.2f}"
@@ -3141,8 +3181,9 @@ elif selected_tab == "Equities Screener & Risk":
                 risk_per_share = risk_engine.calculate_risk_per_unit(price, sl)
                 if risk_per_share <= 0:
                     return None
-                # No capital/risk-based sizing — fixed reference qty (per-share setup only).
-                qty_to_buy = FIXED_REFERENCE_QTY
+                # Reference qty for this screener signal (shows risk % per share
+                # separately below) — not risk-sized like the options recommendations.
+                qty_to_buy = 1
 
                 exp_return_pct = ((tgt - price) / price) * 100.0
                 risk_pct = (risk_per_share / price) * 100.0 if price else 0.0
