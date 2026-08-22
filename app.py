@@ -456,6 +456,157 @@ st.markdown("""
 # ==========================================
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 
+# ==========================================
+# NSE SECTOR & FACTOR MAPPING
+# ==========================================
+NSE_SECTOR_MAP = {
+    "RELIANCE": "Energy & Oil", "ONGC": "Energy & Oil", "COALINDIA": "Energy & Oil", "POWERGRID": "Utilities", "NTPC": "Utilities", "TATAPOWER": "Utilities", "ADANIENT": "Conglomerate", "ADANIPORTS": "Infrastructure",
+    "TCS": "Information Technology", "INFY": "Information Technology", "WIPRO": "Information Technology", "HCLTECH": "Information Technology", "TECHM": "Information Technology", "LTIM": "Information Technology", "KPITTECH": "Information Technology", "PERSISTENT": "Information Technology", "COFORGE": "Information Technology", "MPHASIS": "Information Technology",
+    "HDFCBANK": "Financial Services", "ICICIBANK": "Financial Services", "AXISBANK": "Financial Services", "SBIN": "Financial Services", "KOTAKBANK": "Financial Services", "INDUSINDBK": "Financial Services", "BAJFINANCE": "Financial Services", "BAJAJFINSV": "Financial Services", "SBILIFE": "Financial Services", "HDFCLIFE": "Financial Services", "ICICIPRULI": "Financial Services", "PFC": "Financial Services", "RECLTD": "Financial Services", "CHOLAFIN": "Financial Services", "MUTHOOTFIN": "Financial Services", "PNB": "Financial Services", "BANKBARODA": "Financial Services", "FEDERALBNK": "Financial Services", "IDFCFIRSTB": "Financial Services",
+    "MARUTI": "Automobile", "TATAMOTORS": "Automobile", "M&M": "Automobile", "BAJAJ-AUTO": "Automobile", "EICHERMOT": "Automobile", "TVSMOTOR": "Automobile", "HEROMOTOCO": "Automobile", "ASHOKLEY": "Automobile",
+    "SUNPHARMA": "Healthcare", "DRREDDY": "Healthcare", "CIPLA": "Healthcare", "APOLLOHOSP": "Healthcare",
+    "ITC": "FMCG", "HINDUNILVR": "FMCG", "BRITANNIA": "FMCG", "NESTLEIND": "FMCG", "TATACONSUM": "FMCG", "DABUR": "FMCG", "GODREJCP": "FMCG", "MARICO": "FMCG",
+    "TATASTEEL": "Metals & Mining", "JSWSTEEL": "Metals & Mining", "HINDALCO": "Metals & Mining", "VEDL": "Metals & Mining", "SAIL": "Metals & Mining", "NMDC": "Metals & Mining",
+    "LT": "Capital Goods & Construction", "BEL": "Capital Goods & Construction", "HAL": "Capital Goods & Construction", "BHEL": "Capital Goods & Construction", "POLYCAB": "Capital Goods & Construction", "HAVELLS": "Capital Goods & Construction", "VOLTAS": "Capital Goods & Construction", "DIXON": "Capital Goods & Construction", "PIDILITIND": "Chemicals", "GRASIM": "Cement & Construction", "ULTRACEMCO": "Cement & Construction", "SHREECEM": "Cement & Construction",
+    "ASIANPAINT": "Consumer Durables", "TITAN": "Consumer Durables", "ZOMATO": "Consumer Services", "PAYTM": "Financial Services", "INDIGO": "Aviation", "IRCTC": "Consumer Services", "CONCOR": "Logistics", "NAUKRI": "Consumer Services", "INDIAMART": "Consumer Services", "TRENT": "Retail", "DMART": "Retail", "JUBLFOOD": "Consumer Services", "MAZDOCK": "Capital Goods & Construction", "SUZLON": "Power & Renewables", "IREDA": "Financial Services", "NHPC": "Utilities", "RVNL": "Infrastructure", "IRFC": "Financial Services"
+}
+
+def get_ticker_sector(ticker):
+    return NSE_SECTOR_MAP.get(ticker.upper(), "Other / Diversified")
+
+
+# ==========================================
+# PORTFOLIO POSITIONS & SECTOR EXPOSURE
+# ==========================================
+def add_position(ticker, capital_deployed, db_path=DEFAULT_DB_PATH):
+    conn = _cache_connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO positions (ticker, sector, capital_deployed, added_at) VALUES (?, ?, ?, ?)",
+            (ticker.upper(), get_ticker_sector(ticker), float(capital_deployed),
+             datetime.datetime.now(IST).isoformat())
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def remove_position(position_id, db_path=DEFAULT_DB_PATH):
+    conn = _cache_connect(db_path)
+    try:
+        conn.execute("DELETE FROM positions WHERE id = ?", (position_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_positions_df(db_path=DEFAULT_DB_PATH):
+    conn = _cache_connect(db_path)
+    try:
+        df = pd.read_sql_query("SELECT id, ticker, sector, capital_deployed, added_at FROM positions ORDER BY added_at DESC", conn)
+        return df
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
+        return pd.DataFrame(columns=["id", "ticker", "sector", "capital_deployed", "added_at"])
+    finally:
+        conn.close()
+
+
+def get_sector_exposure(db_path=DEFAULT_DB_PATH):
+    """Returns {sector: total_capital_deployed} across all tracked positions."""
+    df = get_positions_df(db_path)
+    if df.empty:
+        return {}
+    return df.groupby("sector")["capital_deployed"].sum().to_dict()
+
+
+def check_sector_exposure_warning(ticker, total_capital, max_sector_pct, db_path=DEFAULT_DB_PATH):
+    """Returns a warning string if adding a new position in `ticker`'s sector
+    would push that sector's total exposure over max_sector_pct of total_capital,
+    or None if there's no concern (no existing exposure data, or within limits)."""
+    if total_capital <= 0:
+        return None
+    sector = get_ticker_sector(ticker)
+    exposure = get_sector_exposure(db_path)
+    current_sector_capital = exposure.get(sector, 0.0)
+    current_pct = (current_sector_capital / total_capital) * 100.0
+    if current_pct >= max_sector_pct:
+        return (f"⚠️ Sector Exposure Warning: you already have ~{current_pct:.1f}% of your capital in "
+                f"**{sector}** (your limit is {max_sector_pct:.0f}%) — consider skipping or trimming before adding more here.")
+    return None
+
+def _normalize_quote_response(raw_data):
+    normalized = {}
+    if not isinstance(raw_data, dict):
+        return normalized
+    for k, v in raw_data.items():
+        if not isinstance(v, dict):
+            continue
+        normalized[k] = v
+        token_field = v.get('instrument_token')
+        if token_field:
+            normalized[token_field] = v
+    return normalized
+
+
+def _rest_ohlc_v3(keys_list, token, interval="1d"):
+    if not token or not keys_list:
+        return {}
+    result = {}
+    for i in range(0, len(keys_list), 500):
+        chunk = keys_list[i:i + 500]
+        try:
+            url = "https://api.upstox.com/v3/market-quote/ohlc"
+            headers = {"accept": "application/json", "Authorization": f"Bearer {token}"}
+            with get_robust_session() as session:
+                res = session.get(url, headers=headers, params={"instrument_key": ",".join(chunk), "interval": interval}, timeout=6)
+                if res.status_code != 200:
+                    LOGGER.warning("OHLC V3 %s: %s", res.status_code, res.text[:160])
+                    continue
+                raw = res.json().get("data") or {}
+                for k, v in raw.items():
+                    if not isinstance(v, dict):
+                        continue
+                    token_key = v.get("instrument_token") or k
+                    o = v.get("ohlc") or {}
+                    live_ohlc = v.get("live_ohlc") or {}
+                    prev_ohlc = v.get("prev_ohlc") or {}
+                    close = v.get("last_price") or o.get("close")
+                    prev_close = prev_ohlc.get("close") or o.get("close")
+                    result[token_key] = {
+                        "instrument_token": token_key,
+                        "last_price": v.get("last_price") or live_ohlc.get("close") or close,
+                        "ohlc": {
+                            "open": live_ohlc.get("open") or o.get("open"),
+                            "high": live_ohlc.get("high") or o.get("high"),
+                            "low": live_ohlc.get("low") or o.get("low"),
+                            "close": prev_close,
+                        },
+                        "volume": v.get("volume") or live_ohlc.get("volume") or o.get("volume"),
+                        "_source": "rest_ohlc_v3",
+                        "_ts": time.time(),
+                    }
+        except Exception as exc:
+            LOGGER.warning("OHLC V3 batch failed: %s", exc)
+    return result
+
+
+def get_live_scan_market_data(keys_list, token):
+    if not token or not keys_list:
+        return {}
+    keys_list = [k for k in dict.fromkeys(keys_list) if k]
+    result = get_live_market_quotes(keys_list, token)
+    ohlc = _rest_ohlc_v3(keys_list, token, interval="1d")
+    for key, q in ohlc.items():
+        base = result.get(key, {})
+        merged = dict(base)
+        merged["last_price"] = base.get("last_price") or q.get("last_price")
+        merged["ohlc"] = {**(q.get("ohlc") or {}), **(base.get("ohlc") or {})}
+        merged["volume"] = q.get("volume") if q.get("volume") is not None else base.get("volume")
+        result[key] = merged
+    return result
+
+
 @st.cache_data(ttl=300)
 def fetch_nse_market_status():
     try:
@@ -901,156 +1052,6 @@ LIQUID_CORE_TICKERS = [
     "TRENT", "DMART", "JUBLFOOD", "MAZDOCK", "SUZLON", "IREDA", "NHPC", "KPITTECH", "PERSISTENT",
     "COFORGE", "MPHASIS", "NAUKRI", "INDIAMART"
 ]
-
-# ==========================================
-# NSE SECTOR & FACTOR MAPPING
-# ==========================================
-NSE_SECTOR_MAP = {
-    "RELIANCE": "Energy & Oil", "ONGC": "Energy & Oil", "COALINDIA": "Energy & Oil", "POWERGRID": "Utilities", "NTPC": "Utilities", "TATAPOWER": "Utilities", "ADANIENT": "Conglomerate", "ADANIPORTS": "Infrastructure",
-    "TCS": "Information Technology", "INFY": "Information Technology", "WIPRO": "Information Technology", "HCLTECH": "Information Technology", "TECHM": "Information Technology", "LTIM": "Information Technology", "KPITTECH": "Information Technology", "PERSISTENT": "Information Technology", "COFORGE": "Information Technology", "MPHASIS": "Information Technology",
-    "HDFCBANK": "Financial Services", "ICICIBANK": "Financial Services", "AXISBANK": "Financial Services", "SBIN": "Financial Services", "KOTAKBANK": "Financial Services", "INDUSINDBK": "Financial Services", "BAJFINANCE": "Financial Services", "BAJAJFINSV": "Financial Services", "SBILIFE": "Financial Services", "HDFCLIFE": "Financial Services", "ICICIPRULI": "Financial Services", "PFC": "Financial Services", "RECLTD": "Financial Services", "CHOLAFIN": "Financial Services", "MUTHOOTFIN": "Financial Services", "PNB": "Financial Services", "BANKBARODA": "Financial Services", "FEDERALBNK": "Financial Services", "IDFCFIRSTB": "Financial Services",
-    "MARUTI": "Automobile", "TATAMOTORS": "Automobile", "M&M": "Automobile", "BAJAJ-AUTO": "Automobile", "EICHERMOT": "Automobile", "TVSMOTOR": "Automobile", "HEROMOTOCO": "Automobile", "ASHOKLEY": "Automobile",
-    "SUNPHARMA": "Healthcare", "DRREDDY": "Healthcare", "CIPLA": "Healthcare", "APOLLOHOSP": "Healthcare",
-    "ITC": "FMCG", "HINDUNILVR": "FMCG", "BRITANNIA": "FMCG", "NESTLEIND": "FMCG", "TATACONSUM": "FMCG", "DABUR": "FMCG", "GODREJCP": "FMCG", "MARICO": "FMCG",
-    "TATASTEEL": "Metals & Mining", "JSWSTEEL": "Metals & Mining", "HINDALCO": "Metals & Mining", "VEDL": "Metals & Mining", "SAIL": "Metals & Mining", "NMDC": "Metals & Mining",
-    "LT": "Capital Goods & Construction", "BEL": "Capital Goods & Construction", "HAL": "Capital Goods & Construction", "BHEL": "Capital Goods & Construction", "POLYCAB": "Capital Goods & Construction", "HAVELLS": "Capital Goods & Construction", "VOLTAS": "Capital Goods & Construction", "DIXON": "Capital Goods & Construction", "PIDILITIND": "Chemicals", "GRASIM": "Cement & Construction", "ULTRACEMCO": "Cement & Construction", "SHREECEM": "Cement & Construction",
-    "ASIANPAINT": "Consumer Durables", "TITAN": "Consumer Durables", "ZOMATO": "Consumer Services", "PAYTM": "Financial Services", "INDIGO": "Aviation", "IRCTC": "Consumer Services", "CONCOR": "Logistics", "NAUKRI": "Consumer Services", "INDIAMART": "Consumer Services", "TRENT": "Retail", "DMART": "Retail", "JUBLFOOD": "Consumer Services", "MAZDOCK": "Capital Goods & Construction", "SUZLON": "Power & Renewables", "IREDA": "Financial Services", "NHPC": "Utilities", "RVNL": "Infrastructure", "IRFC": "Financial Services"
-}
-
-def get_ticker_sector(ticker):
-    return NSE_SECTOR_MAP.get(ticker.upper(), "Other / Diversified")
-
-
-# ==========================================
-# PORTFOLIO POSITIONS & SECTOR EXPOSURE
-# ==========================================
-def add_position(ticker, capital_deployed, db_path=DEFAULT_DB_PATH):
-    conn = _cache_connect(db_path)
-    try:
-        conn.execute(
-            "INSERT INTO positions (ticker, sector, capital_deployed, added_at) VALUES (?, ?, ?, ?)",
-            (ticker.upper(), get_ticker_sector(ticker), float(capital_deployed),
-             datetime.datetime.now(IST).isoformat())
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def remove_position(position_id, db_path=DEFAULT_DB_PATH):
-    conn = _cache_connect(db_path)
-    try:
-        conn.execute("DELETE FROM positions WHERE id = ?", (position_id,))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def get_positions_df(db_path=DEFAULT_DB_PATH):
-    conn = _cache_connect(db_path)
-    try:
-        df = pd.read_sql_query("SELECT id, ticker, sector, capital_deployed, added_at FROM positions ORDER BY added_at DESC", conn)
-        return df
-    except Exception as e:
-        LOGGER.debug("Suppressed exception: %s", e)
-        return pd.DataFrame(columns=["id", "ticker", "sector", "capital_deployed", "added_at"])
-    finally:
-        conn.close()
-
-
-def get_sector_exposure(db_path=DEFAULT_DB_PATH):
-    """Returns {sector: total_capital_deployed} across all tracked positions."""
-    df = get_positions_df(db_path)
-    if df.empty:
-        return {}
-    return df.groupby("sector")["capital_deployed"].sum().to_dict()
-
-
-def check_sector_exposure_warning(ticker, total_capital, max_sector_pct, db_path=DEFAULT_DB_PATH):
-    """Returns a warning string if adding a new position in `ticker`'s sector
-    would push that sector's total exposure over max_sector_pct of total_capital,
-    or None if there's no concern (no existing exposure data, or within limits)."""
-    if total_capital <= 0:
-        return None
-    sector = get_ticker_sector(ticker)
-    exposure = get_sector_exposure(db_path)
-    current_sector_capital = exposure.get(sector, 0.0)
-    current_pct = (current_sector_capital / total_capital) * 100.0
-    if current_pct >= max_sector_pct:
-        return (f"⚠️ Sector Exposure Warning: you already have ~{current_pct:.1f}% of your capital in "
-                f"**{sector}** (your limit is {max_sector_pct:.0f}%) — consider skipping or trimming before adding more here.")
-    return None
-
-def _normalize_quote_response(raw_data):
-    normalized = {}
-    if not isinstance(raw_data, dict):
-        return normalized
-    for k, v in raw_data.items():
-        if not isinstance(v, dict):
-            continue
-        normalized[k] = v
-        token_field = v.get('instrument_token')
-        if token_field:
-            normalized[token_field] = v
-    return normalized
-
-
-def _rest_ohlc_v3(keys_list, token, interval="1d"):
-    if not token or not keys_list:
-        return {}
-    result = {}
-    for i in range(0, len(keys_list), 500):
-        chunk = keys_list[i:i + 500]
-        try:
-            url = "https://api.upstox.com/v3/market-quote/ohlc"
-            headers = {"accept": "application/json", "Authorization": f"Bearer {token}"}
-            with get_robust_session() as session:
-                res = session.get(url, headers=headers, params={"instrument_key": ",".join(chunk), "interval": interval}, timeout=6)
-                if res.status_code != 200:
-                    LOGGER.warning("OHLC V3 %s: %s", res.status_code, res.text[:160])
-                    continue
-                raw = res.json().get("data") or {}
-                for k, v in raw.items():
-                    if not isinstance(v, dict):
-                        continue
-                    token_key = v.get("instrument_token") or k
-                    o = v.get("ohlc") or {}
-                    live_ohlc = v.get("live_ohlc") or {}
-                    prev_ohlc = v.get("prev_ohlc") or {}
-                    close = v.get("last_price") or o.get("close")
-                    prev_close = prev_ohlc.get("close") or o.get("close")
-                    result[token_key] = {
-                        "instrument_token": token_key,
-                        "last_price": v.get("last_price") or live_ohlc.get("close") or close,
-                        "ohlc": {
-                            "open": live_ohlc.get("open") or o.get("open"),
-                            "high": live_ohlc.get("high") or o.get("high"),
-                            "low": live_ohlc.get("low") or o.get("low"),
-                            "close": prev_close,
-                        },
-                        "volume": v.get("volume") or live_ohlc.get("volume") or o.get("volume"),
-                        "_source": "rest_ohlc_v3",
-                        "_ts": time.time(),
-                    }
-        except Exception as exc:
-            LOGGER.warning("OHLC V3 batch failed: %s", exc)
-    return result
-
-
-def get_live_scan_market_data(keys_list, token):
-    if not token or not keys_list:
-        return {}
-    keys_list = [k for k in dict.fromkeys(keys_list) if k]
-    result = get_live_market_quotes(keys_list, token)
-    ohlc = _rest_ohlc_v3(keys_list, token, interval="1d")
-    for key, q in ohlc.items():
-        base = result.get(key, {})
-        merged = dict(base)
-        merged["last_price"] = base.get("last_price") or q.get("last_price")
-        merged["ohlc"] = {**(q.get("ohlc") or {}), **(base.get("ohlc") or {})}
-        merged["volume"] = q.get("volume") if q.get("volume") is not None else base.get("volume")
-        result[key] = merged
-    return result
 
 # ==========================================
 # LIVE MARKET DATA — WEBSOCKET + REST
@@ -4294,4 +4295,4 @@ elif selected_tab == "AI Copilot":
                 final_response = "Gemini Key Missing: Please enter your key in the sidebar."
                 st.markdown(final_response)
 
-            st.session_state.messages.append({"role": "assistant", "content": final_response})
+            st.session_state.messages.append({"role": "assistant", "content": final_response}
