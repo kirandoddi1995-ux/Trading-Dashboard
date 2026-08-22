@@ -214,7 +214,8 @@ def _serialize_history(instrument_key, df, db_path=DEFAULT_DB_PATH):
     for idx, row in df.iterrows():
         try:
             dt = pd.Timestamp(idx).tz_localize(None).isoformat()
-        except Exception:
+        except Exception as e:
+            LOGGER.debug("Suppressed exception: %s", e)
             dt = str(idx)
         rows.append((
             instrument_key, dt,
@@ -318,7 +319,8 @@ def get_avg_volumes_batched(db_path, keys_list, lookback=20):
         """
         params = list(keys_list) + [int(lookback) + 1]
         df = pd.read_sql_query(query, conn, params=params)
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         df = pd.DataFrame(columns=["instrument_key", "volume"])
     finally:
         conn.close()
@@ -393,7 +395,8 @@ def warm_cache(instrument_keys, token, days=400, db_path=DEFAULT_DB_PATH,
             if progress_callback:
                 try:
                     progress_callback(idx, total, key)
-                except Exception:
+                except Exception as e:
+                    LOGGER.debug("Suppressed exception: %s", e)
                     pass
 
     return {
@@ -444,7 +447,7 @@ st.markdown("""
 # ==========================================
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)
 def fetch_nse_market_status():
     try:
         url = "https://api.upstox.com/v2/market/status/nse"
@@ -454,8 +457,8 @@ def fetch_nse_market_status():
             if res.status_code == 200:
                 data = res.json().get("data") or {}
                 return data
-    except Exception:
-        pass
+    except Exception as e:
+        LOGGER.warning("fetch_nse_market_status failed: %s", e)
     return {}
 
 def is_market_open():
@@ -484,7 +487,8 @@ try:
     if hasattr(st, "secrets"):
         secret_upstox = st.secrets.get("UPSTOX_TOKEN", "")
         secret_gemini = st.secrets.get("GEMINI_API_KEY", "")
-except Exception:
+except Exception as e:
+    LOGGER.debug("Suppressed exception: %s", e)
     pass
 
 default_upstox = os.environ.get("UPSTOX_TOKEN", secret_upstox)
@@ -554,7 +558,8 @@ def fetch_upstox_funds_and_margin(token):
                 available = equity_data.get("available_margin") or equity_data.get("net")
                 if available is not None:
                     return float(available)
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         pass
     return None
 
@@ -586,7 +591,8 @@ def fetch_upstox_instrument_margin(instrument_key, quantity, transaction_type, p
                 total_margin = data.get("total_margin") or data.get("margin")
                 if total_margin is not None:
                     return float(total_margin)
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         pass
     return None
 
@@ -600,7 +606,8 @@ def load_iv_history_disk():
         if os.path.exists(IV_HISTORY_FILE):
             with open(IV_HISTORY_FILE, "r") as f:
                 return json.load(f)
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         pass
     return {}
 
@@ -608,7 +615,8 @@ def save_iv_history_disk(history):
     try:
         with open(IV_HISTORY_FILE, "w") as f:
             json.dump(history, f)
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         pass
 
 # ==========================================
@@ -704,7 +712,8 @@ def get_full_nse_instrument_dictionary():
                         nse_df['tradingsymbol'].str.len().le(8)
             nse_df = nse_df[~(nse_df['tradingsymbol'].str.match(r'^\d', na=False) & bond_like)]
         return dict(zip(nse_df['tradingsymbol'], nse_df['instrument_key']))
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return {}
 
 instrument_dict = get_full_nse_instrument_dictionary()
@@ -849,7 +858,8 @@ class MarketDataBuffer:
             from google.protobuf.json_format import MessageToDict
             if hasattr(obj, 'DESCRIPTOR'):
                 return MessageToDict(obj, preserving_proto_field_name=True)
-        except Exception:
+        except Exception as e:
+            LOGGER.debug("Suppressed exception: %s", e)
             pass
         for attr in ('to_dict','toDict'):
             try:
@@ -980,7 +990,8 @@ class MarketDataBuffer:
                 try:
                     if keys:
                         self.streamer.subscribe(keys, 'ltpc')
-                except Exception:
+                except Exception as e:
+                    LOGGER.debug("Suppressed exception: %s", e)
                     pass
                 return
             if self.thread is not None and self.thread.is_alive():
@@ -1030,7 +1041,8 @@ def _rest_market_quotes(keys_list, token):
             if res.status_code==200:
                 raw=res.json().get('data',{})
                 return _normalize_quote_response(raw)
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         pass
     return {}
 
@@ -1066,7 +1078,8 @@ if UPSTOX_SDK_AVAILABLE and access_token:
             st.sidebar.success(f"WEBSOCKET: LIVE · {_md_status['quotes']:,} quotes cached")
         else:
             st.sidebar.info("WEBSOCKET: CONNECTING / REST fills initial misses")
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         st.sidebar.info("WEBSOCKET: startup pending / REST fallback")
 elif access_token:
     st.sidebar.caption("WebSocket SDK not installed — REST fallback active. Install: pip install upstox-python-sdk")
@@ -1137,7 +1150,7 @@ def stage1_multi_bucket_prefilter(tickers, instrument_dict, quotes, top_n,
             avg_vol = avg_vols_map.get(key)
             if avg_vol and avg_vol > 0 and day_volume > 0:
                 raw_daily_ratio = day_volume / avg_vol
-                volume_pace_ratio = raw_daily_ratio / elapsed_fraction if elapsed_fraction > 0 else raw_daily_ratio
+                volume_pace_ratio = min(raw_daily_ratio / elapsed_fraction, 5.0) if elapsed_fraction > 0 else raw_daily_ratio
             else:
                 raw_daily_ratio = None
                 volume_pace_ratio = None
@@ -1402,7 +1415,8 @@ def get_mcx_instrument_dictionary():
         df = pd.read_csv(url)
         mcx_df = df[(df['exchange'] == 'MCX_FO') & (df['instrument_type'].isin(['FUTCOM', 'OPTCOM']))]
         return dict(zip(mcx_df['tradingsymbol'], mcx_df['instrument_key']))
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return {}
 
 mcx_dict = get_mcx_instrument_dictionary()
@@ -1414,7 +1428,8 @@ def get_mcx_futures_instruments():
         url = 'https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz'
         df = pd.read_csv(url)
         return df[(df['exchange'] == 'MCX_FO') & (df['instrument_type'] == 'FUTCOM')]
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return pd.DataFrame()
 
 # ==========================================
@@ -1443,7 +1458,8 @@ def get_fo_stock_symbols():
         if instrument_dict:
             symbols = [s for s in symbols if s in instrument_dict]
         return symbols
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return []
 
 
@@ -1458,7 +1474,8 @@ def get_futures_instruments():
             fut_df['expiry'] = pd.to_datetime(fut_df['expiry'], errors='coerce')
             fut_df = fut_df.sort_values('expiry')
         return fut_df
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return pd.DataFrame()
 
 
@@ -1473,7 +1490,8 @@ def get_nearest_future_row(fut_df, symbol_regex):
         if 'expiry' in matched.columns:
             matched = matched.sort_values('expiry')
         return matched.iloc[0]
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return None
 
 
@@ -1488,7 +1506,8 @@ def get_lot_size_from_row(row, default=None):
                 if val > 0:
                     return val
         return default
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return default
 
 
@@ -1505,7 +1524,8 @@ def fetch_option_contracts(instrument_key, token):
             res = session.get(url, headers=headers, params=params, timeout=8)
             if res.status_code == 200:
                 return res.json().get("data", []) or []
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         pass
     return []
 
@@ -1514,7 +1534,8 @@ def get_available_expiries(contracts):
     """Extracts a sorted, de-duplicated list of expiry dates from an option-contracts list."""
     try:
         return sorted({c.get('expiry') for c in (contracts or []) if c.get('expiry')})
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return []
 
 
@@ -1531,7 +1552,8 @@ def fetch_option_chain(instrument_key, expiry, token):
             res = session.get(url, headers=headers, params=params, timeout=8)
             if res.status_code == 200:
                 return res.json().get("data", []) or []
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         pass
     return []
 
@@ -1566,7 +1588,8 @@ def compute_pcr_and_max_pain(chain_data):
                     min_pain = total_pain
                     max_pain_strike = candidate_strike
         return pcr, max_pain_strike
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return None, None
 
 
@@ -1580,7 +1603,8 @@ def current_realized_vol_pct(hist_df, window=20):
             return None
         ann_vol = float(rets.std() * np.sqrt(252) * 100)
         return ann_vol if np.isfinite(ann_vol) else None
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return None
 
 
@@ -1596,7 +1620,8 @@ def realized_vol_percentile(hist_df, window=20, lookback=252):
         current = rolling_vol.iloc[-1]
         pct = round(100 * float((rolling_vol < current).sum()) / len(rolling_vol), 1)
         return pct
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return None
 
 
@@ -1616,7 +1641,8 @@ def classify_ema_trend(latest):
         if e20 > e50:
             return "🟢 Uptrend (20>50)"
         return "🔴 Downtrend (20<50)"
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return "⚪ Unclear"
 
 
@@ -1635,7 +1661,8 @@ def classify_macd(df):
         if prev_macd >= prev_sig and last_macd < last_sig:
             return "🔴 Bearish Crossover"
         return "🟢 Above Signal" if last_macd > last_sig else "🔴 Below Signal"
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return "⚪ Neutral"
 
 
@@ -1646,7 +1673,8 @@ def compute_bollinger_percent_b(latest):
         if not np.isfinite(lower) or not np.isfinite(upper) or upper == lower:
             return None
         return round((close - lower) / (upper - lower) * 100.0, 1)
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return None
 
 
@@ -1669,7 +1697,8 @@ def get_weekly_trend(df):
         if last_close < last_ema:
             return "Bearish (Weekly)"
         return "Neutral (Weekly)"
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return "Neutral (Weekly)"
 
 
@@ -1683,7 +1712,8 @@ def relative_strength_vs_nifty(df, lookback=20):
         stock_ret = (float(df['Close'].iloc[-1]) / float(df['Close'].iloc[-lookback - 1]) - 1.0) * 100.0
         nifty_ret = (float(nifty_hist_df['Close'].iloc[-1]) / float(nifty_hist_df['Close'].iloc[-lookback - 1]) - 1.0) * 100.0
         return round(stock_ret - nifty_ret, 2)
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return None
 
 
@@ -1730,7 +1760,8 @@ def compute_volume_profile(df, bins=24, value_area_pct=0.70):
             "vah": round(float(bin_edges[hi_i + 1]), 2),
             "val": round(float(bin_edges[lo_i]), 2),
         }
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return None
 
 
@@ -1766,7 +1797,8 @@ def fetch_mf_scheme_list():
                 data = res.json()
                 if isinstance(data, list):
                     return data
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         pass
     return []
 
@@ -1781,7 +1813,8 @@ def shortlist_mf_schemes(all_schemes, keywords):
             if any(kw.lower() in name_l for kw in keywords) and is_direct_growth_plan(name):
                 out.append(s)
         return out
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return []
 
 
@@ -1791,7 +1824,8 @@ def search_mf_schemes(query):
         all_schemes = fetch_mf_scheme_list()
         q = str(query or "").lower()
         return [s for s in all_schemes if q in str(s.get("schemeName", "")).lower()]
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return []
 
 
@@ -1803,7 +1837,8 @@ def fetch_mf_nav_history(scheme_code):
             res = session.get(f"https://api.mfapi.in/mf/{scheme_code}", timeout=10)
             if res.status_code == 200:
                 return res.json()
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         pass
     return None
 
@@ -1857,7 +1892,8 @@ def compute_mf_returns(nav_json):
             "quality": quality,
             "nav_df": df[['date', 'nav']],
         }
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         return None
 
 
@@ -1870,7 +1906,8 @@ def load_watchlist():
                 data = json.load(f)
                 if isinstance(data, list):
                     return data
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         pass
     return []
 
@@ -1878,7 +1915,8 @@ def save_watchlist(tickers):
     try:
         with open(WATCHLIST_FILE, "w") as f:
             json.dump(tickers, f)
-    except Exception:
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
         pass
 
 if "watchlist" not in st.session_state:
@@ -2174,7 +2212,8 @@ if selected_tab == "Options & Derivatives Chain":
                             "ticker": ticker, "ltp": ltp, "momentum_pct": momentum_pct,
                             "range_pct": range_pct, "rel_strength": rel_strength,
                         })
-                    except Exception:
+                    except Exception as e:
+                        LOGGER.debug("Suppressed exception: %s", e)
                         continue
                 # Rank by relative strength (real signal) when we have a benchmark,
                 # falling back to raw momentum only if NIFTY's own quote failed.
@@ -2312,7 +2351,8 @@ if selected_tab == "Options & Derivatives Chain":
                             "Premium": round(float(premium), 2), "Target (+25%)": round(float(premium) * 1.25, 2),
                             "Stop (-20%)": round(float(premium) * 0.80, 2), "Expiry": nearest_expiry,
                         }
-                    except Exception:
+                    except Exception as e:
+                        LOGGER.debug("Suppressed exception: %s", e)
                         return None
                 ideas = []
                 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
@@ -2416,7 +2456,8 @@ if selected_tab == "Options & Derivatives Chain":
                             break
                 if live_lot_size and live_lot_size > 0:
                     lot_size = live_lot_size
-            except Exception:
+            except Exception as e:
+                LOGGER.debug("Suppressed exception: %s", e)
                 pass
 
     pcr_val, max_pain_strike = (None, None)
@@ -2441,7 +2482,8 @@ if selected_tab == "Options & Derivatives Chain":
             atm_reference_price = chain_spot if chain_spot else underlying_ltp
             atm_item = min(live_chain_data, key=lambda x: abs(x.get('strike_price', 0) - atm_reference_price))
             atm_iv_live = ((atm_item.get('call_options') or {}).get('option_greeks') or {}).get('iv')
-        except Exception:
+        except Exception as e:
+            LOGGER.debug("Suppressed exception: %s", e)
             atm_iv_live = None
         if atm_iv_live is not None:
             hist_list = st.session_state.iv_history.setdefault(selected_opt_asset, [])
@@ -2498,14 +2540,16 @@ if selected_tab == "Options & Derivatives Chain":
                     "_put_bid_qty": p_md.get('bid_qty'), "_put_ask_qty": p_md.get('ask_qty'),
                     "_put_volume": p_md.get('volume'),
                 })
-        except Exception:
+        except Exception as e:
+            LOGGER.debug("Suppressed exception: %s", e)
             using_live_chain = False
 
     if selected_expiry:
         try:
             expiry_dt = pd.to_datetime(selected_expiry).date()
             dte = max((expiry_dt - datetime.datetime.now(IST).date()).days, 0)
-        except Exception:
+        except Exception as e:
+            LOGGER.debug("Suppressed exception: %s", e)
             dte = 7
     else:
         dte = 7
@@ -2572,7 +2616,8 @@ if selected_tab == "Options & Derivatives Chain":
                 rsi_series = ta.rsi(idx_hist_short['Close'], length=14).dropna()
                 if not rsi_series.empty:
                     rsi_last = float(rsi_series.iloc[-1])
-            except Exception:
+            except Exception as e:
+                LOGGER.debug("Suppressed exception: %s", e)
                 rsi_last = None
             rsi_bullish = rsi_last is not None and rsi_last >= 55
             rsi_bearish = rsi_last is not None and rsi_last <= 45
@@ -2584,7 +2629,8 @@ if selected_tab == "Options & Derivatives Chain":
                     hist_col = [c for c in macd_df.columns if c.startswith("MACDh_")]
                     if hist_col:
                         macd_hist_last = float(macd_df[hist_col[0]].iloc[-1])
-            except Exception:
+            except Exception as e:
+                LOGGER.debug("Suppressed exception: %s", e)
                 macd_hist_last = None
             macd_bullish = macd_hist_last is not None and macd_hist_last > 0
             macd_bearish = macd_hist_last is not None and macd_hist_last < 0
@@ -2603,7 +2649,8 @@ if selected_tab == "Options & Derivatives Chain":
                         elapsed_frac = 1.0
                     expected_vol_so_far = (vol_avg20 or 0) * elapsed_frac
                     volume_confirmed = bool(expected_vol_so_far and vol_last >= expected_vol_so_far)
-            except Exception:
+            except Exception as e:
+                LOGGER.debug("Suppressed exception: %s", e)
                 volume_confirmed = False
 
             pcr_bullish = pcr_val is not None and pcr_val >= 1.05
@@ -2617,7 +2664,8 @@ if selected_tab == "Options & Derivatives Chain":
             if price_below:
                 return "Mildly Bearish"
             return "Neutral"
-        except Exception:
+        except Exception as e:
+            LOGGER.debug("Suppressed exception: %s", e)
             return "Neutral"
 
     market_bias = determine_market_bias()
@@ -2713,7 +2761,8 @@ if selected_tab == "Options & Derivatives Chain":
                 "strike_offset_steps": strike_offset_steps,
                 "reward_risk": reward_risk,
             }
-        except Exception:
+        except Exception as e:
+            LOGGER.debug("Suppressed exception: %s", e)
             return None
 
     def generate_ranked_recommendations(bias, max_ideas=3):
@@ -2843,7 +2892,8 @@ elif selected_tab == "Futures & Derivatives":
                     if ema20.empty:
                         return "Neutral"
                     return "Bullish" if spot_ltp > ema20.iloc[-1] else "Bearish"
-                except Exception:
+                except Exception as e:
+                    LOGGER.debug("Suppressed exception: %s", e)
                     return "Neutral"
 
             fut_bias = determine_futures_bias()
@@ -3115,7 +3165,7 @@ elif selected_tab == "Equities Screener & Risk":
                 avg_vol20 = float(df_clean['Volume'].tail(20).mean()) if 'Volume' in df_clean.columns else 0.0
                 current_day_volume = float(df_clean['Volume'].iloc[-1]) if 'Volume' in df_clean.columns else 0.0
                 elapsed_fraction = _session_elapsed_fraction()
-                volume_pace_ratio = (current_day_volume / avg_vol20 / elapsed_fraction) if avg_vol20 > 0 else None
+                volume_pace_ratio = min(current_day_volume / avg_vol20 / elapsed_fraction, 5.0) if avg_vol20 > 0 and elapsed_fraction > 0 else None
 
                 # Walk-Forward OOS Probability Calibration Engine
                 wf_result = compute_walk_forward_probability(df_clean, horizon_days=custom_days)
@@ -3286,7 +3336,8 @@ elif selected_tab == "Equities Screener & Risk":
                         if pd.notna(corr_val) and corr_val > corr_threshold:
                             too_correlated = True
                             break
-                except Exception:
+                except Exception as e:
+                    LOGGER.debug("Suppressed exception: %s", e)
                     continue
             if too_correlated:
                 rejected.append(cand)
@@ -3682,7 +3733,8 @@ elif selected_tab == "SMC & Technical Analysis":
                 if bullish_candle and bearish_impulse:
                     return f"Bearish OB Zone: ₹{candle['Low']:,.2f} - ₹{candle['High']:,.2f}"
             return "No Clear OB Detected"
-        except Exception:
+        except Exception as e:
+            LOGGER.debug("Suppressed exception: %s", e)
             return "No Clear OB Detected"
 
     def detect_liquidity_sweep(df, lookback=10):
@@ -3697,7 +3749,8 @@ elif selected_tab == "SMC & Technical Analysis":
             if last['Low'] < prior_low and last['Close'] > prior_low:
                 return f"🔻 Bullish Liquidity Sweep — swept low ₹{prior_low:,.2f}"
             return "No Sweep Detected"
-        except Exception:
+        except Exception as e:
+            LOGGER.debug("Suppressed exception: %s", e)
             return "No Sweep Detected"
 
     if search_ticker != "-- Select Stock --":
@@ -3845,7 +3898,8 @@ elif selected_tab == "AI Copilot":
                 f"ATR(14) ₹{round(atr_val, 2) if atr_val is not None else 'N/A'}, "
                 f"trend {trend}."
             )
-        except Exception:
+        except Exception as e:
+            LOGGER.debug("Suppressed exception: %s", e)
             return f"{ticker}: couldn't fetch live data right now."
 
     def build_ai_context(prompt_text=""):
@@ -3905,7 +3959,8 @@ elif selected_tab == "AI Copilot":
                             system_instruction=context_str,
                             thinking_config=genai_types.ThinkingConfig(thinking_level="medium"),
                         )
-                    except Exception:
+                    except Exception as e:
+                        LOGGER.debug("Suppressed exception: %s", e)
                         config = {"system_instruction": context_str}
                     stream = client.models.generate_content_stream(
                         model=model_name,
