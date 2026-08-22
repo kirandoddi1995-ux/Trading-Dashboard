@@ -198,6 +198,15 @@ def _ensure_cache_schema(db_path=DEFAULT_DB_PATH):
                     last_sync_date TEXT
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS positions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL,
+                    sector TEXT NOT NULL,
+                    capital_deployed REAL NOT NULL,
+                    added_at TEXT NOT NULL
+                )
+            """)
             conn.commit()
         finally:
             conn.close()
@@ -553,6 +562,55 @@ max_position_pct = st.sidebar.slider(
     "Max Capital per Position (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key="sb_max_position_pct",
     help="Caps how much of your total capital any single position can use, even if the risk budget alone would allow more (e.g. very tight stops on a cheap option could otherwise size an oversized position)."
 )
+max_sector_exposure_pct = st.sidebar.slider(
+    "Max Sector Exposure (%)", min_value=5.0, max_value=100.0, value=30.0, step=5.0, key="sb_max_sector_pct",
+    help="Warns you before adding a new position if your tracked positions already have this much capital concentrated in the same sector (e.g. too much in Banking or IT)."
+)
+
+with st.sidebar.expander("📁 My Positions (for sector exposure tracking)"):
+    st.caption("Manually log your current positions here so the app can warn you about sector concentration before recommending more of the same sector. This is separate from live Upstox holdings — nothing here is fetched automatically.")
+    pos_col1, pos_col2 = st.columns(2)
+    with pos_col1:
+        new_pos_ticker = st.text_input("Ticker", key="sb_new_pos_ticker", placeholder="e.g. HDFCBANK")
+    with pos_col2:
+        new_pos_capital = st.number_input("Capital Deployed (₹)", min_value=0.0, step=1000.0, key="sb_new_pos_capital")
+    if st.button("+ Add Position", key="sb_add_position", use_container_width=True):
+        if new_pos_ticker and new_pos_capital > 0:
+            add_position(new_pos_ticker, new_pos_capital)
+            st.rerun()
+        else:
+            st.warning("Enter both a ticker and a capital amount.")
+
+    positions_df = get_positions_df()
+    if not positions_df.empty:
+        st.markdown("**Current positions:**")
+        for _, prow in positions_df.iterrows():
+            pcol1, pcol2 = st.columns([4, 1])
+            with pcol1:
+                st.caption(f"{prow['ticker']} · {prow['sector']} · ₹{prow['capital_deployed']:,.0f}")
+            with pcol2:
+                if st.button("🗑", key=f"sb_del_pos_{prow['id']}"):
+                    remove_position(prow['id'])
+                    st.rerun()
+
+        exposure = get_sector_exposure()
+        total_deployed = sum(exposure.values())
+        if total_deployed > 0:
+            st.markdown("**Sector breakdown:**")
+            for sector, cap in sorted(exposure.items(), key=lambda x: -x[1]):
+                pct = cap / investment_capital * 100.0 if investment_capital > 0 else 0.0
+                flag = " ⚠️" if pct >= max_sector_exposure_pct else ""
+                st.caption(f"{sector}: ₹{cap:,.0f} ({pct:.1f}% of capital){flag}")
+    else:
+        st.caption("No positions logged yet.")
+
+st.sidebar.markdown("---")
+require_mtf_confirmation = st.sidebar.toggle(
+    "📊 Multi-Timeframe Confirmation", value=False, key="sb_require_mtf",
+    help="Checks whether 15-min and 1-hour trend agree with the daily bias before showing a recommendation. "
+         "OFF by default — enabling this may reduce how many recommendations appear, since only setups "
+         "confirmed across timeframes will show."
+)
 
 if st.sidebar.button("Force Reconnect & Clear Cache", use_container_width=True, key="sb_reconnect"):
     st.cache_data.clear()
@@ -717,6 +775,97 @@ def _fetch_upstox_history_impl(instrument_key, token, days=400):
 def fetch_upstox_history(instrument_key, token, days=400):
     return _fetch_upstox_history_impl(instrument_key, token, days=days)
 
+
+def fetch_upstox_intraday_series(instrument_key, token, unit, interval, days_back=10):
+    """Fetches candles at a specific intraday granularity (e.g. unit='minutes',
+    interval=15 for 15-min bars; unit='hours', interval=1 for 1-hour bars) using
+    Upstox's V3 historical-candle endpoint:
+      https://api.upstox.com/v3/historical-candle/{key}/{unit}/{interval}/{to}/{from}
+    Confirmed against Upstox's own V3 API documentation. Used for multi-timeframe
+    trend confirmation — NOT used anywhere by default; only called when the
+    opt-in "Multi-Timeframe Confirmation" toggle is enabled, and degrades to an
+    empty DataFrame (treated as "confirmation unavailable") on any failure rather
+    than raising, so it can never break the existing recommendation flow."""
+    empty = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume", "OI"])
+    if not token or not instrument_key:
+        return empty
+    end_date = datetime.datetime.now(IST).date()
+    start_date = end_date - datetime.timedelta(days=max(int(days_back), 1))
+    try:
+        encoded_key = urllib.parse.quote(instrument_key, safe="")
+        url = (f"https://api.upstox.com/v3/historical-candle/{encoded_key}/{unit}/{interval}/"
+               f"{end_date.isoformat()}/{start_date.isoformat()}")
+        headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
+        with get_robust_session() as session:
+            res = session.get(url, headers=headers, timeout=10)
+            if res.status_code != 200:
+                LOGGER.debug("V3 intraday candle %s for %s (%s/%s): %s", res.status_code, instrument_key, unit, interval, res.text[:200])
+                return empty
+            candles = ((res.json().get("data") or {}).get("candles") or [])
+            return _history_to_dataframe(candles)
+    except Exception as exc:
+        LOGGER.debug("V3 intraday candle fetch failed for %s (%s/%s): %s", instrument_key, unit, interval, exc)
+        return empty
+
+
+def get_timeframe_trend_label(df, ema_length=20):
+    """Simple, consistent-with-existing-bias trend label for one timeframe's
+    candle series: last close vs EMA — same logic already used for the daily
+    market bias, just applied at whatever granularity df is in."""
+    try:
+        if df is None or df.empty or len(df) < ema_length:
+            return None
+        ema_series = ta.ema(df['Close'], length=ema_length).dropna()
+        if ema_series.empty:
+            return None
+        last_close = float(df['Close'].iloc[-1])
+        last_ema = float(ema_series.iloc[-1])
+        if last_ema <= 0:
+            return None
+        diff_pct = (last_close - last_ema) / last_ema * 100.0
+        if diff_pct > 0.05:
+            return "Bullish"
+        elif diff_pct < -0.05:
+            return "Bearish"
+        return "Neutral"
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
+        return None
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def get_multi_timeframe_confirmation(instrument_key, token, daily_bias):
+    """Checks whether 15-min and 1-hour trend agree with the given daily bias.
+    Returns (status, detail_dict):
+      status: "Aligned Bullish" / "Aligned Bearish" / "Mixed" / "Unavailable"
+      detail_dict: {"15m": "Bullish"/..., "1H": "Bullish"/..., "Daily": daily_bias}
+    Cached for 3 min since intraday trend doesn't meaningfully change faster than that.
+    """
+    detail = {"Daily": daily_bias}
+    if daily_bias not in ("Bullish", "Bearish"):
+        # Only meaningful to confirm a directional bias; Neutral/Mildly-* have no
+        # strict signal to confirm against.
+        return "Unavailable", detail
+
+    df_15m = fetch_upstox_intraday_series(instrument_key, token, "minutes", 15, days_back=10)
+    df_1h = fetch_upstox_intraday_series(instrument_key, token, "hours", 1, days_back=20)
+
+    trend_15m = get_timeframe_trend_label(df_15m)
+    trend_1h = get_timeframe_trend_label(df_1h)
+    detail["15m"] = trend_15m or "N/A"
+    detail["1H"] = trend_1h or "N/A"
+
+    if trend_15m is None and trend_1h is None:
+        return "Unavailable", detail
+
+    timeframe_votes = [t for t in (trend_15m, trend_1h) if t in ("Bullish", "Bearish")]
+    if not timeframe_votes:
+        return "Unavailable", detail
+
+    if all(t == daily_bias for t in timeframe_votes):
+        return f"Aligned {daily_bias}", detail
+    return "Mixed", detail
+
 @st.cache_data(ttl=86400)
 def get_full_nse_instrument_dictionary():
     try:
@@ -770,6 +919,67 @@ NSE_SECTOR_MAP = {
 
 def get_ticker_sector(ticker):
     return NSE_SECTOR_MAP.get(ticker.upper(), "Other / Diversified")
+
+
+# ==========================================
+# PORTFOLIO POSITIONS & SECTOR EXPOSURE
+# ==========================================
+def add_position(ticker, capital_deployed, db_path=DEFAULT_DB_PATH):
+    conn = _cache_connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO positions (ticker, sector, capital_deployed, added_at) VALUES (?, ?, ?, ?)",
+            (ticker.upper(), get_ticker_sector(ticker), float(capital_deployed),
+             datetime.datetime.now(IST).isoformat())
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def remove_position(position_id, db_path=DEFAULT_DB_PATH):
+    conn = _cache_connect(db_path)
+    try:
+        conn.execute("DELETE FROM positions WHERE id = ?", (position_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_positions_df(db_path=DEFAULT_DB_PATH):
+    conn = _cache_connect(db_path)
+    try:
+        df = pd.read_sql_query("SELECT id, ticker, sector, capital_deployed, added_at FROM positions ORDER BY added_at DESC", conn)
+        return df
+    except Exception as e:
+        LOGGER.debug("Suppressed exception: %s", e)
+        return pd.DataFrame(columns=["id", "ticker", "sector", "capital_deployed", "added_at"])
+    finally:
+        conn.close()
+
+
+def get_sector_exposure(db_path=DEFAULT_DB_PATH):
+    """Returns {sector: total_capital_deployed} across all tracked positions."""
+    df = get_positions_df(db_path)
+    if df.empty:
+        return {}
+    return df.groupby("sector")["capital_deployed"].sum().to_dict()
+
+
+def check_sector_exposure_warning(ticker, total_capital, max_sector_pct, db_path=DEFAULT_DB_PATH):
+    """Returns a warning string if adding a new position in `ticker`'s sector
+    would push that sector's total exposure over max_sector_pct of total_capital,
+    or None if there's no concern (no existing exposure data, or within limits)."""
+    if total_capital <= 0:
+        return None
+    sector = get_ticker_sector(ticker)
+    exposure = get_sector_exposure(db_path)
+    current_sector_capital = exposure.get(sector, 0.0)
+    current_pct = (current_sector_capital / total_capital) * 100.0
+    if current_pct >= max_sector_pct:
+        return (f"⚠️ Sector Exposure Warning: you already have ~{current_pct:.1f}% of your capital in "
+                f"**{sector}** (your limit is {max_sector_pct:.0f}%) — consider skipping or trimming before adding more here.")
+    return None
 
 def _normalize_quote_response(raw_data):
     normalized = {}
@@ -2820,6 +3030,10 @@ if selected_tab == "Options & Derivatives Chain":
     recommendations = generate_ranked_recommendations(market_bias) if using_live_chain else []
 
     st.markdown("### 🎯 Recommended Options Trades")
+    if is_stock_mode:
+        sector_warning = check_sector_exposure_warning(selected_opt_asset, investment_capital, max_sector_exposure_pct)
+        if sector_warning:
+            st.warning(sector_warning)
     if using_stale_price:
         st.error(
             "⚠️ Live price feed unavailable right now — this recommendation is based on **yesterday's closing price**, "
@@ -2829,6 +3043,23 @@ if selected_tab == "Options & Derivatives Chain":
     if not using_live_chain:
         st.warning("⚠️ Live option chain unavailable — trade recommendations are disabled rather than generated from simulated data.")
     elif recommendations:
+        mtf_status, mtf_detail = (None, None)
+        if require_mtf_confirmation:
+            with st.spinner("Checking 15-min / 1-hour trend confirmation..."):
+                try:
+                    mtf_status, mtf_detail = get_multi_timeframe_confirmation(live_key, access_token, market_bias)
+                except Exception as exc:
+                    LOGGER.warning("MTF confirmation failed: %s", exc)
+                    mtf_status, mtf_detail = "Unavailable", {}
+            if mtf_status == "Unavailable":
+                st.caption("⚠️ Multi-timeframe data unavailable right now — showing recommendations without MTF filtering.")
+            else:
+                badge = "✅" if mtf_status.startswith("Aligned") else "⚠️"
+                st.caption(f"{badge} **MTF Confirmation: {mtf_status}** · 15m: {mtf_detail.get('15m','N/A')} · 1H: {mtf_detail.get('1H','N/A')} · Daily: {mtf_detail.get('Daily','N/A')}")
+                if mtf_status == "Mixed":
+                    st.warning("Recommendations below are NOT confirmed across timeframes (15m/1H disagree with the daily bias) — filtered out since Multi-Timeframe Confirmation is enabled.")
+                    recommendations = []
+
         strike_labels = {0: "ATM", 1: "1-OTM", 2: "2-OTM", 3: "3-OTM"}
         for rank, r in enumerate(recommendations, start=1):
             label = strike_labels.get(r["strike_offset_steps"], f"{r['strike_offset_steps']}-OTM")
@@ -2840,11 +3071,14 @@ if selected_tab == "Options & Derivatives Chain":
                 f"Capital at risk ~₹{r['total_risk']:,.0f} ({max_risk_pct:.1f}% budget) · "
                 f"Required capital ~₹{r['required_capital']:,.0f}"
             )
-        st.caption(
-            "Ranked by reward:risk across ATM and nearby OTM strikes on the biased side. Position sized per your "
-            "sidebar Capital & Risk settings — ideas that don't fit even 1 lot within your risk budget are filtered out. "
-            "Not investment advice — check liquidity (bid/ask spread) before sizing up."
-        )
+        if recommendations:
+            st.caption(
+                "Ranked by reward:risk across ATM and nearby OTM strikes on the biased side. Position sized per your "
+                "sidebar Capital & Risk settings — ideas that don't fit even 1 lot within your risk budget are filtered out. "
+                "Not investment advice — check liquidity (bid/ask spread) before sizing up."
+            )
+        elif require_mtf_confirmation and mtf_status == "Mixed":
+            pass  # warning already shown above
     else:
         st.info(f"Market bias is currently **{market_bias}** — no high-conviction directional options trade to recommend right now.")
 
