@@ -2133,11 +2133,27 @@ if selected_tab == "Options & Derivatives Chain":
         top_movers = []
         used_fallback = False
         if auto_scan_on:
+            NIFTY_KEY = "NSE_INDEX|Nifty 50"
+
             @st.cache_data(ttl=30, show_spinner=False)
             def _scan_fo_momentum(tickers_tuple, token):
                 tickers = list(tickers_tuple)
                 keys = {t: instrument_dict.get(t) for t in tickers if instrument_dict.get(t)}
-                quotes = get_live_scan_market_data(list(keys.values()), token)
+                quote_keys = list(keys.values()) + [NIFTY_KEY]
+                quotes = get_live_scan_market_data(quote_keys, token)
+
+                # Relative Strength benchmark: NIFTY's own move over the same window.
+                # A stock's raw % move is a weak signal on its own — up 2% while the
+                # whole market is up 1.8% is barely outperformance, while up 2% while
+                # NIFTY is flat/red is real relative strength. RS = stock move - NIFTY move.
+                nifty_pct = None
+                nq = quotes.get(NIFTY_KEY)
+                if nq:
+                    n_ltp = float(nq.get("last_price") or 0.0)
+                    n_prev = float((nq.get("ohlc") or {}).get("close") or 0.0)
+                    if n_ltp > 0 and n_prev > 0:
+                        nifty_pct = (n_ltp / n_prev - 1.0) * 100.0
+
                 rows = []
                 for ticker, key in keys.items():
                     q = quotes.get(key)
@@ -2153,10 +2169,19 @@ if selected_tab == "Options & Derivatives Chain":
                             continue
                         momentum_pct = (ltp / prev_close - 1.0) * 100.0
                         range_pct = ((day_high - day_low) / prev_close) * 100.0 if prev_close else 0.0
-                        rows.append({"ticker": ticker, "ltp": ltp, "momentum_pct": momentum_pct, "range_pct": range_pct})
+                        rel_strength = (momentum_pct - nifty_pct) if nifty_pct is not None else None
+                        rows.append({
+                            "ticker": ticker, "ltp": ltp, "momentum_pct": momentum_pct,
+                            "range_pct": range_pct, "rel_strength": rel_strength,
+                        })
                     except Exception:
                         continue
-                rows.sort(key=lambda r: abs(r["momentum_pct"]), reverse=True)
+                # Rank by relative strength (real signal) when we have a benchmark,
+                # falling back to raw momentum only if NIFTY's own quote failed.
+                if nifty_pct is not None:
+                    rows.sort(key=lambda r: abs(r["rel_strength"]) if r["rel_strength"] is not None else 0, reverse=True)
+                else:
+                    rows.sort(key=lambda r: abs(r["momentum_pct"]), reverse=True)
                 return rows
 
             @st.cache_data(ttl=3600, show_spinner=False)
@@ -2167,6 +2192,14 @@ if selected_tab == "Options & Derivatives Chain":
                 Parallelized since this hits the historical-candle endpoint once
                 per ticker; cached for an hour since it only changes once a day."""
                 tickers = list(tickers_tuple)
+
+                nifty_df = fetch_upstox_history(NIFTY_KEY, token, days=5)
+                nifty_pct = None
+                if not nifty_df.empty and len(nifty_df) >= 2:
+                    n_last, n_prev = float(nifty_df.iloc[-1]['Close']), float(nifty_df.iloc[-2]['Close'])
+                    if n_prev > 0:
+                        nifty_pct = (n_last / n_prev - 1.0) * 100.0
+
                 rows = []
                 def _fetch_one(ticker):
                     key = instrument_dict.get(ticker)
@@ -2183,12 +2216,19 @@ if selected_tab == "Options & Derivatives Chain":
                         return None
                     momentum_pct = (last_close / prev_close - 1.0) * 100.0
                     range_pct = ((day_high - day_low) / prev_close) * 100.0
-                    return {"ticker": ticker, "ltp": last_close, "momentum_pct": momentum_pct, "range_pct": range_pct}
+                    rel_strength = (momentum_pct - nifty_pct) if nifty_pct is not None else None
+                    return {
+                        "ticker": ticker, "ltp": last_close, "momentum_pct": momentum_pct,
+                        "range_pct": range_pct, "rel_strength": rel_strength,
+                    }
                 with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
                     for result in executor.map(_fetch_one, tickers):
                         if result:
                             rows.append(result)
-                rows.sort(key=lambda r: abs(r["momentum_pct"]), reverse=True)
+                if nifty_pct is not None:
+                    rows.sort(key=lambda r: abs(r["rel_strength"]) if r["rel_strength"] is not None else 0, reverse=True)
+                else:
+                    rows.sort(key=lambda r: abs(r["momentum_pct"]), reverse=True)
                 return rows
 
             scan_universe = tuple(liquid_fo) if liquid_fo else tuple(stock_options_list[:100])
@@ -2211,20 +2251,26 @@ if selected_tab == "Options & Derivatives Chain":
                         top_movers = []
 
         if top_movers:
-            movers_df = pd.DataFrame(top_movers[:10])[["ticker", "ltp", "momentum_pct", "range_pct"]]
+            movers_df = pd.DataFrame(top_movers[:10])[["ticker", "ltp", "momentum_pct", "range_pct", "rel_strength"]]
             movers_df["Suggested Side"] = movers_df["momentum_pct"].apply(
                 lambda x: "CE (Bullish)" if x >= 0.5 else ("PE (Bearish)" if x <= -0.5 else "Neutral")
             )
             movers_df = movers_df.rename(columns={
-                "ticker": "Symbol", "ltp": "LTP", "momentum_pct": "Move %", "range_pct": "Day Range %"
+                "ticker": "Symbol", "ltp": "LTP", "momentum_pct": "Move %",
+                "range_pct": "Day Range %", "rel_strength": "vs NIFTY (RS)"
             })
             heading = "Top F&O Movers (last completed session)" if used_fallback else "Top F&O Movers (auto-ranked, live)"
             st.markdown(f"#### {heading}")
             if used_fallback:
                 st.caption("Live quotes aren't available right now (market closed or feed still warming up) — ranked by the last completed session's move instead.")
+            st.caption("Ranked by Relative Strength vs NIFTY (excess move over the index), not raw momentum alone — a stock beating the index is a stronger signal than one just moving with it.")
             st.dataframe(
-                movers_df.style.format({"LTP": "₹{:.2f}", "Move %": "{:.2f}", "Day Range %": "{:.2f}"})
-                .map(lambda v: f"color: {'#2ecc71' if v >= 0 else '#e74c3c'}", subset=["Move %"]),
+                movers_df.style.format({
+                    "LTP": "₹{:.2f}", "Move %": "{:.2f}", "Day Range %": "{:.2f}",
+                    "vs NIFTY (RS)": lambda v: f"{v:+.2f}" if pd.notna(v) else "—",
+                }, na_rep="—")
+                .map(lambda v: f"color: {'#2ecc71' if v >= 0 else '#e74c3c'}", subset=["Move %"])
+                .map(lambda v: (f"color: {'#2ecc71' if v >= 0 else '#e74c3c'}" if pd.notna(v) else ""), subset=["vs NIFTY (RS)"]),
                 use_container_width=True, hide_index=True
             )
             default_pick = top_movers[0]["ticker"]
