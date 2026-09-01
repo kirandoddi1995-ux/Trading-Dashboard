@@ -13,6 +13,12 @@ from prediction_validation import (
 from market_data_gateway import get_market_data_gateway
 from reliable_charts import render_chart
 from scan_jobs import ScanJobs, ScanBusy
+from provider_contracts import OptionGreeks, OptionMarketData, ProviderContractError, ProviderErrorKind
+from quantitative_services import estimate_execution_cost, cross_sectional_scores, optimize_portfolio
+from iv_surface import normalize_iv_surface
+from model_registry import ModelRegistry
+from mf_archive import MutualFundArchive
+from risk_engine import RiskEngine
 import pandas as pd
 import numpy as np
 import requests
@@ -37,7 +43,6 @@ import hashlib
 import gzip
 import io
 from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
 warnings.filterwarnings("default")
 
@@ -47,7 +52,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("god_mode_quant")
-APP_BUILD = "v17.0-PIT-VALIDATION"
+APP_BUILD = "v18.0-PRODUCTION-FOUNDATION"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
 OBSERVABILITY = observability.get_registry()
 MARKET_DATA_GATEWAY = get_market_data_gateway()
@@ -63,125 +68,6 @@ try:
 except ImportError:
     upstox_client = None
     UPSTOX_SDK_AVAILABLE = False
-
-
-@dataclass
-class PositionSizing:
-    qty: int
-    risk_based_qty: int
-    capital_based_qty: int
-    margin_based_qty: int | None = None
-    initial_margin_req: float = 0.0
-    exposure_req: float = 0.0
-
-
-class RiskEngine:
-    """Advanced institutional risk engine supporting live margin calculation and gap risk."""
-
-    def __init__(self, investment_capital=0.0, max_risk_pct=1.0,
-                 max_position_pct=20.0, asset_class="equity"):
-        self.investment_capital = float(investment_capital or 0.0)
-        self.max_risk_pct = float(max_risk_pct or 0.0)
-        self.max_position_pct = float(max_position_pct or 0.0)
-        self.asset_class = str(asset_class).lower()
-
-    def risk_budget(self):
-        return self.investment_capital * self.max_risk_pct / 100.0
-
-    def position_capital_budget(self):
-        return self.investment_capital * self.max_position_pct / 100.0
-
-    @staticmethod
-    def calculate_stop(entry, atr, direction="long", multiplier=1.5):
-        entry = float(entry)
-        atr = max(float(atr), 0.0)
-        distance = atr * float(multiplier)
-        if str(direction).lower() == "short":
-            return entry + distance
-        return entry - distance
-
-    @staticmethod
-    def calculate_target(entry, atr, direction="long", multiplier=2.0):
-        entry = float(entry)
-        atr = max(float(atr), 0.0)
-        distance = atr * float(multiplier)
-        if str(direction).lower() == "short":
-            return entry - distance
-        return entry + distance
-
-    @staticmethod
-    def calculate_risk_per_unit(entry, stop, cost_buffer=0.0, gap_buffer_pct=0.0):
-        risk_base = abs(float(entry) - float(stop))
-        gap_adjusted_risk = risk_base * (1.0 + max(float(gap_buffer_pct), 0.0) / 100.0)
-        return max(gap_adjusted_risk + max(float(cost_buffer or 0.0), 0.0), 0.0)
-
-    def calculate_position_size(self, risk_per_unit, price_per_unit,
-                                unit_multiplier=1, actual_margin_required=None):
-        risk_per_unit = float(risk_per_unit or 0.0)
-        price_per_unit = float(price_per_unit or 0.0)
-        unit_multiplier = max(int(unit_multiplier or 1), 1)
-        if risk_per_unit <= 0 or price_per_unit <= 0 or self.investment_capital <= 0:
-            return PositionSizing(0, 0, 0, 0 if actual_margin_required is not None else None, 0.0, 0.0)
-
-        risk_per_position_unit = risk_per_unit * unit_multiplier
-        risk_qty = math.floor(self.risk_budget() / risk_per_position_unit) if risk_per_position_unit > 0 else 0
-
-        position_value_per_unit = price_per_unit * unit_multiplier
-        cap_qty = math.floor(self.position_capital_budget() / position_value_per_unit) if position_value_per_unit > 0 else 0
-
-        margin_qty = None
-        init_req_total = 0.0
-        if actual_margin_required is not None and actual_margin_required > 0:
-            margin_per_position_unit = float(actual_margin_required)
-            margin_qty = math.floor(self.position_capital_budget() / margin_per_position_unit) if margin_per_position_unit > 0 else 0
-            qty = min(risk_qty, cap_qty, margin_qty)
-            init_req_total = margin_per_position_unit * qty
-        else:
-            qty = min(risk_qty, cap_qty)
-            init_req_total = position_value_per_unit * qty
-
-        final_qty = max(int(qty), 0)
-        notional_exposure = position_value_per_unit * final_qty
-
-        return PositionSizing(
-            qty=final_qty,
-            risk_based_qty=max(int(risk_qty), 0),
-            capital_based_qty=max(int(cap_qty), 0),
-            margin_based_qty=(max(int(margin_qty), 0) if margin_qty is not None else None),
-            initial_margin_req=init_req_total,
-            exposure_req=notional_exposure,
-        )
-
-    @staticmethod
-    def calculate_capital_required(price_per_unit, qty, unit_multiplier=1, actual_margin_required=None):
-        if actual_margin_required is not None and actual_margin_required > 0:
-            return float(actual_margin_required) * max(int(qty or 0), 0)
-        return max(float(price_per_unit or 0.0), 0.0) * max(int(qty or 0), 0) * max(int(unit_multiplier or 1), 1)
-
-    def validate_trade(self, qty, capital_required):
-        qty = int(qty or 0)
-        capital_required = float(capital_required or 0.0)
-        if qty <= 0:
-            return False, "Quantity is zero; risk budget or capital cap is too small."
-        if self.investment_capital <= 0:
-            return False, "Investment capital must be greater than zero."
-        if capital_required > self.position_capital_budget() + 1e-9:
-            return False, "Position margin/capital requirement exceeds maximum position-capital limit."
-        return True, "OK"
-
-    @staticmethod
-    def calculate_risk_reward(entry, stop, target):
-        risk = abs(float(entry) - float(stop))
-        reward = abs(float(target) - float(entry))
-        if risk <= 0:
-            return 0.0
-        return round(reward / risk, 2)
-
-    def calculate_portfolio_heat(self, risk_amounts):
-        total = sum(float(x or 0.0) for x in risk_amounts)
-        if self.investment_capital <= 0:
-            return 0.0
-        return total / self.investment_capital * 100.0
 
 
 DEFAULT_DB_PATH = os.environ.get("QUANT_DB_PATH") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "market_cache.sqlite3")
@@ -695,6 +581,30 @@ def get_validation_store(db_path=DEFAULT_DB_PATH):
 
 PIT_STORE = get_point_in_time_store(DEFAULT_DB_PATH)
 VALIDATION_STORE = get_validation_store(DEFAULT_DB_PATH)
+
+
+@st.cache_resource(show_spinner=False)
+def get_model_registry(db_path=DEFAULT_DB_PATH):
+    registry = ModelRegistry(_cache_connect, db_path)
+    for regime_name in ("TRENDING_BULL", "TRENDING_BEAR", "SIDEWAYS", "HIGH_VOLATILITY"):
+        registry.register(
+            f"equity-{regime_name.lower()}-v1", "platt_logistic", regime_name, "1",
+            "champion", artifact={}, metrics={}, status="AWAITING_VALIDATION",
+        )
+    registry.register(
+        "equity-global-challenger-v1", "platt_logistic", "GLOBAL", "1",
+        "challenger", artifact={}, metrics={}, status="SHADOW",
+    )
+    return registry
+
+
+@st.cache_resource(show_spinner=False)
+def get_mutual_fund_archive(db_path=DEFAULT_DB_PATH):
+    return MutualFundArchive(_cache_connect, db_path)
+
+
+MODEL_REGISTRY = get_model_registry(DEFAULT_DB_PATH)
+MF_ARCHIVE = get_mutual_fund_archive(DEFAULT_DB_PATH)
 
 st.markdown("""
     <style>
@@ -2256,7 +2166,7 @@ def get_scan_coordinator():
 
 @st.cache_resource
 def get_scan_jobs():
-    return ScanJobs()
+    return ScanJobs(DEFAULT_DB_PATH)
 
 
 class PerUserQuota:
@@ -3774,7 +3684,18 @@ def fetch_option_chain(instrument_key, expiry, token):
         with get_robust_session() as session:
             res = upstox_request("GET", url, session=session, headers=headers, params=params, timeout=(3, 8))
             if res.status_code == 200:
-                return res.json().get("data", []) or []
+                rows = res.json().get("data", []) or []
+                validated = []
+                for row in rows:
+                    if not isinstance(row, dict) or row.get("strike_price") is None:
+                        raise ProviderContractError(ProviderErrorKind.SCHEMA, "Option-chain row lacks strike_price")
+                    for side in ("call_options", "put_options"):
+                        option = row.get(side)
+                        if option:
+                            OptionMarketData.parse(option.get("market_data") or {})
+                            OptionGreeks.parse(option.get("option_greeks") or {})
+                    validated.append(row)
+                return validated
     except Exception as e:
         LOGGER.debug("Suppressed exception: %s", e)
         pass
@@ -5575,6 +5496,16 @@ elif selected_tab == "Options & Derivatives Chain":
         # of actual provider rows—not PCR—is what proves the chain is live.
         using_live_chain = True
 
+    iv_surface_frame = pd.DataFrame()
+    if using_live_chain and underlying_ltp and selected_expiry:
+        try:
+            iv_surface_frame = normalize_iv_surface(
+                live_chain_data, underlying_ltp, pd.Timestamp(selected_expiry) + pd.Timedelta(hours=15, minutes=30),
+                now=datetime.datetime.now(IST),
+            )
+        except Exception as exc:
+            LOGGER.warning("IV surface validation failed: %s", type(exc).__name__)
+
     hist_for_iv = fetch_upstox_history(live_key, access_token, days=400)
     iv_percentile_proxy = realized_vol_percentile(hist_for_iv)
 
@@ -6231,6 +6162,15 @@ elif selected_tab == "Options & Derivatives Chain":
         col_m2.metric("Put-Call Ratio (PCR)", f"{pcr_val}" if pcr_val is not None else "N/A")
         col_m3.metric("Estimated Max Pain", f"₹{max_pain_strike}" if max_pain_strike is not None else "N/A")
         col_m4.metric("Live ATM IV", f"{atm_iv_live:.1f}%" if atm_iv_live is not None else "N/A")
+        if not iv_surface_frame.empty:
+            valid_greeks_pct = float(iv_surface_frame["greeks_valid"].mean() * 100.0)
+            surface_outliers = int(iv_surface_frame["surface_outlier"].sum())
+            st.caption(
+                f"Normalized IV surface: {len(iv_surface_frame)} contracts across moneyness/DTE · "
+                f"Greek validity {valid_greeks_pct:.1f}% · robust surface outliers {surface_outliers}."
+            )
+            if valid_greeks_pct < 90 or surface_outliers:
+                st.warning("Some provider Greeks failed consistency checks or are IV-surface outliers. Treat affected option proposals as lower confidence.")
         col_m5.metric("Lot Size", f"{lot_size}" if lot_size else "N/A")
 
         col_iv1, col_iv2 = st.columns(2)
@@ -6674,7 +6614,11 @@ elif selected_tab == "Equities Screener & Risk":
             if current:
                 elapsed = int(time.time() - current["started_at"])
                 st.progress(current["processed"] / max(current["total"], 1),
-                            text=f"Processed {current['processed']}/{current['total']} candidates · {elapsed}s")
+                            text=f"Processed {current['processed']}/{current['total']} candidates · {elapsed}s"
+                                 + (f" · ETA ~{current['eta_seconds']}s" if current.get('eta_seconds') is not None else ""))
+                if st.button("Cancel scan", key=f"cancel_scan_{current['id']}"):
+                    _jobs.cancel(CURRENT_USER_ID, _signature)
+                    st.warning("Cancellation requested. Running provider calls will drain; late results are discarded.")
                 st.caption("Analysis continues through navigation and script reruns. Late data responses are bounded; incomplete results are labelled.")
         scan_progress()
 
@@ -6912,7 +6856,7 @@ elif selected_tab == "Equities Screener & Risk":
                         vol_rising = vol_prev_avg > 0 and current_vol > vol_prev_avg
                         if not (adx_rising and atr_expanding and vol_rising):
                             analysis_timing_log.append(("false_breakout_filter", time.perf_counter() - _breakout_t0))
-                        return _reject("Volume", "Breakout not confirmed: ADX, volume, and ATR aren't all rising together")
+                            return _reject("Volume", "Breakout not confirmed: ADX, volume, and ATR aren't all rising together")
                     analysis_timing_log.append(("false_breakout_filter", time.perf_counter() - _breakout_t0))
 
                 sl, tgt, rr_ratio, levels = derive_long_trade_levels(
@@ -6920,11 +6864,18 @@ elif selected_tab == "Equities Screener & Risk":
                 )
                 if sl is None or tgt is None or not 0 < sl < price < tgt:
                     return _reject("Risk:Reward", "Invalid structural trade levels")
-                cost_per_share = price * 0.003
+                average_daily_value = float(pd.to_numeric(df_clean['Volume'], errors='coerce').tail(20).mean()) * price
+                market_data = raw_quote.get("market_data") or raw_quote
+                cost_estimate = estimate_execution_cost(
+                    price=price, bid=market_data.get("bid_price"), ask=market_data.get("ask_price"),
+                    order_value=risk_engine.position_capital_budget(), average_daily_value=average_daily_value,
+                    asset_class="equity",
+                )
+                cost_per_share = price * cost_estimate.round_trip_bps / 10_000.0
                 risk_per_share = risk_engine.calculate_risk_per_unit(price, sl, cost_buffer=cost_per_share)
                 rr_ratio = (tgt - price - cost_per_share) / risk_per_share if risk_per_share > 0 else 0
                 if rr_ratio < 1.35:
-                    return _reject("Risk:Reward", f"Net reward:risk {rr_ratio:.2f} is below 1.35 after estimated 0.30% costs")
+                    return _reject("Risk:Reward", f"Net reward:risk {rr_ratio:.2f} is below 1.35 after estimated {cost_estimate.round_trip_bps:.0f} bps costs")
                 if risk_per_share <= 0:
                     return _reject("Data", "Invalid risk-per-share calculation")
                 # Reference qty for this screener signal (shows risk % per share
@@ -7108,7 +7059,7 @@ elif selected_tab == "Equities Screener & Risk":
                     "Risk Summary": f"Risk {risk_pct:.1f}% → Reward +{exp_return_pct:.1f}% (1:{r_multiple})",
                     "Risk:Reward": risk_reward_str,
                     "Risk %": round(risk_pct, 2),
-                    "Estimated Costs": "0.30% round trip; actual costs/gaps vary",
+                    "Estimated Costs": f"{cost_estimate.round_trip_bps:.0f} bps round trip (spread/slippage/impact/statutory estimate)",
                     "Target Move (scenario)": f"+{exp_return_pct:.2f}%",
                     "Historical Win Rate": f"{historical_win_prob:.1f}%" if historical_win_prob is not None else "N/A",
                     "Probability 95% CI": probability_ci,
@@ -7146,6 +7097,7 @@ elif selected_tab == "Equities Screener & Risk":
                     "_sl": float(sl), "_tgt": float(tgt),
                     "_resistance60": float(levels.get("resistance60")) if levels and levels.get("resistance60") else None,
                     "_risk_per_share": float(risk_per_share),
+                    "_execution_cost_bps": float(cost_estimate.round_trip_bps),
                     "score": float(score),
                 }, None
             except Exception as exc:
@@ -7173,53 +7125,31 @@ elif selected_tab == "Equities Screener & Risk":
     def select_diversified_top_n(signals, n=10, corr_threshold=0.75, max_sector_pct=30.0):
         if not signals:
             return []
-        # No capital-based heat budget anymore — diversification is by correlation/sector only.
-        heat_budget = float('inf')
-        ranked = sorted(signals, key=lambda x: x['score'], reverse=True)
+        from quantitative_services import optimize_portfolio as _optimize_portfolio
+        return _optimize_portfolio(
+            signals, max_positions=n, max_sector_weight=max_sector_pct / 100.0,
+            correlation_limit=corr_threshold, risk_budget=1.0,
+        )
 
-        returns_map = {
-            s["Ticker"]: s["_returns"] for s in ranked
-            if s.get("_returns") is not None and not s["_returns"].empty
-        }
-        corr_matrix = pd.DataFrame(returns_map).corr(min_periods=30) if len(returns_map) >= 2 else pd.DataFrame()
+    def attach_shadow_cross_sectional_scores(signals):
+        if not signals:
+            return signals
+        rows = []
+        for index, signal in enumerate(signals):
+            components = signal.get("_score_components", {})
+            rows.append({
+                "_index": index, "Sector": signal.get("Sector"),
+                "Momentum": components.get("Momentum", (50, 0))[0],
+                "Relative Strength": components.get("Relative Strength", (50, 0))[0],
+                "Volume": components.get("Volume", (50, 0))[0],
+                "Liquidity": signal.get("_price_val", 0),
+            })
+        scored = cross_sectional_scores(pd.DataFrame(rows), ["Momentum", "Relative Strength", "Volume"])
+        for row in scored.to_dict("records"):
+            signals[int(row["_index"])]["_shadow_cross_sectional_score"] = round(float(row["Cross-sectional Score"]), 1)
+        return signals
 
-        selected, rejected = [], []
-        cumulative_risk = 0.0
-        sector_allocation_counts = {}
-
-        for cand in ranked:
-            if len(selected) >= n:
-                break
-            if cumulative_risk + cand["_risk_amt"] > heat_budget:
-                continue
-
-            sec = cand.get("_sector", "Other")
-            current_sector_count = sector_allocation_counts.get(sec, 0)
-            max_allowed_sector_picks = max(1, int(n * (max_sector_pct / 100.0)))
-            if current_sector_count >= max_allowed_sector_picks:
-                rejected.append(cand)
-                continue
-
-            too_correlated = False
-            for sel in selected:
-                try:
-                    if not corr_matrix.empty and cand["Ticker"] in corr_matrix.index and sel["Ticker"] in corr_matrix.columns:
-                        corr_val = corr_matrix.loc[cand["Ticker"], sel["Ticker"]]
-                        if pd.notna(corr_val) and corr_val > corr_threshold:
-                            too_correlated = True
-                            break
-                except Exception as e:
-                    LOGGER.debug("Suppressed exception: %s", e)
-                    continue
-            if too_correlated:
-                rejected.append(cand)
-            else:
-                selected.append(cand)
-                cumulative_risk += cand["_risk_amt"]
-                sector_allocation_counts[sec] = current_sector_count + 1
-
-        # Never loosen diversification limits simply to fill ten rows.
-        return selected
+    valid_signals = attach_shadow_cross_sectional_scores(valid_signals)
 
     _rank_started = time.perf_counter()
     display_signals = select_diversified_top_n(valid_signals, n=10, corr_threshold=0.75, max_sector_pct=30.0)
@@ -7240,6 +7170,12 @@ elif selected_tab == "Equities Screener & Risk":
         if funnel_stats.get("quote_at"):
             stamp = datetime.datetime.fromtimestamp(funnel_stats["quote_at"], IST)
             st.caption(f"Quotes retrieved around {stamp:%d %b %Y %H:%M:%S} IST. Cached results are snapshots, not continuously repriced orders.")
+        previous_scan = _jobs.previous_completed(CURRENT_USER_ID, _job.get("id") if _job else None)
+        if previous_scan:
+            prior = previous_scan.get("summary", {})
+            prior_picks = len(prior.get("signals", []))
+            current_picks = len(valid_signals)
+            st.caption(f"Previous completed scan comparison: {current_picks-prior_picks:+d} passed setups ({current_picks} now vs {prior_picks} previously).")
     total_rejected = sum(rejection_counts.values())
     if rejection_counts or valid_signals or _scan_result_available:
         with st.expander(f"Diagnostics ▾ — {len(valid_signals)} passed, {total_rejected} rejected", expanded=not valid_signals):
@@ -7339,7 +7275,8 @@ elif selected_tab == "Equities Screener & Risk":
             entry = sig["_price_val"]
             sl_val, tgt_val = sig["_sl"], sig["_tgt"]
             resistance60 = sig.get("_resistance60")
-            cost_per_share = entry * 0.003  # illustrative round-trip cost
+            estimated_cost_bps = float(sig.get("_execution_cost_bps", 30.0))
+            cost_per_share = entry * estimated_cost_bps / 10_000.0
             risk_per_share = sig["_risk_per_share"]
 
             # Genuine risk-based position size using the SAME risk_engine already
@@ -7354,7 +7291,7 @@ elif selected_tab == "Equities Screener & Risk":
                                 0 <= time.time() - float(funnel_stats.get("quote_at", 0)) <= 60)
             real_qty = max(min(risk_qty, cap_qty), 0) if sizing_available else 0
             capital_required = (entry + cost_per_share) * real_qty
-            st.caption(f"Sizing: capital ₹{investment_capital:,.0f}; risk {max_risk_pct:.1f}%; position cap {max_position_pct:.1f}%; estimated round-trip costs 0.30%. Gaps can exceed planned loss.")
+            st.caption(f"Sizing: capital ₹{investment_capital:,.0f}; risk {max_risk_pct:.1f}%; position cap {max_position_pct:.1f}%; estimated round-trip costs {estimated_cost_bps:.0f} bps. Gaps can exceed planned loss.")
             if not sizing_available:
                 st.info(sig.get("_action_reason") or "Sizing unavailable: refresh during a verified open session with quotes under 60 seconds old.")
 
@@ -7420,6 +7357,22 @@ elif selected_tab == "Equities Screener & Risk":
                         st.caption(f"• {name}: {contrib:.1f}")
                 else:
                     st.caption("No components scored meaningfully below neutral.")
+            st.markdown("**Decision completeness**")
+            missing = []
+            if sig.get("Historical Win Rate") == "N/A":
+                missing.append("validated historical edge")
+            if sig.get("Sector") == "Unclassified":
+                missing.append("verified sector classification")
+            if sig.get("RS vs Nifty50") == "N/A":
+                missing.append("benchmark-relative strength")
+            distance_high = max(78.0 - float(sig.get("score", 0)), 0.0)
+            st.caption(
+                f"Blocking rule: none—the setup passed every enabled hard rule. "
+                f"Distance to High-conviction threshold: {distance_high:.1f} points. "
+                f"Missing evidence: {', '.join(missing) if missing else 'none in the displayed rule set'}. "
+                f"Shadow cross-sectional score: {sig.get('_shadow_cross_sectional_score', 'N/A')} "
+                "(not used until out-of-sample validation passes)."
+            )
 
         # === TOP STOCKS — clean ranked list, no score components shown here ===
         def _signal_label(sig_strength):
@@ -7921,6 +7874,19 @@ elif selected_tab == "Mutual Funds":
                                 histories, compute_mf_returns, rank_mf_results, selected_mf_category,
                                 cost_pct=mf_test_cost,
                             )
+                        archive_rows = []
+                        for candidate in candidates:
+                            code = str(candidate["schemeCode"])
+                            disclosure = disclosures.get("records", {}).get(code, {})
+                            ter_record = ter_map.get(_normalize_mf_base_name(candidate.get("schemeName", "")), {})
+                            archive_rows.append({
+                                "scheme_code": code, "scheme_name": candidate.get("schemeName"),
+                                "category": candidate.get("categorySub", selected_mf_category),
+                                "ter": ter_record.get("ter"), "benchmark_name": disclosure.get("benchmark_name"),
+                                "riskometer": disclosure.get("riskometer"), "aum": candidate.get("aumCrore"),
+                                "status": "active",
+                            })
+                        MF_ARCHIVE.archive(archive_rows, source="AMFI NAV/TER and same-dated official disclosures")
                         st.session_state["mf_research_result"] = {
                             "ranked": ranked, "category": selected_mf_category, "disclosures": disclosures,
                             "validation": validation, "candidate_count": len(candidates),
