@@ -52,7 +52,7 @@ class SourceRegressionTests(unittest.TestCase):
         self.assertIn("ProviderCircuitBreaker", SOURCE)
 
     def test_mutual_fund_provider_fallbacks_and_failure_cache_safety(self):
-        self.assertIn("https://www.amfiindia.com/spages/NAVAll.txt", SOURCE)
+        self.assertIn("https://portal.amfiindia.com/spages/NAVOpen.txt", SOURCE)
         self.assertIn("https://api.tigzig.com/mf/v1/download?format=latest.csv.gz", SOURCE)
         self.assertIn("https://api.tigzig.com/mf/v1/nav", SOURCE)
         self.assertIn("st.cache_data does not cache exceptions", SOURCE)

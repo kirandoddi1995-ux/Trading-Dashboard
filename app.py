@@ -7,7 +7,7 @@ import smc_analysis as smc
 from feature_store import TechnicalFeatureStore, compute_feature_frame
 from point_in_time import PointInTimeStore
 from prediction_validation import (
-    STRATEGY_VERSION, TARGET_VERSION, TargetDefinition, ValidationStore,
+    STRATEGY_VERSION, TARGET_VERSION, PRODUCTION_CALIBRATION_POLICY, TargetDefinition, ValidationStore,
     compute_forward_target, run_purged_walk_forward_validation, scanner_composite_score,
 )
 from market_data_gateway import get_market_data_gateway
@@ -19,6 +19,7 @@ from iv_surface import normalize_iv_surface
 from model_registry import ModelRegistry
 from mf_archive import MutualFundArchive
 from risk_engine import RiskEngine
+from production_repository import ProductionRepository
 import pandas as pd
 import numpy as np
 import requests
@@ -52,7 +53,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("god_mode_quant")
-APP_BUILD = "v18.0-PRODUCTION-FOUNDATION"
+APP_BUILD = "v19.0-DURABLE-VALIDATION"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
 OBSERVABILITY = observability.get_registry()
 MARKET_DATA_GATEWAY = get_market_data_gateway()
@@ -633,6 +634,42 @@ def _server_secret(name, default=""):
         return str(value) if value is not None else str(default)
     except Exception:
         return str(default)
+
+
+@st.cache_resource(show_spinner=False)
+def get_production_repository(database_url=""):
+    return ProductionRepository(database_url or os.environ.get("DATABASE_URL"))
+
+
+DURABLE_REPOSITORY = get_production_repository(
+    _server_secret("DATABASE_URL") or os.environ.get("DATABASE_URL", "")
+)
+
+
+def _durable_sync_local_scanner(as_of_date, strategy_version):
+    """Batch-copy local scanner evidence; failures never erase the live result."""
+    if not DURABLE_REPOSITORY.configured or not as_of_date or not strategy_version:
+        return 0
+    conn = _cache_connect(DEFAULT_DB_PATH)
+    try:
+        rows = conn.execute("""
+            SELECT observation_id,as_of_date,observed_at,instrument_key,trading_symbol,strategy_version,
+                   universe_snapshot_date,stage1_pass,stage2_pass,rejection_reason,score,entry,stop,target,feature_json
+            FROM scanner_observations WHERE as_of_date=? AND strategy_version=?
+            ORDER BY instrument_key
+        """, (str(as_of_date), str(strategy_version))).fetchall()
+    finally:
+        conn.close()
+    records = []
+    for row in rows:
+        records.append({
+            "observation_id": row[0], "as_of_date": row[1], "observed_at": row[2],
+            "instrument_key": row[3], "trading_symbol": row[4], "strategy_version": row[5],
+            "universe_snapshot_date": row[6], "stage1_pass": bool(row[7]), "stage2_pass": bool(row[8]),
+            "rejection_reason": row[9], "score": row[10], "entry": row[11], "stop": row[12],
+            "target": row[13], "features": json.loads(row[14] or "{}"),
+        })
+    return DURABLE_REPOSITORY.upsert_scanner_observations(records)
 
 
 # No login is required. Never assign unrelated browser visitors the same owner.
@@ -1755,7 +1792,10 @@ st.sidebar.caption(f"Access: {CURRENT_USER_DISPLAY}")
 # Credentials remain server-side. They are never used as widget defaults and
 # never sent to the browser. Rotate them in the provider consoles and update
 # Streamlit Secrets; source-code changes alone cannot rotate external keys.
-access_token = os.environ.get("UPSTOX_TOKEN") or _server_secret("UPSTOX_TOKEN")
+access_token = (
+    os.environ.get("UPSTOX_ANALYTICS_TOKEN") or _server_secret("UPSTOX_ANALYTICS_TOKEN")
+    or os.environ.get("UPSTOX_TOKEN") or _server_secret("UPSTOX_TOKEN")
+)
 gemini_api_key = os.environ.get("GEMINI_API_KEY") or _server_secret("GEMINI_API_KEY")
 for _handler in logging.getLogger().handlers:
     for _filter in list(_handler.filters):
@@ -2656,6 +2696,14 @@ def get_full_nse_instrument_dictionary():
                 nse_df, snapshot_date=datetime.datetime.now(IST).date(),
                 source="Upstox BOD NSE JSON",
             )
+            try:
+                if DURABLE_REPOSITORY.configured:
+                    DURABLE_REPOSITORY.archive_universe(
+                        nse_df.to_dict("records"), datetime.datetime.now(IST).date(),
+                        source="Upstox BOD NSE JSON",
+                    )
+            except Exception as durable_exc:
+                LOGGER.error("Durable universe archival failed: %s", type(durable_exc).__name__)
             LOGGER.info(
                 "PIT_UNIVERSE: date=%s instruments=%d complete=%s changed=%s",
                 snapshot["date"], snapshot["count"], snapshot["complete"], snapshot["changed"],
@@ -3924,7 +3972,7 @@ MF_HTTP_HEADERS = {
     "User-Agent": "QuantTerminal/14.6 (single-user Streamlit market research app)",
     "Accept": "application/json,text/plain,text/csv,*/*",
 }
-MF_AMFI_SCHEME_URL = "https://www.amfiindia.com/spages/NAVAll.txt"
+MF_AMFI_SCHEME_URL = "https://portal.amfiindia.com/spages/NAVOpen.txt"
 MF_TIGZIG_SNAPSHOT_URL = "https://api.tigzig.com/mf/v1/download?format=latest.csv.gz"
 MF_TIGZIG_NAV_URL = "https://api.tigzig.com/mf/v1/nav"
 MF_MFAPI_BASE_URL = "https://api.mfapi.in/mf"
@@ -4997,6 +5045,26 @@ if selected_tab == "Settings":
     sec1.metric("Access mode", "Session-isolated / no login")
     sec2.metric("Upstox server secret", "Configured" if access_token else "Missing")
     sec3.metric("Gemini server secret", "Configured" if gemini_api_key else "Missing")
+    durable_health = DURABLE_REPOSITORY.health() if DURABLE_REPOSITORY.configured else {
+        "configured": False, "connected": False, "status": "Not configured"
+    }
+    if durable_health.get("connected"):
+        st.success("Permanent evidence database: connected")
+        try:
+            durable_stats = DURABLE_REPOSITORY.stats()
+            ds1, ds2, ds3, ds4 = st.columns(4)
+            ds1.metric("Permanent universe days", durable_stats.get("universe_days", 0))
+            ds2.metric("Permanent scan records", durable_stats.get("observations", 0))
+            ds3.metric("Exact outcome labels", durable_stats.get("targets", 0))
+            ds4.metric("Official AMFI NAV rows", durable_stats.get("mf_nav_rows", 0))
+            if durable_stats.get("last_successful_collection"):
+                st.caption(f"Last successful scheduled collection: {durable_stats['last_successful_collection']}")
+        except Exception as durable_exc:
+            LOGGER.error("Durable evidence statistics failed: %s", type(durable_exc).__name__)
+    elif durable_health.get("configured"):
+        st.error(f"Permanent evidence database: {durable_health.get('status', 'connection failed')}")
+    else:
+        st.warning("Permanent evidence database is not configured; validation evidence remains local and temporary.")
 
     st.info(
         "Credentials are server-only and are no longer placed in browser inputs. Rotate the existing Upstox and Gemini "
@@ -5013,7 +5081,7 @@ if selected_tab == "Settings":
     with st.expander("Prediction model production standard"):
         st.markdown(
             "Implemented foundation: exact observed NSE membership snapshots, versioned live-scanner evidence, "
-            "5/10/20-session next-open targets, conservative target-before-stop labels, 0.30% round-trip costs, "
+            "5/10/20-session exact intraday execution targets, conservative target-before-stop labels, measured costs, "
             "NIFTY excess returns, purged walk-forward validation with a 20-session embargo, Platt calibration, "
             "Brier/log-loss/reliability metrics, return p10/p50/p90 and a strict No-Trade abstention policy."
         )
@@ -5033,7 +5101,8 @@ if selected_tab == "Settings":
         if pit_coverage["first_date"]:
             st.caption(
                 f"Observed archive coverage: {pit_coverage['first_date']} to {pit_coverage['last_date']}. "
-                "Targets: 5, 10 and 20 sessions; entry is next-session open; same-bar target/stop ambiguity is scored stop-first."
+                "Production targets use first-minute entry after an in-session signal or next-session opening five-minute "
+                "VWAP; one-minute candles resolve target/stop ordering and unresolved same-minute ambiguity is stop-first."
             )
         else:
             st.info("No complete NSE universe snapshot has been archived yet. Open the equity scanner once with provider access.")
@@ -5069,6 +5138,11 @@ if selected_tab == "Settings":
                     )
                     if target_label is not None:
                         VALIDATION_STORE.save_target(observation["observation_id"], target_label)
+                        try:
+                            if DURABLE_REPOSITORY.configured:
+                                DURABLE_REPOSITORY.save_prediction_target(observation["observation_id"], target_label)
+                        except Exception as durable_exc:
+                            LOGGER.error("Durable target sync failed: %s", type(durable_exc).__name__)
                         label_count += 1
             if label_count:
                 st.success(f"Stored {label_count} newly matured, cost-adjusted outcome labels.")
@@ -5079,9 +5153,21 @@ if selected_tab == "Settings":
             validation_messages = []
             for horizon in (5, 10, 20):
                 dataset = VALIDATION_STORE.validation_dataset(horizon)
-                result = run_purged_walk_forward_validation(dataset, folds=5, embargo_sessions=20)
+                result = run_purged_walk_forward_validation(
+                    dataset, folds=5, embargo_sessions=20, policy=PRODUCTION_CALIBRATION_POLICY,
+                )
                 if result["status"] != "INSUFFICIENT_EVIDENCE":
-                    VALIDATION_STORE.save_validation_run(result, horizon, strategy_version=STRATEGY_VERSION)
+                    validation_run_id = VALIDATION_STORE.save_validation_run(
+                        result, horizon, strategy_version=STRATEGY_VERSION
+                    )
+                    try:
+                        if DURABLE_REPOSITORY.configured:
+                            DURABLE_REPOSITORY.save_validation_run(
+                                validation_run_id, result, horizon_sessions=horizon,
+                                strategy_version=STRATEGY_VERSION, target_version=TARGET_VERSION,
+                            )
+                    except Exception as durable_exc:
+                        LOGGER.error("Durable validation sync failed: %s", type(durable_exc).__name__)
                 validation_messages.append(f"{horizon} sessions: {result['status']} — {result['reason']}")
             st.info("\n\n".join(validation_messages))
 
@@ -6643,6 +6729,12 @@ elif selected_tab == "Equities Screener & Risk":
         st.session_state[f"last_funnel_stats_{_diag_suffix}"] = funnel_stats
         st.session_state[f"last_scan_timing_{_diag_suffix}"] = scan_timing
         st.session_state[f"applied_job_{_diag_suffix}"] = _job["id"]
+        try:
+            _durable_sync_local_scanner(
+                _job["metadata"].get("as_of_date"), _job["metadata"].get("strategy_version"),
+            )
+        except Exception as durable_exc:
+            LOGGER.error("Durable completed-scan sync failed: %s", type(durable_exc).__name__)
         run_scan_now = False
         if _job.get("error"):
             st.error(f"Scan controller failed ({_job['error']}); results are incomplete.")
@@ -6692,6 +6784,10 @@ elif selected_tab == "Equities Screener & Risk":
             )
         except Exception as exc:
             LOGGER.error("PIT Stage-1 evidence archival failed: %s", exc)
+        try:
+            _durable_sync_local_scanner(_scan_as_of_date, _scanner_strategy_version)
+        except Exception as exc:
+            LOGGER.error("Durable Stage-1 evidence sync failed: %s", type(exc).__name__)
         scan_stage_status.info(
             f"Stage 1 complete — {funnel_stats.get('quoted', 0):,}/{funnel_stats.get('universe_size', len(universe_tickers)):,} "
             f"quotes received. Stage 2 of 2 — running full technical/history analysis on "
@@ -6759,12 +6855,15 @@ elif selected_tab == "Equities Screener & Risk":
                 if not key:
                     return
                 try:
+                    evidence_features = dict(features or {})
+                    evidence_features.setdefault("market_regime", market_regime)
+                    evidence_features.setdefault("scan_mode", scan_mode)
                     PIT_STORE.record_scanner_observation(
                         as_of_date=_scan_as_of_date, instrument_key=key, trading_symbol=ticker,
                         strategy_version=_scanner_strategy_version,
                         universe_snapshot_date=_scan_as_of_date, stage1_pass=True,
                         stage2_pass=passed, rejection_reason=(f"{category}: {reason}" if reason else None),
-                        score=score, entry=entry, stop=stop, target=target, features=features or {},
+                        score=score, entry=entry, stop=stop, target=target, features=evidence_features,
                     )
                 except Exception as archive_exc:
                     LOGGER.error("PIT Stage-2 evidence archival failed for %s: %s", ticker, archive_exc)
@@ -7037,6 +7136,7 @@ elif selected_tab == "Equities Screener & Risk":
                         "rsi": (float(rsi_val) if pd.notna(rsi_val) else None),
                         "supertrend_bullish": bool(supertrend_bullish), "weekly_trend": weekly_trend,
                         "volume_pace_ratio": volume_pace_ratio, "relative_strength": rs_vs_nifty,
+                        "execution_cost_bps": float(cost_estimate.round_trip_bps),
                     },
                 )
                 return {
@@ -7108,7 +7208,10 @@ elif selected_tab == "Equities Screener & Risk":
         try:
             _jobs.start(CURRENT_USER_ID, _signature, stage1_shortlist, evaluate_stock,
                         workers=scan_workers, timeout=180 if scan_mode.startswith("Full") else 90,
-                        metadata={"funnel": funnel_stats, "timing": scan_timing, "quote_at": time.time()})
+                        metadata={
+                            "funnel": funnel_stats, "timing": scan_timing, "quote_at": time.time(),
+                            "as_of_date": _scan_as_of_date, "strategy_version": _scanner_strategy_version,
+                        })
         except ScanBusy:
             st.warning("A scan is active or its timed-out requests are draining. Wait for it to finish, then retry.")
         else:

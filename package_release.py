@@ -13,12 +13,14 @@ RUNTIME = ['app.py', 'app_runtime.py', 'scan_jobs.py', 'reliable_charts.py',
            'point_in_time.py', 'prediction_validation.py',
            'provider_contracts.py', 'quantitative_services.py', 'iv_surface.py',
            'model_registry.py', 'mf_archive.py', 'risk_engine.py', 'deployment_canary.py',
+           'production_repository.py', 'amfi_ingestion.py', 'scheduled_collector.py',
            'requirements.txt', 'constraints.txt']
 FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_GUIDE.md',
                    'FIX_VERIFICATION_2026-08-31.md', 'provider_smoke.py', 'package_release.py',
                    'tests/test_regressions.py', 'tests/test_mf_research.py', 'tests/test_audit_fixes.py',
                    'tests/test_performance_foundation.py', 'tests/test_prediction_validation.py',
-                   'tests/test_remaining_upgrades.py', '.github/workflows/quality.yml']
+                   'tests/test_remaining_upgrades.py', 'tests/test_production_data_pipeline.py',
+                   '.github/workflows/quality.yml', '.github/workflows/scheduled-collector.yml']
 
 
 def package():
@@ -26,7 +28,7 @@ def package():
     if not canaries['ok']:
         raise RuntimeError(f"Release canaries failed: {canaries['checks']}")
     manifest = {}
-    archive = ROOT / 'release-v18.0-production-foundation.zip'
+    archive = ROOT / 'release-v19.0-durable-validation.zip'
     for name in FILES:
         path = (ROOT / name).resolve()
         if not path.is_relative_to(ROOT) or not path.is_file():

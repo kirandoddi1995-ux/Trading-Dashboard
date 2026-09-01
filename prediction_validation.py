@@ -15,8 +15,9 @@ import pandas as pd
 from scipy.optimize import minimize
 
 
-TARGET_VERSION = "net-excess-next-open-v1"
-STRATEGY_VERSION = "equity-scanner-v16.2"
+TARGET_VERSION = "net-excess-execution-v2"
+FALLBACK_TARGET_VERSION = "net-excess-next-open-fallback-v1"
+STRATEGY_VERSION = "equity-scanner-v19.0"
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,31 @@ class CalibrationPolicy:
     minimum_probability: float = 0.60
     minimum_probability_margin: float = 0.05
     minimum_pit_coverage: float = 0.90
+    minimum_monitoring_days: int = 0
+    credible_training_samples: int = 0
+    credible_observation_days: int = 0
+    minimum_regime_samples: int = 0
+    minimum_confidence_band_samples: int = 0
+
+
+# The production UI uses a deliberately stricter policy than the reusable
+# validator defaults. Five hundred completed labels over sixty trading dates
+# permits monitoring; investment-grade language remains blocked until the
+# longer, diversified evidence requirements are met.
+PRODUCTION_CALIBRATION_POLICY = CalibrationPolicy(
+    minimum_training_samples=500,
+    minimum_class_samples=75,
+    minimum_oos_samples=500,
+    maximum_ece=0.08,
+    minimum_probability=0.60,
+    minimum_probability_margin=0.05,
+    minimum_pit_coverage=0.90,
+    minimum_monitoring_days=60,
+    credible_training_samples=2000,
+    credible_observation_days=252,
+    minimum_regime_samples=200,
+    minimum_confidence_band_samples=100,
+)
 
 
 def _frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -47,38 +73,107 @@ def _frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_forward_target(prices: pd.DataFrame, as_of_date, definition: TargetDefinition,
-                           stop: float, target: float, benchmark: pd.DataFrame | None = None) -> dict | None:
-    """Label a signal without using the signal day's closing price as entry."""
+                           stop: float, target: float, benchmark: pd.DataFrame | None = None,
+                           intraday: pd.DataFrame | None = None, signal_timestamp=None) -> dict | None:
+    """Label a long signal with explicit execution and conservative sequencing.
+
+    Exact production labels use one-minute candles. After-market signals enter
+    at the next session's opening five-minute OHLCV-VWAP proxy; during-market
+    signals enter at the first one-minute open strictly after the signal. The
+    legacy daily-open path remains available only as clearly versioned fallback
+    evidence and is never mixed into production validation.
+    """
     prices = _frame(prices)
     after = prices.loc[prices.index > pd.Timestamp(as_of_date)]
-    if len(after) < definition.horizon_sessions or not {"Open", "High", "Low", "Close"}.issubset(after.columns):
+    required = {"Open", "High", "Low", "Close"}
+    if not required.issubset(prices.columns):
         return None
+    intraday_frame = _frame(intraday) if intraday is not None and not intraday.empty else pd.DataFrame()
+    entry_quality = "daily_open_fallback"
+    entry_timestamp = None
     window = after.iloc[:definition.horizon_sessions]
+    if window.empty:
+        return None
     entry = float(window.iloc[0]["Open"])
+
+    if definition.entry_rule == "exact_intraday":
+        if intraday_frame.empty or not required.issubset(intraday_frame.columns):
+            return None
+        signal_ts = pd.Timestamp(signal_timestamp) if signal_timestamp is not None else None
+        if signal_ts is not None:
+            if signal_ts.tzinfo is not None:
+                signal_ts = signal_ts.tz_convert("Asia/Kolkata").tz_localize(None)
+            candidates = intraday_frame.loc[intraday_frame.index > signal_ts]
+            if candidates.empty:
+                return None
+            first = candidates.iloc[0]
+            entry_timestamp = candidates.index[0]
+            entry = float(first["Open"])
+            entry_quality = "first_minute_after_signal"
+            entry_day = entry_timestamp.normalize()
+            daily = prices.loc[prices.index.normalize() >= entry_day]
+            if len(daily) < definition.horizon_sessions:
+                return None
+            window = daily.iloc[:definition.horizon_sessions]
+        else:
+            if len(window) < definition.horizon_sessions:
+                return None
+            entry_day = window.index[0].normalize()
+            opening = intraday_frame.loc[intraday_frame.index.normalize() == entry_day].iloc[:5]
+            if len(opening) < 5 or "Volume" not in opening.columns:
+                return None
+            volume = pd.to_numeric(opening["Volume"], errors="coerce").fillna(0.0)
+            typical = opening[["High", "Low", "Close"]].astype(float).mean(axis=1)
+            if float(volume.sum()) <= 0:
+                return None
+            entry = float((typical * volume).sum() / volume.sum())
+            entry_timestamp = opening.index[-1]
+            entry_quality = "next_session_opening_5m_ohlcv_vwap"
+    elif len(window) < definition.horizon_sessions:
+        return None
     if not np.isfinite(entry) or entry <= 0:
         return None
     exit_price = float(window.iloc[-1]["Close"])
     outcome = "horizon"
     outcome_date = window.index[-1]
-    # Conservative convention removes unknowable intraday sequencing whenever
-    # both levels occur in the same daily bar.
+    # Daily bars are sufficient unless both levels occur on the same day. Exact
+    # one-minute evidence then resolves ordering; if both levels occur inside
+    # the same minute, the conservative stop-first convention still applies.
     for date, bar in window.iterrows():
-        if float(bar["Low"]) <= float(stop):
+        hit_stop = float(bar["Low"]) <= float(stop)
+        hit_target = float(bar["High"]) >= float(target)
+        if hit_stop and hit_target and not intraday_frame.empty:
+            minute_rows = intraday_frame.loc[intraday_frame.index.normalize() == pd.Timestamp(date).normalize()]
+            if entry_timestamp is not None and pd.Timestamp(date).normalize() == pd.Timestamp(entry_timestamp).normalize():
+                minute_rows = minute_rows.loc[minute_rows.index >= pd.Timestamp(entry_timestamp)]
+            for minute, minute_bar in minute_rows.iterrows():
+                minute_stop = float(minute_bar["Low"]) <= float(stop)
+                minute_target = float(minute_bar["High"]) >= float(target)
+                if minute_stop:
+                    exit_price, outcome, outcome_date = float(stop), "stop", minute
+                    break
+                if minute_target:
+                    exit_price, outcome, outcome_date = float(target), "target", minute
+                    break
+            if outcome != "horizon":
+                break
+        if hit_stop:
             exit_price, outcome, outcome_date = float(stop), "stop", date
             break
-        if float(bar["High"]) >= float(target):
+        if hit_target:
             exit_price, outcome, outcome_date = float(target), "target", date
             break
     gross_return = exit_price / entry - 1.0
     net_return = gross_return - definition.round_trip_cost_bps / 10_000.0
     benchmark_return = None
     if benchmark is not None and not benchmark.empty:
-        bench = _frame(benchmark).reindex(window.index).dropna(subset=["Open", "Close"])
-        if len(bench) == len(window):
+        realized_window = window.loc[:pd.Timestamp(outcome_date)]
+        bench = _frame(benchmark).reindex(realized_window.index).dropna(subset=["Open", "Close"])
+        if len(bench) == len(realized_window):
             benchmark_return = float(bench.iloc[-1]["Close"] / bench.iloc[0]["Open"] - 1.0)
     excess = net_return - benchmark_return if benchmark_return is not None else None
     return {
-        "target_version": TARGET_VERSION,
+        "target_version": TARGET_VERSION if entry_quality != "daily_open_fallback" else FALLBACK_TARGET_VERSION,
         "horizon_sessions": definition.horizon_sessions,
         "entry_date": window.index[0].date().isoformat(),
         "label_end_date": window.index[-1].date().isoformat(),
@@ -89,6 +184,10 @@ def compute_forward_target(prices: pd.DataFrame, as_of_date, definition: TargetD
         "benchmark_return": benchmark_return, "excess_return": excess,
         "positive_excess": (int(excess > 0) if excess is not None else None),
         "cost_bps": definition.round_trip_cost_bps,
+        "entry_rule": definition.entry_rule,
+        "entry_quality": entry_quality,
+        "entry_timestamp": (pd.Timestamp(entry_timestamp).isoformat() if entry_timestamp is not None else None),
+        "same_bar_rule": definition.same_bar_rule,
     }
 
 
@@ -214,6 +313,65 @@ def decide_abstention(probability, metrics, *, training_samples, positive_sample
     return False, "Validated evidence threshold passed"
 
 
+def evidence_maturity(rows: pd.DataFrame, oos_probabilities, policy: CalibrationPolicy) -> dict:
+    """Measure whether evidence is broad enough for credible probability claims."""
+    observed_days = int(pd.to_datetime(rows["as_of_date"], errors="coerce").dt.normalize().nunique())
+    regime_counts = {}
+    if "market_regime" in rows.columns:
+        regimes = rows["market_regime"].fillna("UNKNOWN").astype(str).str.strip().str.upper()
+        regime_counts = {str(key): int(value) for key, value in regimes.value_counts().items()}
+    probabilities = np.asarray(oos_probabilities, dtype=float)
+    trade_probabilities = probabilities[probabilities >= float(policy.minimum_probability)]
+    confidence_counts = {}
+    if len(trade_probabilities):
+        bands = pd.cut(
+            trade_probabilities, bins=[0.60, 0.70, 0.80, 0.90, 1.000001], right=False,
+            labels=["60-70%", "70-80%", "80-90%", "90-100%"],
+        )
+        confidence_counts = {
+            str(key): int(value) for key, value in pd.Series(bands).value_counts(sort=False).items()
+            if int(value) > 0
+        }
+    reasons = []
+    if policy.minimum_monitoring_days and observed_days < policy.minimum_monitoring_days:
+        reasons.append(
+            f"Only {observed_days} trading dates are archived; monitoring requires "
+            f"{policy.minimum_monitoring_days}"
+        )
+    if policy.credible_training_samples and len(rows) < policy.credible_training_samples:
+        reasons.append(
+            f"Only {len(rows)} completed predictions are available; credible validation requires "
+            f"{policy.credible_training_samples}"
+        )
+    if policy.credible_observation_days and observed_days < policy.credible_observation_days:
+        reasons.append(
+            f"Only {observed_days} trading dates are represented; credible validation requires "
+            f"{policy.credible_observation_days}"
+        )
+    if policy.minimum_regime_samples:
+        usable_regimes = {key: value for key, value in regime_counts.items() if key not in {"", "UNKNOWN", "NONE"}}
+        if not usable_regimes:
+            reasons.append("Market-regime evidence is missing")
+        elif min(usable_regimes.values()) < policy.minimum_regime_samples:
+            reasons.append(
+                f"Each observed market regime needs {policy.minimum_regime_samples} completed outcomes"
+            )
+    if policy.minimum_confidence_band_samples:
+        if not confidence_counts:
+            reasons.append("No out-of-sample predictions reached the trade-confidence range")
+        elif min(confidence_counts.values()) < policy.minimum_confidence_band_samples:
+            reasons.append(
+                f"Each used confidence range needs {policy.minimum_confidence_band_samples} out-of-sample outcomes"
+            )
+    return {
+        "credible": not reasons,
+        "observed_trading_days": observed_days,
+        "regime_counts": regime_counts,
+        "confidence_band_counts": confidence_counts,
+        "reasons": reasons,
+    }
+
+
 def run_purged_walk_forward_validation(rows: pd.DataFrame, *, folds=5, embargo_sessions=20,
                                        policy=CalibrationPolicy()) -> dict:
     """Fit only on the past, predict each future fold, then assess calibration.
@@ -257,6 +415,10 @@ def run_purged_walk_forward_validation(rows: pd.DataFrame, *, folds=5, embargo_s
         positive_samples=int(all_y.sum()), negative_samples=int((1 - all_y).sum()),
         pit_coverage=float(clean.get("pit_coverage", pd.Series([1.0])).min()), policy=policy,
     )
+    maturity = evidence_maturity(clean, oos_probability, policy)
+    if not abstain and not maturity["credible"]:
+        abstain = True
+        reason = maturity["reasons"][0]
     returns = clean.iloc[oos_index]["excess_return"].astype(float).to_numpy()
     return {
         "status": "ABSTAIN" if abstain else "VALIDATED",
@@ -269,7 +431,8 @@ def run_purged_walk_forward_validation(rows: pd.DataFrame, *, folds=5, embargo_s
             "p10": float(np.quantile(returns, .10)), "p50": float(np.quantile(returns, .50)),
             "p90": float(np.quantile(returns, .90)),
         },
-        "policy": asdict(policy), "embargo_sessions": int(embargo_sessions),
+        "policy": asdict(policy), "maturity": maturity,
+        "embargo_sessions": int(embargo_sessions),
     }
 
 
@@ -373,9 +536,9 @@ class ValidationStore:
     def validation_dataset(self, horizon_sessions: int) -> pd.DataFrame:
         conn = self._connect()
         try:
-            return pd.read_sql_query("""
+            frame = pd.read_sql_query("""
                 SELECT o.observation_id, o.as_of_date, o.instrument_key, o.trading_symbol,
-                       o.strategy_version, o.score, o.universe_snapshot_date,
+                       o.strategy_version, o.score, o.universe_snapshot_date, o.feature_json,
                        t.label_end_date, t.target_before_stop, t.net_return, t.benchmark_return,
                        t.excess_return
                 FROM scanner_observations o
@@ -387,6 +550,16 @@ class ValidationStore:
             """, conn, params=(int(horizon_sessions), TARGET_VERSION))
         finally:
             conn.close()
+        if frame.empty:
+            frame["market_regime"] = pd.Series(dtype="object")
+            return frame
+        def regime_from_features(value):
+            try:
+                return (json.loads(value or "{}") or {}).get("market_regime")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return None
+        frame["market_regime"] = frame["feature_json"].map(regime_from_features)
+        return frame.drop(columns=["feature_json"])
 
     def save_validation_run(self, result, horizon_sessions, strategy_version=STRATEGY_VERSION) -> str:
         created_at = dt.datetime.now(dt.timezone.utc).isoformat()

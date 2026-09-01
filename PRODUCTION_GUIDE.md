@@ -1,4 +1,39 @@
-# Quant Terminal production guide — v16.0
+# Quant Terminal production guide — v19.0
+
+## Durable evidence collection (v19.0)
+
+The app keeps SQLite as a fast local cache and writes irreplaceable research evidence to the
+`quant_app` schema in the configured Supabase PostgreSQL database. Configure the same Session
+Pooler `DATABASE_URL` in Streamlit Secrets and GitHub repository Actions secrets. Also configure
+the read-only `UPSTOX_ANALYTICS_TOKEN` in both places. Never commit either value.
+
+The `Scheduled evidence collector` GitHub Action runs at 09:25 IST and 15:45 IST on weekdays,
+plus weekly maintenance at 18:00 IST on Saturday. It archives the dated NSE universe, quote
+coverage, exact scanner evidence already produced by the app, exact one-minute execution labels,
+and official AMFI data. Every run is audited as success or failure in PostgreSQL. The collector is
+read-only and contains no order-placement code.
+
+Use GitHub **Actions → Scheduled evidence collector → Run workflow → all** once after deployment.
+The initial connection check creates the schema and fails safely if either secret is missing. A
+successful workflow is the deployment proof; merely seeing secrets listed in GitHub is not.
+
+Production validation never mixes daily-open fallback labels with exact intraday labels. For a
+signal produced during market hours, entry is the first available one-minute open after the
+signal. For an after-market signal, entry is an OHLCV-weighted five-minute opening VWAP proxy on
+the next session. One-minute bars resolve target/stop ordering; a single minute touching both is
+scored stop-first. Benchmark return ends on the actual outcome date rather than the full horizon.
+
+Probability claims remain blocked until all evidence gates pass. Monitoring begins only after at
+least 500 completed predictions across 60 trading dates. Credible validation additionally requires
+2,000 completed predictions across at least 252 trading dates, at least 200 completed outcomes in
+each observed market regime, and at least 100 out-of-sample outcomes in each confidence range used
+for a trade decision. Purged walk-forward folds, a 20-session embargo, costs, Brier score, log loss,
+calibration error and No-Trade abstention remain mandatory.
+
+The official AMFI open-ended report is `NAVOpen.txt`. Only positive-NAV Direct-Growth records that
+are current are eligible for primary rankings. Zero-NAV segregated records, stale schemes, missing
+TER/Riskometer/benchmark/AUM fields and ambiguous scheme matches are never converted to zero or
+invented values. They remain unavailable or are recorded as data-quality evidence.
 
 ## Immediate operator actions
 

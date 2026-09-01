@@ -6,6 +6,7 @@ import pandas as pd
 from point_in_time import PointInTimeStore
 from prediction_validation import (
     CalibrationPolicy,
+    TARGET_VERSION,
     PlattCalibrator,
     TargetDefinition,
     ValidationStore,
@@ -162,7 +163,7 @@ def test_validation_store_uses_only_complete_pit_observations(tmp_path):
         entry=100, stop=90, target=120,
     )
     target = {
-        "horizon_sessions": 5, "target_version": "net-excess-next-open-v1",
+        "horizon_sessions": 5, "target_version": TARGET_VERSION,
         "entry_date": "2026-01-02", "label_end_date": "2026-01-08", "outcome_date": "2026-01-07",
         "outcome": "target", "target_before_stop": 1, "gross_return": .2, "net_return": .197,
         "benchmark_return": .01, "excess_return": .187, "positive_excess": 1, "cost_bps": 30,

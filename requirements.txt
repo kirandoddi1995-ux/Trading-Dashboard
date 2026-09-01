@@ -11,3 +11,4 @@ scipy==1.18.1
 matplotlib==3.11.1
 google-genai==1.75.0
 openpyxl==3.1.5
+psycopg[binary]==3.3.5

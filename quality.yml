@@ -12,7 +12,9 @@ jobs:
         with:
           python-version: '3.13'
           cache: pip
-      - run: pip install -r requirements.txt pytest
+      - run: pip install -r requirements.txt pytest pip-audit
+      - run: python -m pip check
+      - run: python -m pip_audit -r requirements.txt -c constraints.txt
       - run: python -m pytest -q
       - run: python deployment_canary.py
       - run: python package_release.py
