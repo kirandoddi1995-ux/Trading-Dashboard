@@ -8,7 +8,8 @@ def run_canaries(root):
     root=Path(root); checks={}
     app=root/"app.py"; ast.parse(app.read_text(encoding="utf-8")); checks["app_parses"]=True
     for module in ("provider_contracts.py","quantitative_services.py","iv_surface.py","model_registry.py","mf_archive.py",
-                   "production_repository.py","amfi_ingestion.py","scheduled_collector.py","prediction_validation.py"):
+                   "production_repository.py","amfi_ingestion.py","scheduled_collector.py","prediction_validation.py",
+                   "evidence_ledger.py","quant_foundation.py"):
         ast.parse((root/module).read_text(encoding="utf-8")); checks[f"parses:{module}"]=True
     db=sqlite3.connect(":memory:"); checks["sqlite_json"]=db.execute("SELECT json_valid('{}')").fetchone()[0]==1; db.close()
     archives=sorted(root.glob("release-*.zip"),key=lambda p:p.stat().st_mtime,reverse=True)
@@ -17,7 +18,8 @@ def run_canaries(root):
     ignored=(root/".gitignore").read_text(encoding="utf-8") if (root/".gitignore").exists() else ""
     checks["secrets_excluded"]=".streamlit/secrets.toml" in ignored
     example=(root/".streamlit"/"secrets.example.toml").read_text(encoding="utf-8")
-    checks["durable_secret_documented"]="DATABASE_URL" in example and "UPSTOX_ANALYTICS_TOKEN" in example
+    checks["durable_secret_documented"]=("DATABASE_URL" in example and "UPSTOX_ANALYTICS_TOKEN" in example
+                                          and "EVIDENCE_LEDGER_SIGNING_KEY" in example)
     workflow=(root/".github"/"workflows"/"scheduled-collector.yml").read_text(encoding="utf-8")
     checks["scheduled_collector_present"]="scheduled_collector.py" in workflow and "secrets.DATABASE_URL" in workflow
     return {"ok":all(checks.values()),"checks":checks}

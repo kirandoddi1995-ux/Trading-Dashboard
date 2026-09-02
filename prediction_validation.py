@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
+from scipy.stats import norm
 
 
 TARGET_VERSION = "net-excess-execution-v2"
@@ -282,16 +283,129 @@ def calibration_metrics(outcomes, probabilities, bins=10) -> dict:
     baseline = float(np.mean((np.mean(y) - y) ** 2))
     edges = np.linspace(0.0, 1.0, bins + 1)
     reliability, ece = [], 0.0
+    base_rate = float(np.mean(y))
+    calibration_component, resolution_component = 0.0, 0.0
     for index in range(bins):
         mask = (p >= edges[index]) & (p < edges[index + 1] if index < bins - 1 else p <= 1.0)
         if not mask.any():
             continue
         predicted, actual, count = float(p[mask].mean()), float(y[mask].mean()), int(mask.sum())
         ece += count / len(y) * abs(predicted - actual)
+        calibration_component += count / len(y) * (predicted - actual) ** 2
+        resolution_component += count / len(y) * (actual - base_rate) ** 2
+        interval_low, interval_high = wilson_score_interval(int(y[mask].sum()), count)
         reliability.append({"lower": edges[index], "upper": edges[index + 1], "predicted": predicted,
-                            "actual": actual, "count": count})
+                            "actual": actual, "count": count,
+                            "actual_interval_low": interval_low, "actual_interval_high": interval_high})
     return {"samples": len(y), "brier": brier, "baseline_brier": baseline,
+            "brier_skill": (1.0 - brier / baseline if baseline > 0 else None),
+            "brier_reliability": float(calibration_component),
+            "brier_resolution": float(resolution_component),
+            "brier_uncertainty": float(base_rate * (1.0 - base_rate)),
             "log_loss": log_loss, "ece": float(ece), "reliability": reliability}
+
+
+def wilson_score_interval(successes: int, samples: int, confidence=0.95) -> tuple[float, float]:
+    """Binomial interval used for win rates and reliability-diagram bins."""
+    successes, samples = int(successes), int(samples)
+    if samples <= 0 or successes < 0 or successes > samples:
+        return (math.nan, math.nan)
+    z = float(norm.ppf(0.5 + float(confidence) / 2.0))
+    proportion = successes / samples
+    denominator = 1.0 + z * z / samples
+    centre = (proportion + z * z / (2.0 * samples)) / denominator
+    half = z * math.sqrt(proportion * (1.0 - proportion) / samples + z * z / (4.0 * samples * samples)) / denominator
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
+def moving_block_bootstrap_interval(values, *, statistic="mean", samples=1000,
+                                    block_length=10, confidence=0.95, seed=1729) -> dict:
+    """Preserve short-range dependence when estimating a performance interval."""
+    data = np.asarray(values, dtype=float)
+    data = data[np.isfinite(data)]
+    if len(data) < max(30, int(block_length) * 2):
+        return {"status": "UNAVAILABLE", "reason": "Insufficient samples for block bootstrap"}
+    if statistic not in {"mean", "median", "win_rate"}:
+        raise ValueError("Unsupported bootstrap statistic")
+    block_length = max(1, min(int(block_length), len(data)))
+    rng = np.random.default_rng(seed)
+    estimates = []
+    blocks_needed = math.ceil(len(data) / block_length)
+    for _ in range(max(int(samples), 100)):
+        starts = rng.integers(0, len(data), size=blocks_needed)
+        draw = np.concatenate([
+            np.take(data, np.arange(start, start + block_length) % len(data)) for start in starts
+        ])[:len(data)]
+        if statistic == "mean":
+            estimate = float(np.mean(draw))
+        elif statistic == "median":
+            estimate = float(np.median(draw))
+        else:
+            estimate = float(np.mean(draw > 0))
+        estimates.append(estimate)
+    alpha = (1.0 - float(confidence)) / 2.0
+    observed = float(np.mean(data) if statistic == "mean" else np.median(data) if statistic == "median" else np.mean(data > 0))
+    return {
+        "status": "PASS", "statistic": statistic, "estimate": observed,
+        "lower": float(np.quantile(estimates, alpha)),
+        "upper": float(np.quantile(estimates, 1.0 - alpha)),
+        "confidence": float(confidence), "samples": int(len(data)),
+        "bootstrap_samples": max(int(samples), 100), "block_length": block_length,
+    }
+
+
+def deflated_sharpe_ratio(returns, *, trials=1, benchmark_sharpe=0.0,
+                          periods_per_year=252) -> dict:
+    """Search-adjusted Sharpe significance using the Bailey/Lopez de Prado form."""
+    values = np.asarray(returns, dtype=float)
+    values = values[np.isfinite(values)]
+    if len(values) < 30 or float(np.std(values, ddof=1)) <= 0:
+        return {"status": "UNAVAILABLE", "reason": "At least 30 non-constant returns are required"}
+    count = len(values)
+    mean = float(np.mean(values))
+    standard_deviation = float(np.std(values, ddof=1))
+    observed = mean / standard_deviation
+    skewness = float(np.mean(((values - mean) / standard_deviation) ** 3))
+    kurtosis = float(np.mean(((values - mean) / standard_deviation) ** 4))
+    denominator = math.sqrt(max(1.0 - skewness * observed + ((kurtosis - 1.0) / 4.0) * observed ** 2, 1e-12))
+    trials = max(int(trials), 1)
+    expected_maximum = float(benchmark_sharpe) / math.sqrt(float(periods_per_year))
+    if trials > 1:
+        euler_gamma = 0.5772156649015329
+        standard_error = math.sqrt(max((1.0 + 0.5 * observed ** 2) / max(count - 1, 1), 1e-12))
+        expected_maximum = standard_error * (
+            (1.0 - euler_gamma) * norm.ppf(1.0 - 1.0 / trials)
+            + euler_gamma * norm.ppf(1.0 - 1.0 / (trials * math.e))
+        )
+    test_statistic = (observed - expected_maximum) * math.sqrt(count - 1.0) / denominator
+    return {
+        "status": "PASS",
+        "observed_sharpe_annualized": observed * math.sqrt(float(periods_per_year)),
+        "search_adjusted_benchmark_annualized": expected_maximum * math.sqrt(float(periods_per_year)),
+        "deflated_sharpe_probability": float(norm.cdf(test_statistic)),
+        "trials": trials,
+        "samples": count,
+        "skewness": skewness,
+        "kurtosis": kurtosis,
+    }
+
+
+def chronological_holdout_split(rows: pd.DataFrame, *, holdout_fraction=0.15,
+                                minimum_holdout_dates=20) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Reserve the most recent dates; callers must never tune on the holdout."""
+    if "as_of_date" not in rows:
+        raise ValueError("Rows require as_of_date")
+    ordered = rows.copy()
+    ordered["as_of_date"] = pd.to_datetime(ordered["as_of_date"], errors="coerce")
+    ordered = ordered.dropna(subset=["as_of_date"]).sort_values("as_of_date")
+    dates = np.asarray(sorted(ordered["as_of_date"].dt.normalize().unique()))
+    requested = max(int(math.ceil(len(dates) * float(holdout_fraction))), int(minimum_holdout_dates))
+    if len(dates) <= requested + 20:
+        return ordered.iloc[0:0].copy(), ordered.copy()
+    cutoff = pd.Timestamp(dates[-requested])
+    development = ordered[ordered["as_of_date"] < cutoff].copy()
+    holdout = ordered[ordered["as_of_date"] >= cutoff].copy()
+    return development, holdout
 
 
 def decide_abstention(probability, metrics, *, training_samples, positive_samples,
@@ -433,6 +547,97 @@ def run_purged_walk_forward_validation(rows: pd.DataFrame, *, folds=5, embargo_s
         },
         "policy": asdict(policy), "maturity": maturity,
         "embargo_sessions": int(embargo_sessions),
+    }
+
+
+def run_advanced_chronological_validation(
+    rows: pd.DataFrame,
+    *,
+    folds=5,
+    embargo_sessions=20,
+    holdout_fraction=0.15,
+    minimum_holdout_dates=20,
+    experiment_trials=1,
+    bootstrap_samples=1000,
+    bootstrap_block_length=10,
+    policy=CalibrationPolicy(),
+) -> dict:
+    """Development walk-forward validation followed by one untouched holdout.
+
+    The holdout is never passed to model fitting or probability calibration.
+    A development result may look acceptable while the final status remains
+    ABSTAIN when the untouched period fails calibration or economic tests.
+    """
+    development, holdout = chronological_holdout_split(
+        rows, holdout_fraction=holdout_fraction,
+        minimum_holdout_dates=minimum_holdout_dates,
+    )
+    if development.empty or holdout.empty:
+        return {
+            "status": "INSUFFICIENT_EVIDENCE",
+            "reason": "Insufficient chronological coverage for an untouched holdout",
+            "training_samples": 0,
+            "oos_samples": 0,
+            "holdout_samples": len(holdout),
+            "metrics": {},
+            "holdout": {},
+        }
+    development_result = run_purged_walk_forward_validation(
+        development, folds=folds, embargo_sessions=embargo_sessions, policy=policy,
+    )
+    if development_result["status"] == "INSUFFICIENT_EVIDENCE":
+        return {
+            **development_result,
+            "reason": f"Development validation: {development_result['reason']}",
+            "holdout_samples": len(holdout),
+            "holdout": {},
+        }
+    model = development_result["model"]
+    holdout_probability = PlattCalibrator._sigmoid(
+        float(model["intercept"]) + float(model["slope"]) * holdout["score"].astype(float).to_numpy() / 100.0
+    )
+    holdout_y = holdout["target_before_stop"].astype(int).to_numpy()
+    holdout_metrics = calibration_metrics(holdout_y, holdout_probability)
+    holdout_returns = holdout["excess_return"].astype(float).to_numpy()
+    return_interval = moving_block_bootstrap_interval(
+        holdout_returns, statistic="mean", samples=bootstrap_samples,
+        block_length=bootstrap_block_length,
+    )
+    win_interval = wilson_score_interval(int(holdout_y.sum()), len(holdout_y))
+    deflated = deflated_sharpe_ratio(holdout_returns, trials=experiment_trials)
+    failures = []
+    if development_result["status"] != "VALIDATED":
+        failures.append(f"Development status is {development_result['status']}")
+    if holdout_metrics["brier"] >= holdout_metrics["baseline_brier"]:
+        failures.append("Holdout Brier score does not beat the base rate")
+    if holdout_metrics["ece"] > policy.maximum_ece:
+        failures.append("Holdout calibration error exceeds policy")
+    if return_interval.get("status") != "PASS" or return_interval["lower"] <= 0:
+        failures.append("Holdout net excess-return interval is not strictly positive")
+    if deflated.get("status") != "PASS" or deflated["deflated_sharpe_probability"] < 0.95:
+        failures.append("Search-adjusted Sharpe evidence is insufficient")
+    return {
+        "status": "VALIDATED" if not failures else "ABSTAIN",
+        "reason": "Untouched holdout passed" if not failures else failures[0],
+        "failures": failures,
+        "training_samples": len(development),
+        "oos_samples": int(development_result.get("oos_samples", 0)),
+        "holdout_samples": len(holdout),
+        "development": development_result,
+        "metrics": development_result.get("metrics", {}),
+        "model": model,
+        "holdout": {
+            "start": str(holdout["as_of_date"].min()),
+            "end": str(holdout["as_of_date"].max()),
+            "metrics": holdout_metrics,
+            "win_rate": float(np.mean(holdout_y)),
+            "win_rate_interval": {"lower": win_interval[0], "upper": win_interval[1]},
+            "excess_return_interval": return_interval,
+            "deflated_sharpe": deflated,
+        },
+        "holdout_fraction": float(holdout_fraction),
+        "embargo_sessions": int(embargo_sessions),
+        "experiment_trials": max(int(experiment_trials), 1),
     }
 
 

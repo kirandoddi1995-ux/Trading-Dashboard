@@ -9,7 +9,7 @@ from feature_store import TechnicalFeatureStore, compute_feature_frame
 from point_in_time import PointInTimeStore
 from prediction_validation import (
     STRATEGY_VERSION, TARGET_VERSION, PRODUCTION_CALIBRATION_POLICY, TargetDefinition, ValidationStore,
-    compute_forward_target, run_purged_walk_forward_validation, scanner_composite_score,
+    compute_forward_target, run_advanced_chronological_validation, scanner_composite_score,
 )
 from market_data_gateway import get_market_data_gateway
 from reliable_charts import render_chart
@@ -21,6 +21,8 @@ from model_registry import ModelRegistry
 from mf_archive import MutualFundArchive
 from risk_engine import RiskEngine
 from production_repository import ProductionRepository
+from evidence_ledger import ImmutableEvidenceLedger
+from quant_foundation import PRODUCTION_QUANT_CONFIG
 import pandas as pd
 import numpy as np
 import requests
@@ -54,7 +56,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("god_mode_quant")
-APP_BUILD = "v20.0-TRADE-CONTRACTS"
+APP_BUILD = "v21.0-QUANT-GOVERNANCE"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
 OBSERVABILITY = observability.get_registry()
 MARKET_DATA_GATEWAY = get_market_data_gateway()
@@ -690,13 +692,56 @@ def _server_secret(name, default=""):
 
 
 @st.cache_resource(show_spinner=False)
-def get_production_repository(database_url=""):
-    return ProductionRepository(database_url or os.environ.get("DATABASE_URL"))
+def get_evidence_ledger(db_path=DEFAULT_DB_PATH, signing_key=""):
+    return ImmutableEvidenceLedger(_cache_connect, db_path, signing_key=signing_key)
 
 
+@st.cache_resource(show_spinner=False)
+def get_production_repository(database_url="", signing_key=""):
+    return ProductionRepository(
+        database_url or os.environ.get("DATABASE_URL"),
+        evidence_signing_key=signing_key,
+    )
+
+
+_EVIDENCE_SIGNING_KEY = _server_secret("EVIDENCE_LEDGER_SIGNING_KEY") or os.environ.get("EVIDENCE_LEDGER_SIGNING_KEY", "")
+EVIDENCE_LEDGER = get_evidence_ledger(DEFAULT_DB_PATH, _EVIDENCE_SIGNING_KEY)
 DURABLE_REPOSITORY = get_production_repository(
-    _server_secret("DATABASE_URL") or os.environ.get("DATABASE_URL", "")
+    _server_secret("DATABASE_URL") or os.environ.get("DATABASE_URL", ""),
+    _EVIDENCE_SIGNING_KEY,
 )
+
+
+def _record_trade_evidence(*, aggregate_id, event_type, payload, effective_at,
+                           idempotency_key, source="quant-terminal-ui"):
+    """Write once locally, then durably; evidence failures never alter a trade decision."""
+    try:
+        local_event = EVIDENCE_LEDGER.append(
+            aggregate_id=aggregate_id,
+            event_type=event_type,
+            payload=payload,
+            effective_at=effective_at,
+            source=source,
+            actor_id="single-user-session",
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:
+        LOGGER.error("Local evidence ledger append failed: %s", type(exc).__name__)
+        return None
+    if not local_event.get("duplicate") and DURABLE_REPOSITORY.configured:
+        try:
+            DURABLE_REPOSITORY.append_evidence_event(
+                aggregate_id=aggregate_id,
+                event_type=event_type,
+                payload=payload,
+                effective_at=effective_at,
+                source=source,
+                actor_id="single-user-session",
+                idempotency_key=idempotency_key,
+            )
+        except Exception as exc:
+            LOGGER.error("Durable evidence ledger append failed: %s", type(exc).__name__)
+    return local_event
 
 
 def _durable_sync_local_scanner(as_of_date, strategy_version):
@@ -5110,6 +5155,7 @@ if selected_tab == "Settings":
             ds2.metric("Permanent scan records", durable_stats.get("observations", 0))
             ds3.metric("Exact outcome labels", durable_stats.get("targets", 0))
             ds4.metric("Official AMFI NAV rows", durable_stats.get("mf_nav_rows", 0))
+            st.caption(f"Permanent immutable-ledger events: {durable_stats.get('ledger_events', 0)}")
             if durable_stats.get("last_successful_collection"):
                 st.caption(f"Last successful scheduled collection: {durable_stats['last_successful_collection']}")
         except Exception as durable_exc:
@@ -5141,6 +5187,27 @@ if selected_tab == "Settings":
         st.warning(
             "The archive begins when this build is deployed. It does not pretend today's NSE members existed in the past. "
             "A validated probability remains unavailable until enough signals have matured and passed out-of-sample tests."
+        )
+
+    with st.expander("Advanced quantitative governance", expanded=False):
+        ledger_integrity = EVIDENCE_LEDGER.verify()
+        gc1, gc2, gc3, gc4 = st.columns(4)
+        gc1.metric("Ledger events checked", ledger_integrity["events_checked"])
+        gc2.metric("Ledger aggregates", ledger_integrity["aggregates_checked"])
+        gc3.metric("Ledger integrity", "Verified" if ledger_integrity["valid"] else "FAILED")
+        gc4.metric("Integrity mode", ledger_integrity["integrity_mode"])
+        if not _EVIDENCE_SIGNING_KEY:
+            st.warning(
+                "The ledger has an append-only SHA256 chain, but no server signing key is configured. "
+                "Add EVIDENCE_LEDGER_SIGNING_KEY to Streamlit and GitHub secrets for HMAC tamper evidence."
+            )
+        if not ledger_integrity["valid"]:
+            st.error("Evidence-chain verification failed. New probability claims and model promotion must remain blocked.")
+        st.markdown("**Production policy (read-only)**")
+        st.json(PRODUCTION_QUANT_CONFIG.public_dict(), expanded=False)
+        st.caption(
+            "Advanced EV enforcement is intentionally in shadow mode while calibrated evidence is unavailable. "
+            "The system records what would pass or fail; it must not manufacture probability from rule confidence."
         )
 
     with st.expander("Point-in-time evidence & prediction validation", expanded=False):
@@ -5206,8 +5273,13 @@ if selected_tab == "Settings":
             validation_messages = []
             for horizon in (5, 10, 20):
                 dataset = VALIDATION_STORE.validation_dataset(horizon)
-                result = run_purged_walk_forward_validation(
-                    dataset, folds=5, embargo_sessions=20, policy=PRODUCTION_CALIBRATION_POLICY,
+                result = run_advanced_chronological_validation(
+                    dataset, folds=PRODUCTION_QUANT_CONFIG.validation.folds,
+                    embargo_sessions=PRODUCTION_QUANT_CONFIG.validation.embargo_sessions,
+                    holdout_fraction=PRODUCTION_QUANT_CONFIG.validation.final_holdout_fraction,
+                    bootstrap_samples=PRODUCTION_QUANT_CONFIG.validation.bootstrap_samples,
+                    bootstrap_block_length=PRODUCTION_QUANT_CONFIG.validation.bootstrap_block_length,
+                    policy=PRODUCTION_CALIBRATION_POLICY,
                 )
                 if result["status"] != "INSUFFICIENT_EVIDENCE":
                     validation_run_id = VALIDATION_STORE.save_validation_run(
@@ -5234,6 +5306,8 @@ if selected_tab == "Settings":
                     f"base-rate Brier {metrics.get('baseline_brier', float('nan')):.4f} · "
                     f"log loss {metrics.get('log_loss', float('nan')):.4f} · ECE {metrics.get('ece', float('nan')):.4f}"
                 )
+                if metrics.get("brier_skill") is not None:
+                    st.caption(f"Brier skill versus base rate: {metrics['brier_skill']:.3f}")
         else:
             st.caption("Validated probability: N/A — insufficient completed out-of-sample evidence. Rule-based picks remain labelled as rule-based.")
 
@@ -6251,6 +6325,28 @@ elif selected_tab == "Options & Derivatives Chain":
                 direction="long", cost_bps=70.0,
                 label=f"{selected_opt_asset} {int(best['strike'])} {best['side']}",
             )
+            option_aggregate = (
+                f"options:{selected_opt_asset}:{selected_expiry}:{int(best['strike'])}:"
+                f"{best['side']}:{best['entry_at_text']}"
+            )
+            _record_trade_evidence(
+                aggregate_id=option_aggregate,
+                event_type="SIGNAL_CREATED",
+                effective_at=datetime.datetime.now(IST),
+                idempotency_key=f"{APP_BUILD}:{option_aggregate}:created",
+                payload={
+                    "asset_class": "options", "instrument": selected_opt_asset,
+                    "expiry": selected_expiry, "strike": best["strike"], "direction": best["side"],
+                    "entry": best["premium"], "stop": best["stop_premium"],
+                    "target": best["target_premium"], "net_reward_risk": best["reward_risk"],
+                    "round_trip_cost_bps": 70.0, "entry_at": best["entry_at_text"],
+                    "entry_valid_until": best["entry_valid_until_text"],
+                    "mandatory_exit_at": best["mandatory_exit_at_text"],
+                    "indicators": option_indicators, "rule_confidence": best["confidence"],
+                    "calibrated_probability": None, "model_version": STRATEGY_VERSION,
+                    "thresholds": {"minimum_net_reward_risk": 2.0},
+                },
+            )
             st.info(
                 f"Enter only during **{best['entry_at_text']}–{best['entry_valid_until_text']} IST** at or below the displayed ask. "
                 f"Exit earlier when target/stop trades; otherwise exit no later than **{best['mandatory_exit_at_text']} IST**."
@@ -6582,6 +6678,24 @@ elif selected_tab == "Futures & Derivatives":
                         direction=engine_direction,
                         cost_bps=futures_cost.round_trip_bps,
                         label=fut_symbol,
+                    )
+                    futures_aggregate = f"futures:{fut_symbol}:{direction}:{timing['entry_at_text']}"
+                    _record_trade_evidence(
+                        aggregate_id=futures_aggregate, event_type="SIGNAL_CREATED",
+                        effective_at=datetime.datetime.now(IST),
+                        idempotency_key=f"{APP_BUILD}:{futures_aggregate}:created",
+                        payload={
+                            "asset_class": "index_futures", "instrument": fut_symbol,
+                            "direction": direction, "entry": entry, "stop": stop, "target": target,
+                            "net_reward_risk": futures_math["net_ratio"],
+                            "round_trip_cost_bps": futures_cost.round_trip_bps,
+                            "entry_at": timing["entry_at_text"],
+                            "entry_valid_until": timing["entry_valid_until_text"],
+                            "mandatory_exit_at": timing["mandatory_exit_at_text"],
+                            "indicators": factors, "rule_confidence": confidence,
+                            "calibrated_probability": None, "model_version": STRATEGY_VERSION,
+                            "thresholds": {"minimum_net_reward_risk": 2.0, "minimum_aligned_indicators": 3},
+                        },
                     )
                     st.info(
                         f"Enter only during **{timing['entry_at_text']}–{timing['entry_valid_until_text']} IST**. "
@@ -7646,6 +7760,28 @@ elif selected_tab == "Equities Screener & Risk":
             cost_bps=best.get("_execution_cost_bps", 30.0),
             label=f"{best['Ticker']} equity",
         )
+        for sig in valid_signals:
+            equity_aggregate = f"equity:{sig['Ticker']}:{sig.get('Timestamp', 'unknown')}"
+            _record_trade_evidence(
+                aggregate_id=equity_aggregate,
+                event_type="SIGNAL_CREATED" if sig.get("Action") == "Buy" else "SIGNAL_REJECTED",
+                effective_at=datetime.datetime.now(IST),
+                idempotency_key=f"{APP_BUILD}:{equity_aggregate}:{sig.get('Action', 'watch')}",
+                payload={
+                    "asset_class": "equity", "instrument": sig["Ticker"],
+                    "direction": sig.get("Action", "Watch"), "entry": sig.get("_price_val"),
+                    "stop": sig.get("_sl"), "target": sig.get("_tgt"),
+                    "net_reward_risk": sig.get("Risk:Reward"),
+                    "round_trip_cost_bps": sig.get("_execution_cost_bps"),
+                    "entry_at": sig.get("Timestamp"),
+                    "entry_valid_until": sig.get("Entry Valid Until"),
+                    "mandatory_exit_at": sig.get("Mandatory Exit By"),
+                    "indicators": sig.get("Indicators Used"),
+                    "rule_confidence": sig.get("Conviction"),
+                    "calibrated_probability": None, "model_version": STRATEGY_VERSION,
+                    "thresholds": {"minimum_net_reward_risk": 2.0},
+                },
+            )
         st.caption(
             "An actionable entry is valid for 15 minutes from its timestamp while quotes remain fresh. "
             "Exit earlier at target/stop; the displayed multi-session time exit is a weekday estimate, "
@@ -8120,6 +8256,26 @@ elif selected_tab == "Commodities (MCX)":
                             cost_bps=mcx_cost.round_trip_bps,
                             label=selected_commodity,
                         )
+                        mcx_aggregate = f"mcx:{selected_commodity}:{direction}:{mcx_timing['entry_at_text']}"
+                        _record_trade_evidence(
+                            aggregate_id=mcx_aggregate, event_type="SIGNAL_CREATED",
+                            effective_at=datetime.datetime.now(IST),
+                            idempotency_key=f"{APP_BUILD}:{mcx_aggregate}:created",
+                            payload={
+                                "asset_class": "commodity_futures", "instrument": selected_commodity,
+                                "instrument_key": mcx_key, "direction": direction, "entry": mcx_ltp,
+                                "stop": c_stop, "target": c_target,
+                                "net_reward_risk": mcx_math["net_ratio"],
+                                "round_trip_cost_bps": mcx_cost.round_trip_bps,
+                                "entry_at": mcx_timing["entry_at_text"],
+                                "entry_valid_until": mcx_timing["entry_valid_until_text"],
+                                "mandatory_exit_at": mcx_timing["mandatory_exit_at_text"],
+                                "indicators": ["Price/EMA20", "EMA20/EMA50", "RSI14"],
+                                "rule_confidence": "Medium (rule evidence, not probability)",
+                                "calibrated_probability": None, "model_version": STRATEGY_VERSION,
+                                "thresholds": {"minimum_net_reward_risk": 2.0},
+                            },
+                        )
                         st.info(
                             f"Enter only during **{mcx_timing['entry_at_text']}–{mcx_timing['entry_valid_until_text']} IST**. "
                             f"Exit on target/stop or no later than **{mcx_timing['mandatory_exit_at_text']} IST**."
@@ -8496,6 +8652,25 @@ elif selected_tab == "SMC & Technical Analysis":
                                 direction="long" if smc_bias == "Bullish" else "short",
                                 cost_bps=s_cost.round_trip_bps,
                                 label=f"{search_ticker} technical research",
+                            )
+                            smc_aggregate = f"technical:{search_ticker}:{smc_bias}:{smc_timing['entry_at_text']}"
+                            _record_trade_evidence(
+                                aggregate_id=smc_aggregate, event_type="SIGNAL_CREATED",
+                                effective_at=datetime.datetime.now(IST),
+                                idempotency_key=f"{APP_BUILD}:{smc_aggregate}:created",
+                                payload={
+                                    "asset_class": "technical_research", "instrument": search_ticker,
+                                    "direction": smc_bias, "entry": s_price, "stop": s_sl, "target": s_tgt,
+                                    "net_reward_risk": smc_math["net_ratio"],
+                                    "round_trip_cost_bps": s_cost.round_trip_bps,
+                                    "entry_at": smc_timing["entry_at_text"],
+                                    "entry_valid_until": smc_timing["entry_valid_until_text"],
+                                    "mandatory_exit_at": smc_timing["mandatory_exit_at_text"],
+                                    "indicators": smc_factors,
+                                    "rule_confidence": "Rule-based structure, not probability",
+                                    "calibrated_probability": None, "model_version": STRATEGY_VERSION,
+                                    "thresholds": {"minimum_net_reward_risk": 2.0},
+                                },
                             )
                             st.info(
                                 f"Enter only during **{smc_timing['entry_at_text']}–{smc_timing['entry_valid_until_text']} IST**. "

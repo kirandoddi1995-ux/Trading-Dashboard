@@ -14,7 +14,7 @@ RUNTIME = ['app.py', 'app_runtime.py', 'scan_jobs.py', 'reliable_charts.py',
            'provider_contracts.py', 'quantitative_services.py', 'iv_surface.py',
            'model_registry.py', 'mf_archive.py', 'risk_engine.py', 'deployment_canary.py',
            'production_repository.py', 'amfi_ingestion.py', 'scheduled_collector.py',
-           'trade_contracts.py',
+           'trade_contracts.py', 'evidence_ledger.py', 'quant_foundation.py',
            'requirements.txt', 'constraints.txt']
 FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_GUIDE.md',
                    'FIX_VERIFICATION_2026-08-31.md', 'provider_smoke.py', 'package_release.py',
@@ -23,6 +23,7 @@ FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_
                    'tests/test_remaining_upgrades.py', 'tests/test_production_data_pipeline.py',
                    'tests/test_production_repository_dbapi.py',
                    'tests/test_trade_contracts.py',
+                   'tests/test_quant_foundation.py',
                    '.github/workflows/quality.yml', '.github/workflows/scheduled-collector.yml']
 
 
@@ -31,7 +32,7 @@ def package():
     if not canaries['ok']:
         raise RuntimeError(f"Release canaries failed: {canaries['checks']}")
     manifest = {}
-    archive = ROOT / 'release-v20.0-trade-contracts.zip'
+    archive = ROOT / 'release-v21.0-quant-governance.zip'
     for name in FILES:
         path = (ROOT / name).resolve()
         if not path.is_relative_to(ROOT) or not path.is_file():

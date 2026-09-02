@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import hmac
 import json
 import os
 import threading
@@ -17,6 +18,8 @@ import uuid
 from contextlib import contextmanager
 from decimal import Decimal
 from typing import Iterable, Mapping
+
+from evidence_ledger import GENESIS_HASH, LEDGER_SCHEMA_VERSION, canonical_json
 
 try:
     import psycopg
@@ -27,7 +30,7 @@ except ImportError:  # Local/offline tests may intentionally omit PostgreSQL.
 
 
 SCHEMA = "quant_app"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class RepositoryUnavailable(RuntimeError):
@@ -83,9 +86,15 @@ def _executemany(conn, statement: str, rows) -> None:
 class ProductionRepository:
     """Small DB-API repository with idempotent PostgreSQL upserts."""
 
-    def __init__(self, database_url: str | None = None, *, connect_timeout: int = 10):
+    def __init__(self, database_url: str | None = None, *, connect_timeout: int = 10,
+                 evidence_signing_key: str | bytes | None = None):
         self._database_url = str(database_url or os.environ.get("DATABASE_URL") or "").strip()
         self._connect_timeout = max(3, int(connect_timeout))
+        if evidence_signing_key is None:
+            evidence_signing_key = os.environ.get("EVIDENCE_LEDGER_SIGNING_KEY", "")
+        if isinstance(evidence_signing_key, str):
+            evidence_signing_key = evidence_signing_key.encode("utf-8")
+        self._evidence_signing_key = evidence_signing_key or b""
         self._schema_ready = False
         self._lock = threading.Lock()
 
@@ -176,6 +185,52 @@ class ProductionRepository:
                     """)
                     cur.execute(f"CREATE INDEX IF NOT EXISTS universe_symbol_date_idx ON {SCHEMA}.universe_membership(trading_symbol, snapshot_date)")
                     cur.execute(f"CREATE INDEX IF NOT EXISTS universe_isin_date_idx ON {SCHEMA}.universe_membership(isin, snapshot_date)")
+                    cur.execute(f"""
+                        CREATE TABLE IF NOT EXISTS {SCHEMA}.universe_snapshot_versions (
+                            snapshot_id TEXT PRIMARY KEY,
+                            snapshot_date DATE NOT NULL,
+                            observed_at TIMESTAMPTZ NOT NULL,
+                            source TEXT NOT NULL,
+                            instrument_count INTEGER NOT NULL,
+                            payload_hash TEXT NOT NULL,
+                            is_complete BOOLEAN NOT NULL,
+                            schema_version INTEGER NOT NULL,
+                            UNIQUE(snapshot_date,payload_hash)
+                        )
+                    """)
+                    cur.execute(f"""
+                        CREATE TABLE IF NOT EXISTS {SCHEMA}.universe_membership_versions (
+                            snapshot_id TEXT NOT NULL REFERENCES {SCHEMA}.universe_snapshot_versions(snapshot_id),
+                            instrument_key TEXT NOT NULL,
+                            trading_symbol TEXT NOT NULL,
+                            isin TEXT,
+                            name TEXT,
+                            exchange TEXT,
+                            segment TEXT,
+                            instrument_type TEXT,
+                            security_type TEXT,
+                            sector TEXT,
+                            source TEXT NOT NULL,
+                            observed_at TIMESTAMPTZ NOT NULL,
+                            raw JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                            PRIMARY KEY(snapshot_id,instrument_key)
+                        )
+                    """)
+                    cur.execute(f"""
+                        CREATE TABLE IF NOT EXISTS {SCHEMA}.feature_observations (
+                            feature_id TEXT PRIMARY KEY,
+                            instrument_key TEXT NOT NULL,
+                            feature_name TEXT NOT NULL,
+                            effective_at TIMESTAMPTZ NOT NULL,
+                            available_at TIMESTAMPTZ NOT NULL,
+                            observed_at TIMESTAMPTZ NOT NULL,
+                            source TEXT NOT NULL,
+                            value JSONB NOT NULL,
+                            payload_hash TEXT NOT NULL,
+                            UNIQUE(instrument_key,feature_name,effective_at,available_at,payload_hash)
+                        )
+                    """)
+                    cur.execute(f"CREATE INDEX IF NOT EXISTS feature_available_idx ON {SCHEMA}.feature_observations(instrument_key,feature_name,available_at)")
                     cur.execute(f"""
                         CREATE TABLE IF NOT EXISTS {SCHEMA}.market_quotes (
                             observed_at TIMESTAMPTZ NOT NULL,
@@ -328,6 +383,38 @@ class ProductionRepository:
                             details JSONB NOT NULL DEFAULT '{{}}'::jsonb
                         )
                     """)
+                    cur.execute(f"""
+                        CREATE TABLE IF NOT EXISTS {SCHEMA}.evidence_ledger_events (
+                            event_id UUID PRIMARY KEY,
+                            aggregate_id TEXT NOT NULL,
+                            sequence_no INTEGER NOT NULL,
+                            event_type TEXT NOT NULL,
+                            recorded_at TIMESTAMPTZ NOT NULL,
+                            effective_at TIMESTAMPTZ NOT NULL,
+                            source TEXT NOT NULL,
+                            actor_id TEXT NOT NULL,
+                            idempotency_key TEXT NOT NULL UNIQUE,
+                            payload JSONB NOT NULL,
+                            previous_hash TEXT NOT NULL,
+                            event_hash TEXT NOT NULL UNIQUE,
+                            hash_algorithm TEXT NOT NULL,
+                            schema_version INTEGER NOT NULL,
+                            UNIQUE(aggregate_id, sequence_no)
+                        )
+                    """)
+                    cur.execute(f"CREATE INDEX IF NOT EXISTS evidence_ledger_aggregate_idx ON {SCHEMA}.evidence_ledger_events(aggregate_id,sequence_no)")
+                    cur.execute(f"""
+                        CREATE OR REPLACE FUNCTION {SCHEMA}.reject_evidence_ledger_mutation()
+                        RETURNS trigger LANGUAGE plpgsql AS $$
+                        BEGIN
+                            RAISE EXCEPTION 'evidence ledger events are immutable';
+                        END;
+                        $$
+                    """)
+                    cur.execute(f"DROP TRIGGER IF EXISTS evidence_ledger_no_update ON {SCHEMA}.evidence_ledger_events")
+                    cur.execute(f"DROP TRIGGER IF EXISTS evidence_ledger_no_delete ON {SCHEMA}.evidence_ledger_events")
+                    cur.execute(f"CREATE TRIGGER evidence_ledger_no_update BEFORE UPDATE ON {SCHEMA}.evidence_ledger_events FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.reject_evidence_ledger_mutation()")
+                    cur.execute(f"CREATE TRIGGER evidence_ledger_no_delete BEFORE DELETE ON {SCHEMA}.evidence_ledger_events FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.reject_evidence_ledger_mutation()")
                     cur.execute(
                         f"INSERT INTO {SCHEMA}.schema_migrations(version) VALUES (%s) ON CONFLICT DO NOTHING",
                         (SCHEMA_VERSION,),
@@ -388,7 +475,18 @@ class ProductionRepository:
         payload_hash = hashlib.sha256(json.dumps(rows, sort_keys=True, default=str).encode()).hexdigest()
         observed_at = _utcnow()
         complete = len(rows) >= int(minimum_complete)
+        snapshot_id = hashlib.sha256(f"{snapshot_date}|{payload_hash}".encode()).hexdigest()
         with self.connect() as conn:
+            conn.execute(
+                f"INSERT INTO {SCHEMA}.universe_snapshot_versions VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(snapshot_id) DO NOTHING",
+                (snapshot_id, snapshot_date, observed_at, source, len(rows), payload_hash, complete, SCHEMA_VERSION),
+            )
+            _executemany(conn,
+                f"INSERT INTO {SCHEMA}.universe_membership_versions VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(snapshot_id,instrument_key) DO NOTHING",
+                [(snapshot_id, r["instrument_key"], r["trading_symbol"], r["isin"], r["name"],
+                  r["exchange"], r["segment"], r["instrument_type"], r["security_type"], r["sector"],
+                  source, observed_at, _json(r["raw"])) for r in rows],
+            )
             conn.execute(
                 f"INSERT INTO {SCHEMA}.universe_snapshots VALUES (%s,%s,%s,%s,%s,%s,%s) "
                 "ON CONFLICT(snapshot_date) DO UPDATE SET observed_at=EXCLUDED.observed_at,source=EXCLUDED.source,instrument_count=EXCLUDED.instrument_count,payload_hash=EXCLUDED.payload_hash,is_complete=EXCLUDED.is_complete,schema_version=EXCLUDED.schema_version",
@@ -403,6 +501,28 @@ class ProductionRepository:
             )
             conn.commit()
         return {"date": str(snapshot_date), "count": len(rows), "complete": complete, "payload_hash": payload_hash}
+
+    def record_feature_observation(self, *, instrument_key: str, feature_name: str, value,
+                                   effective_at, available_at, source: str) -> str:
+        self.ensure_schema()
+        payload_text = canonical_json({
+            "instrument_key": instrument_key, "feature_name": feature_name, "value": value,
+            "effective_at": effective_at, "available_at": available_at, "source": source,
+        })
+        payload_hash = hashlib.sha256(payload_text.encode()).hexdigest()
+        feature_id = hashlib.sha256(
+            f"{instrument_key}|{feature_name}|{effective_at}|{available_at}|{payload_hash}".encode()
+        ).hexdigest()
+        with self.connect() as conn:
+            conn.execute(f"""
+                INSERT INTO {SCHEMA}.feature_observations VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT(feature_id) DO NOTHING
+            """, (
+                feature_id, str(instrument_key), str(feature_name), effective_at, available_at,
+                _utcnow(), str(source), _json(json.loads(payload_text)["value"]), payload_hash,
+            ))
+            conn.commit()
+        return feature_id
 
     def corporate_action_candidates(self, *, limit=100, refresh_days=30) -> list[str]:
         """Return dated-universe ISINs not checked recently."""
@@ -681,6 +801,61 @@ class ProductionRepository:
             conn.commit()
         return event_id
 
+    def append_evidence_event(self, *, aggregate_id: str, event_type: str, payload: Mapping,
+                              effective_at=None, source="quant-terminal", actor_id="system",
+                              idempotency_key=None) -> dict:
+        """Append one durable event under a transaction-level aggregate lock."""
+        self.ensure_schema()
+        aggregate_id = str(aggregate_id).strip()
+        event_type = str(event_type).strip().upper()
+        if not aggregate_id or not event_type:
+            raise ValueError("aggregate_id and event_type are required")
+        event_id = str(uuid.uuid4())
+        idempotency_key = str(idempotency_key or uuid.uuid4())
+        recorded_at = _utcnow()
+        effective_at = effective_at or recorded_at
+        payload_text = canonical_json(payload)
+        algorithm = "HMAC-SHA256" if self._evidence_signing_key else "SHA256 hash chain"
+        with self.connect() as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (aggregate_id,))
+            existing = conn.execute(
+                f"SELECT event_id,aggregate_id,sequence_no,event_type,recorded_at,effective_at,source,actor_id,idempotency_key,payload,previous_hash,event_hash,hash_algorithm,schema_version FROM {SCHEMA}.evidence_ledger_events WHERE idempotency_key=%s",
+                (idempotency_key,),
+            ).fetchone()
+            if existing:
+                conn.commit()
+                return {"event_id": str(existing[0]), "aggregate_id": existing[1],
+                        "sequence_no": int(existing[2]), "event_hash": existing[11], "duplicate": True}
+            previous = conn.execute(
+                f"SELECT sequence_no,event_hash FROM {SCHEMA}.evidence_ledger_events WHERE aggregate_id=%s ORDER BY sequence_no DESC LIMIT 1",
+                (aggregate_id,),
+            ).fetchone()
+            sequence_no = int(previous[0]) + 1 if previous else 1
+            previous_hash = str(previous[1]) if previous else GENESIS_HASH
+            material = "|".join(map(str, (
+                event_id, aggregate_id, sequence_no, event_type, recorded_at.isoformat(),
+                effective_at.isoformat() if isinstance(effective_at, dt.datetime) else str(effective_at),
+                source, actor_id, idempotency_key, payload_text, previous_hash, algorithm,
+                LEDGER_SCHEMA_VERSION,
+            )))
+            if self._evidence_signing_key:
+                event_hash = hmac.new(self._evidence_signing_key, material.encode(), hashlib.sha256).hexdigest()
+            else:
+                event_hash = hashlib.sha256(material.encode()).hexdigest()
+            conn.execute(f"""
+                INSERT INTO {SCHEMA}.evidence_ledger_events(
+                    event_id,aggregate_id,sequence_no,event_type,recorded_at,effective_at,source,
+                    actor_id,idempotency_key,payload,previous_hash,event_hash,hash_algorithm,schema_version
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (
+                event_id, aggregate_id, sequence_no, event_type, recorded_at, effective_at,
+                str(source), str(actor_id), idempotency_key, _json(json.loads(payload_text)),
+                previous_hash, event_hash, algorithm, LEDGER_SCHEMA_VERSION,
+            ))
+            conn.commit()
+        return {"event_id": event_id, "aggregate_id": aggregate_id, "sequence_no": sequence_no,
+                "event_hash": event_hash, "duplicate": False}
+
     def stats(self) -> dict:
         if not self.configured:
             return {"configured": False}
@@ -692,9 +867,11 @@ class ProductionRepository:
                     (SELECT COUNT(*) FROM {SCHEMA}.scanner_observations),
                     (SELECT COUNT(*) FROM {SCHEMA}.prediction_targets WHERE target_version='net-excess-execution-v2'),
                     (SELECT COUNT(*) FROM {SCHEMA}.mf_nav),
-                    (SELECT MAX(finished_at) FROM {SCHEMA}.collection_runs WHERE status='SUCCESS')
+                    (SELECT MAX(finished_at) FROM {SCHEMA}.collection_runs WHERE status='SUCCESS'),
+                    (SELECT COUNT(*) FROM {SCHEMA}.evidence_ledger_events)
             """).fetchone()
         return {
             "configured": True, "universe_days": int(row[0]), "observations": int(row[1]),
             "targets": int(row[2]), "mf_nav_rows": int(row[3]), "last_successful_collection": row[4],
+            "ledger_events": int(row[5]),
         }

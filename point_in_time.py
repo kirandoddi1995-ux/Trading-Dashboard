@@ -76,6 +76,51 @@ class PointInTimeStore:
                     CREATE INDEX IF NOT EXISTS idx_pit_membership_isin_date
                         ON pit_universe_membership(isin, snapshot_date);
 
+                    CREATE TABLE IF NOT EXISTS pit_universe_snapshot_versions (
+                        snapshot_id TEXT PRIMARY KEY,
+                        snapshot_date TEXT NOT NULL,
+                        observed_at TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        instrument_count INTEGER NOT NULL,
+                        payload_hash TEXT NOT NULL,
+                        is_complete INTEGER NOT NULL,
+                        schema_version INTEGER NOT NULL,
+                        UNIQUE(snapshot_date, payload_hash)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_pit_snapshot_version_time
+                        ON pit_universe_snapshot_versions(snapshot_date, observed_at);
+                    CREATE TABLE IF NOT EXISTS pit_universe_membership_versions (
+                        snapshot_id TEXT NOT NULL,
+                        instrument_key TEXT NOT NULL,
+                        trading_symbol TEXT NOT NULL,
+                        isin TEXT,
+                        name TEXT,
+                        exchange TEXT,
+                        segment TEXT,
+                        instrument_type TEXT,
+                        security_type TEXT,
+                        sector TEXT,
+                        source TEXT NOT NULL,
+                        observed_at TEXT NOT NULL,
+                        PRIMARY KEY(snapshot_id, instrument_key),
+                        FOREIGN KEY(snapshot_id) REFERENCES pit_universe_snapshot_versions(snapshot_id)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS pit_feature_observations (
+                        feature_id TEXT PRIMARY KEY,
+                        instrument_key TEXT NOT NULL,
+                        feature_name TEXT NOT NULL,
+                        effective_at TEXT NOT NULL,
+                        available_at TEXT NOT NULL,
+                        observed_at TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        value_json TEXT NOT NULL,
+                        payload_hash TEXT NOT NULL,
+                        UNIQUE(instrument_key, feature_name, effective_at, available_at, payload_hash)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_pit_feature_available
+                        ON pit_feature_observations(instrument_key, feature_name, available_at);
+
                     CREATE TABLE IF NOT EXISTS pit_sector_history (
                         isin TEXT NOT NULL,
                         effective_from TEXT NOT NULL,
@@ -165,6 +210,7 @@ class PointInTimeStore:
         digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         observed_at = dt.datetime.now(dt.timezone.utc).isoformat()
         complete = len(rows) >= self.minimum_complete_universe
+        snapshot_id = hashlib.sha256(f"{snapshot_date}|{digest}".encode()).hexdigest()
         conn = self._connect()
         try:
             existing = conn.execute(
@@ -172,8 +218,29 @@ class PointInTimeStore:
                 (snapshot_date,),
             ).fetchone()
             if existing and existing[0] == digest:
-                return {"date": snapshot_date, "count": int(existing[1]), "complete": bool(existing[2]), "changed": False}
+                version_exists = conn.execute(
+                    "SELECT 1 FROM pit_universe_snapshot_versions WHERE snapshot_id=?", (snapshot_id,)
+                ).fetchone()
+                if version_exists:
+                    return {"date": snapshot_date, "count": int(existing[1]), "complete": bool(existing[2]), "changed": False}
             conn.execute("BEGIN IMMEDIATE")
+            conn.execute("""
+                INSERT OR IGNORE INTO pit_universe_snapshot_versions(
+                    snapshot_id,snapshot_date,observed_at,source,instrument_count,payload_hash,
+                    is_complete,schema_version
+                ) VALUES (?,?,?,?,?,?,?,?)
+            """, (snapshot_id, snapshot_date, observed_at, source, len(rows), digest,
+                  int(complete), PIT_SCHEMA_VERSION))
+            conn.executemany("""
+                INSERT OR IGNORE INTO pit_universe_membership_versions(
+                    snapshot_id,instrument_key,trading_symbol,isin,name,exchange,segment,
+                    instrument_type,security_type,sector,source,observed_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            """, [(
+                snapshot_id, row["instrument_key"], row["trading_symbol"], row["isin"], row["name"],
+                row["exchange"], row["segment"], row["instrument_type"], row["security_type"],
+                row["sector"], source, observed_at,
+            ) for row in rows])
             conn.execute("DELETE FROM pit_universe_membership WHERE snapshot_date=?", (snapshot_date,))
             conn.execute("""
                 INSERT INTO pit_universe_snapshots(snapshot_date, observed_at, source, instrument_count,
@@ -198,6 +265,86 @@ class PointInTimeStore:
         finally:
             conn.close()
         return {"date": snapshot_date, "count": len(rows), "complete": complete, "changed": True}
+
+    def universe_as_known_at(self, as_of_date, known_at, require_complete=True) -> pd.DataFrame:
+        """Universe effective by ``as_of_date`` and actually observed by ``known_at``."""
+        known = pd.Timestamp(known_at)
+        if known.tzinfo is None:
+            known = known.tz_localize("UTC")
+        known_text = known.tz_convert("UTC").isoformat()
+        conn = self._connect()
+        try:
+            clause = "AND is_complete=1" if require_complete else ""
+            row = conn.execute(
+                f"SELECT snapshot_id FROM pit_universe_snapshot_versions "
+                f"WHERE snapshot_date<=? AND observed_at<=? {clause} "
+                "ORDER BY snapshot_date DESC, observed_at DESC LIMIT 1",
+                (str(as_of_date), known_text),
+            ).fetchone()
+            if not row:
+                return pd.DataFrame()
+            return pd.read_sql_query(
+                "SELECT * FROM pit_universe_membership_versions WHERE snapshot_id=? ORDER BY trading_symbol",
+                conn, params=(row[0],),
+            )
+        finally:
+            conn.close()
+
+    def record_feature_observation(self, *, instrument_key, feature_name, value,
+                                   effective_at, available_at, source) -> str:
+        payload = {
+            "instrument_key": str(instrument_key), "feature_name": str(feature_name),
+            "value": value, "effective_at": str(effective_at),
+            "available_at": str(available_at), "source": str(source),
+        }
+        canonical = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+        payload_hash = hashlib.sha256(canonical.encode()).hexdigest()
+        feature_id = hashlib.sha256(
+            f"{instrument_key}|{feature_name}|{effective_at}|{available_at}|{payload_hash}".encode()
+        ).hexdigest()
+        observed_at = dt.datetime.now(dt.timezone.utc).isoformat()
+        conn = self._connect()
+        try:
+            conn.execute("""
+                INSERT OR IGNORE INTO pit_feature_observations(
+                    feature_id,instrument_key,feature_name,effective_at,available_at,observed_at,
+                    source,value_json,payload_hash
+                ) VALUES (?,?,?,?,?,?,?,?,?)
+            """, (
+                feature_id, str(instrument_key), str(feature_name), str(effective_at), str(available_at),
+                observed_at, str(source), json.dumps(value, default=str, sort_keys=True), payload_hash,
+            ))
+            conn.commit()
+        finally:
+            conn.close()
+        return feature_id
+
+    def features_as_of(self, instrument_key, decision_at) -> dict:
+        """Return the latest feature values available no later than decision_at."""
+        decision = pd.Timestamp(decision_at)
+        if decision.tzinfo is None:
+            decision = decision.tz_localize("UTC")
+        decision_text = decision.tz_convert("UTC").isoformat()
+        conn = self._connect()
+        try:
+            rows = conn.execute("""
+                SELECT feature_name,value_json,effective_at,available_at,observed_at,source
+                FROM pit_feature_observations f
+                WHERE instrument_key=? AND available_at<=?
+                  AND available_at=(
+                      SELECT MAX(x.available_at) FROM pit_feature_observations x
+                      WHERE x.instrument_key=f.instrument_key AND x.feature_name=f.feature_name
+                        AND x.available_at<=?
+                  )
+                ORDER BY feature_name
+            """, (str(instrument_key), decision_text, decision_text)).fetchall()
+        finally:
+            conn.close()
+        return {
+            row[0]: {"value": json.loads(row[1]), "effective_at": row[2],
+                     "available_at": row[3], "observed_at": row[4], "source": row[5]}
+            for row in rows
+        }
 
     def universe_as_of(self, as_of_date, require_complete=True) -> pd.DataFrame:
         """Return the latest genuinely observed snapshot on/before a date.

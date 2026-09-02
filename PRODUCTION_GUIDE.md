@@ -1,4 +1,26 @@
-# Quant Terminal production guide — v19.0
+# Quant Terminal production guide — v21.0
+
+## Advanced quantitative governance (v21.0)
+
+Every displayed setup is now written to an append-only evidence ledger with an idempotency key,
+per-signal sequence number, previous-event hash, payload hash, model version, thresholds, timestamps,
+cost assumptions and decision inputs. Database triggers reject updates and deletes. Configure a random
+`EVIDENCE_LEDGER_SIGNING_KEY` of at least 32 bytes in both Streamlit Secrets and GitHub Actions secrets
+to upgrade the chain from unkeyed SHA256 integrity to HMAC-SHA256 tamper evidence. Keep retired keys in
+a restricted audit vault when rotating them; changing the key prevents verification with the old key.
+
+The advanced governance policy is visible read-only in Settings. It defines point-in-time coverage and
+feature-age limits, executable liquidity limits, calibrated expected-value requirements, portfolio
+volatility/Expected-Shortfall/drawdown/concentration limits, fractional-Kelly caps and validation
+requirements. Expected value, fill probability and Kelly sizing remain unavailable until their own
+out-of-sample evidence is calibrated; rule confidence is never substituted.
+
+Validation now reserves the most recent chronological period as an untouched holdout after purged,
+embargoed development folds. It reports Brier decomposition, Wilson reliability intervals, moving-block
+bootstrap intervals and Deflated-Sharpe evidence. A failed development or holdout check returns ABSTAIN.
+Order-book imbalance, microprice, options skew/curvature/term structure and breadth calculations are
+implemented as shadow features; they are not promoted into production ranking until incremental
+out-of-sample value after costs is demonstrated.
 
 ## Durable evidence collection (v19.0)
 
