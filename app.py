@@ -2,6 +2,7 @@ import streamlit as st
 import technical_indicators as ta
 import mf_research as mfr
 import app_runtime as runtime
+import trade_contracts
 import observability as observability
 import smc_analysis as smc
 from feature_store import TechnicalFeatureStore, compute_feature_frame
@@ -53,7 +54,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("god_mode_quant")
-APP_BUILD = "v19.0-DURABLE-VALIDATION"
+APP_BUILD = "v20.0-TRADE-CONTRACTS"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
 OBSERVABILITY = observability.get_registry()
 MARKET_DATA_GATEWAY = get_market_data_gateway()
@@ -5822,6 +5823,8 @@ elif selected_tab == "Options & Derivatives Chain":
 
     market_bias, market_bias_scores = determine_market_bias()
 
+    option_rr_rejections = []
+
     def build_option_recommendation(bias, best_row=None, strike_offset_steps=0):
         try:
             if bias in ("Bullish", "Mildly Bullish"):
@@ -5925,6 +5928,32 @@ elif selected_tab == "Options & Derivatives Chain":
             cost_buffer_per_unit = premium * (ESTIMATED_ROUND_TRIP_COST_PCT / 100.0)
             estimated_costs_per_lot = cost_buffer_per_unit * lot_size
 
+            # Keep the IV/DTE target unchanged. If needed, tighten the old
+            # percentage stop to the nearest stop that can still deliver at
+            # least 1:2 after costs. Never tighten inside an 8%-of-premium or
+            # three-spread noise buffer; such a contract is a NO TRADE.
+            original_stop_premium = stop_premium
+            gross_reward = target_premium - premium
+            target_gate_buffer = 2.05  # small rounding/slippage cushion above 2.00
+            maximum_defensible_risk = (
+                (gross_reward - cost_buffer_per_unit) / target_gate_buffer
+            ) - cost_buffer_per_unit
+            spread_rupees = (float(ask_px) - float(bid_px)) if bid_px and ask_px else 0.0
+            minimum_noise_risk = max(premium * 0.08, spread_rupees * 3.0)
+            if maximum_defensible_risk < minimum_noise_risk:
+                option_rr_rejections.append({
+                    "strike": actual_strike, "side": side, "entry": premium,
+                    "stop": stop_premium, "target": target_premium, "net_ratio": 0.0,
+                    "required_target": round(
+                        premium + trade_contracts.MIN_NET_REWARD_RISK *
+                        (minimum_noise_risk + cost_buffer_per_unit) + cost_buffer_per_unit, 2,
+                    ),
+                })
+                return None
+            corrected_stop = premium - min(premium - stop_premium, maximum_defensible_risk)
+            stop_premium = round(max(corrected_stop, 0.01), 2)
+            stop_was_tightened = stop_premium > original_stop_premium
+
             # Risk-based position sizing: how many lots fit within both the risk
             # budget (max loss if stop is hit) AND the capital budget (max ₹ tied
             # up in this one position), whichever is more restrictive.
@@ -5964,24 +5993,32 @@ elif selected_tab == "Options & Derivatives Chain":
             # unavailable — the round-trip fee still applies as a baseline.
             # Entry is the ask; exit barriers are bid prices. Spread is already
             # represented by those executable sides, not subtracted twice.
-            total_cost_pct = ESTIMATED_ROUND_TRIP_COST_PCT
-            reward_risk = round((target_premium - premium - cost_buffer_per_unit)
-                               / (premium - stop_premium + cost_buffer_per_unit), 2)
+            trade_math = trade_contracts.calculate_trade_math(
+                premium, stop_premium, target_premium,
+                direction="long", round_trip_cost_bps=ESTIMATED_ROUND_TRIP_COST_PCT * 100,
+                minimum_ratio=trade_contracts.MIN_NET_REWARD_RISK,
+            )
+            reward_risk = trade_math["net_ratio"]
 
-            # Minimum reward:risk gate (Stage 1, CORRECTED after testing found
-            # a regression): only applies to the Medium/Low DTE tiers, where
-            # target/stop tightening was intentionally introduced — this is
-            # where "reject a setup whose reward:risk got squeezed near expiry"
-            # was actually meant to bite, per the original request. Deliberately
-            # does NOT apply to "Higher DTE" (the unchanged baseline) — testing
-            # found the pre-existing mid/low-IV bands (R:R 1.33 and 1.25) never
-            # met 1.35 even before Stage 1 existed, so gating them here would
-            # have silently broken "baseline behavior remains unchanged" for
-            # what's likely the most common case in practice. Note: Higher-DTE's
-            # DISPLAYED reward_risk is now also cost-adjusted (more honest), but
-            # its ACCEPTANCE behavior is unaffected since no gate applies to it.
-            MIN_REWARD_RISK = 1.35
-            if dte_tier != "Higher DTE" and reward_risk < MIN_REWARD_RISK:
+            # Production gate: every expiry tier must clear 1:2 after costs.
+            # A wider target is never invented solely to make the ratio pass.
+            # If the IV/DTE scenario cannot support 1:2, abstain and explain the
+            # minimum target that would have been required.
+            if not trade_math["passes_gate"]:
+                required_target = premium + (
+                    trade_contracts.MIN_NET_REWARD_RISK * trade_math["net_risk"]
+                ) + trade_math["cost_per_unit"]
+                option_rr_rejections.append({
+                    "strike": actual_strike, "side": side, "entry": premium,
+                    "stop": stop_premium, "target": target_premium,
+                    "net_ratio": reward_risk, "required_target": round(required_target, 2),
+                })
+                return None
+
+            timing = trade_contracts.build_trade_timing(
+                datetime.datetime.now(IST), intraday=True,
+            )
+            if not timing["entry_window_open"]:
                 return None
 
             return {
@@ -5994,13 +6031,21 @@ elif selected_tab == "Options & Derivatives Chain":
                 "bid": bid_px, "ask": ask_px,
                 "bid_qty": best_row.get(bid_qty_key), "ask_qty": best_row.get(ask_qty_key),
                 "volume": best_row.get(vol_key),
+                "original_stop_premium": original_stop_premium,
+                "stop_was_tightened": stop_was_tightened,
                 "estimated_costs_per_lot": round(estimated_costs_per_lot, 2),
                 "strike_offset_steps": strike_offset_steps,
                 "reward_risk": reward_risk,
                 "total_risk": total_risk,
                 "required_capital": required_capital,
                 "dte": dte, "dte_tier": dte_tier,
-                "signal_generated_at": datetime.datetime.now(IST).strftime("%d-%b-%Y %I:%M %p"),
+                "signal_generated_at": timing["entry_at"].strftime("%d-%b-%Y %I:%M %p"),
+                "entry_at_text": timing["entry_at_text"],
+                "entry_valid_until_text": timing["entry_valid_until_text"],
+                "mandatory_exit_at_text": timing["mandatory_exit_at_text"],
+                "timing_qualification": timing["timing_qualification"],
+                "confidence": trade_contracts.rule_confidence(abs(float(market_bias_scores.get("net_score", 0)))),
+                "probability": "N/A — no calibrated option-outcome probability",
             }
         except Exception as e:
             LOGGER.debug("Suppressed exception: %s", e)
@@ -6133,7 +6178,34 @@ elif selected_tab == "Options & Derivatives Chain":
             bc6.metric("Capital Required", f"₹{best['required_capital']:,.0f}")
             bc7.metric("Capital at Risk", f"₹{best['total_risk']:,.0f}", f"{max_risk_pct:.1f}% budget")
 
+            bias_factor_key = "bull_factors" if best["side"] == "CE" else "bear_factors"
+            option_indicators = list((market_bias_scores or {}).get(bias_factor_key, []))
+            option_indicators_text = ", ".join(option_indicators) or "Evidence unavailable"
+            stop_method_note = (
+                f"Stop tightened from ₹{best['original_stop_premium']:.2f} to preserve 1:2"
+                if best.get("stop_was_tightened") else "Original IV/DTE stop retained"
+            )
+            st.dataframe(pd.DataFrame([{
+                "Timestamp": best["entry_at_text"],
+                "Action (Buy/Sell)": f"Buy {selected_opt_asset} {int(best['strike'])} {best['side']}",
+                "Entry Price": f"₹{best['premium']:.2f}",
+                "Exit Price": f"Target ₹{best['target_premium']:.2f} / Stop ₹{best['stop_premium']:.2f}",
+                "Risk/Reward": f"1:{best['reward_risk']:.2f} net",
+                "Indicators Used": option_indicators_text,
+                "Notes": f"{best['confidence']}; {stop_method_note}; {best['probability']}",
+            }]), width="stretch", hide_index=True)
+            st.info(
+                f"Enter only during **{best['entry_at_text']}–{best['entry_valid_until_text']} IST** at or below the displayed ask. "
+                f"Exit earlier when target/stop trades; otherwise exit no later than **{best['mandatory_exit_at_text']} IST**."
+            )
+
             st.caption("Fresh proposal, not an executed trade. Entry uses the ask; exits use bid-price barriers. Sizing and net R:R include the same 0.7% illustrative fees, not guaranteed actual costs. Quantity is capped by visible ask depth; fills and gaps are not guaranteed.")
+            if best.get("stop_was_tightened"):
+                st.warning(
+                    f"Risk/reward correction applied: the previous ₹{best['original_stop_premium']:.2f} stop "
+                    f"would not clear 1:2, so the protective stop is ₹{best['stop_premium']:.2f}. "
+                    "The target was not widened. A tighter stop can be hit more often."
+                )
             st.caption(f"Sizing assumptions: capital ₹{investment_capital:,.0f}; risk {max_risk_pct:.1f}%; position cap {max_position_pct:.1f}%.")
             if lifecycle_status and lifecycle_signal:
                 status_labels = {
@@ -6192,7 +6264,7 @@ elif selected_tab == "Options & Derivatives Chain":
                 st.markdown(f"**DTE reasoning:** {best.get('dte_tier','N/A')} tier — target/stop bands are DTE-aware, tightening as expiry "
                             f"approaches since less time remains for the theoretical move to play out.")
                 st.markdown(f"**Risk:Reward:** {best['reward_risk']}x, after illustrative fees with ask entry and bid exits — "
-                            f"must clear 1.35 minimum for Medium/Low DTE tiers to be shown at all.")
+                            f"every expiry tier must clear the 1:2 minimum.")
                 if best.get("spread_pct") is not None:
                     st.markdown(f"**Liquidity:** bid ₹{best.get('bid','N/A')} / ask ₹{best.get('ask','N/A')} · spread {best['spread_pct']}% · volume {best.get('volume','N/A')}")
                 if require_mtf_confirmation:
@@ -6203,9 +6275,17 @@ elif selected_tab == "Options & Derivatives Chain":
                         st.markdown(f"**Multi-Timeframe Confirmation:** {badge} {mtf_status} · 15m: {mtf_detail.get('15m','N/A')} · 1H: {mtf_detail.get('1H','N/A')} · Daily: {mtf_detail.get('Daily','N/A')}")
                 st.caption(
                     "Position sized per your sidebar Capital & Risk settings — ideas that don't fit even 1 lot, or whose "
-                    "reward:risk falls below 1.35 after DTE adjustment, are filtered out entirely, never shown ranked-low. "
+                    "net reward:risk falls below 1:2 after DTE adjustment and costs are filtered out entirely. "
                     "Not investment advice — check liquidity before sizing up."
                 )
+                st.markdown("**Calculation audit**")
+                st.code(
+                    f"Gross risk = Entry − Stop = {best['premium']:.2f} − {best['stop_premium']:.2f}\n"
+                    f"Gross reward = Target − Entry = {best['target_premium']:.2f} − {best['premium']:.2f}\n"
+                    f"Estimated cost = Entry × 0.7% = {best['premium'] * 0.007:.2f}\n"
+                    f"Net R:R = (Gross reward − cost) / (Gross risk + cost) = {best['reward_risk']:.2f}"
+                )
+                st.dataframe(pd.DataFrame(trade_contracts.indicator_formula_reference()), width="stretch", hide_index=True)
         if not recommendations:
             # recommendations may have been reset to [] by the MTF-mixed
             # filter above even though we're inside this branch — these
@@ -6221,7 +6301,16 @@ elif selected_tab == "Options & Derivatives Chain":
                          had_previous_signal else
                          "⚪ **NO TRADE.** Current conditions don't provide a sufficiently strong risk-adjusted setup.")
             else:
-                st.info("⚪ **NO TRADE.** Current setups don't clear the minimum 1.35 reward:risk bar once DTE-adjusted target/stop bands are applied — a weak setup near expiry is downgraded to no recommendation rather than shown anyway.")
+                if option_rr_rejections:
+                    rejected = max(option_rr_rejections, key=lambda item: item["net_ratio"])
+                    st.info(
+                        f"⚪ **NO TRADE — risk/reward gate.** Best candidate was {int(rejected['strike'])} "
+                        f"{rejected['side']} with net R:R 1:{rejected['net_ratio']:.2f}. The current target was "
+                        f"₹{rejected['target']:.2f}; it would need approximately ₹{rejected['required_target']:.2f} "
+                        "to clear 1:2 without moving the structural stop. The app will not invent that target."
+                    )
+                else:
+                    st.info("⚪ **NO TRADE.** Current setups don't clear the minimum 1:2 net reward:risk gate after DTE adjustment and costs.")
 
         with st.expander("📜 Signal History", expanded=False):
             history = get_signal_history(selected_opt_asset, selected_expiry, CURRENT_USER_ID) if using_live_chain else []
@@ -6237,10 +6326,20 @@ elif selected_tab == "Options & Derivatives Chain":
         )
         decision_reason = market_bias_scores.get("decision_reason") if market_bias_scores else None
         reason_suffix = f" Reason: {decision_reason}." if decision_reason else ""
-        st.info(
-            f"Market bias is currently **{market_bias}**{score_suffix} — no high-conviction directional options trade "
-            f"to recommend right now.{reason_suffix}"
-        )
+        if option_rr_rejections:
+            rejected = max(option_rr_rejections, key=lambda item: item["net_ratio"])
+            st.info(
+                f"⚪ **NO TRADE — 1:2 gate.** Bias is **{market_bias}**{score_suffix}, but the best "
+                f"candidate ({int(rejected['strike'])} {rejected['side']}) produced only "
+                f"1:{rejected['net_ratio']:.2f} net reward:risk. Its target is ₹{rejected['target']:.2f}; "
+                f"approximately ₹{rejected['required_target']:.2f} would be required with the same stop. "
+                "The application will not widen the target merely to manufacture an acceptable ratio."
+            )
+        else:
+            st.info(
+                f"Market bias is currently **{market_bias}**{score_suffix} — no high-conviction directional options trade "
+                f"to recommend right now.{reason_suffix}"
+            )
 
     with st.expander("📊 Detailed Options Analytics (Advanced / Optional)"):
         col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
@@ -6335,18 +6434,55 @@ elif selected_tab == "Futures & Derivatives":
             def determine_futures_bias():
                 try:
                     hist = fetch_upstox_history(spot_key, access_token, days=60)
-                    if hist.empty or len(hist) < 20:
-                        return "Neutral"
+                    if hist.empty or len(hist) < 50:
+                        return "Neutral", {"reason": "At least 50 daily bars are required", "history": hist}
                     ema20 = ta.ema(hist['Close'], length=20).dropna()
-                    if ema20.empty:
-                        return "Neutral"
-                    return "Bullish" if spot_ltp > ema20.iloc[-1] else "Bearish"
+                    ema50 = ta.ema(hist['Close'], length=50).dropna()
+                    rsi14 = ta.rsi(hist['Close'], length=14).dropna()
+                    macd_frame = ta.macd(hist['Close'], fast=12, slow=26, signal=9).dropna()
+                    adx_frame = ta.adx(hist['High'], hist['Low'], hist['Close'], length=14).dropna()
+                    if ema20.empty or ema50.empty or rsi14.empty or macd_frame.empty or adx_frame.empty:
+                        return "Neutral", {"reason": "Required EMA/RSI/MACD/ADX evidence is unavailable", "history": hist}
+                    macd_hist_col = next(col for col in macd_frame if col.startswith("MACDh_"))
+                    adx_col = next(col for col in adx_frame if col.startswith("ADX_"))
+                    dmp_col = next(col for col in adx_frame if col.startswith("DMP_"))
+                    dmn_col = next(col for col in adx_frame if col.startswith("DMN_"))
+                    values = {
+                        "EMA20": float(ema20.iloc[-1]), "EMA50": float(ema50.iloc[-1]),
+                        "RSI14": float(rsi14.iloc[-1]), "MACD histogram": float(macd_frame[macd_hist_col].iloc[-1]),
+                        "ADX14": float(adx_frame[adx_col].iloc[-1]),
+                        "+DI": float(adx_frame[dmp_col].iloc[-1]), "-DI": float(adx_frame[dmn_col].iloc[-1]),
+                    }
+                    bull, bear = [], []
+                    (bull if spot_ltp > values["EMA20"] else bear).append("Price vs EMA20")
+                    (bull if values["EMA20"] > values["EMA50"] else bear).append("EMA20/EMA50")
+                    if values["RSI14"] > 52:
+                        bull.append("RSI14")
+                    elif values["RSI14"] < 48:
+                        bear.append("RSI14")
+                    if values["MACD histogram"] > 0:
+                        bull.append("MACD histogram")
+                    elif values["MACD histogram"] < 0:
+                        bear.append("MACD histogram")
+                    (bull if values["+DI"] > values["-DI"] else bear).append("ADX directional index")
+                    direction = "Bullish" if len(bull) > len(bear) else ("Bearish" if len(bear) > len(bull) else "Neutral")
+                    aligned = bull if direction == "Bullish" else bear
+                    if direction == "Neutral" or len(aligned) < 3 or values["ADX14"] < 18:
+                        return "Neutral", {
+                            "reason": "Fewer than three aligned indicators or ADX below 18",
+                            "bull_factors": bull, "bear_factors": bear, "values": values, "history": hist,
+                        }
+                    score = min(100.0, len(aligned) / 5.0 * 100.0 + min(values["ADX14"], 40.0) / 4.0)
+                    return direction, {
+                        "reason": "Aligned multi-indicator evidence", "bull_factors": bull,
+                        "bear_factors": bear, "values": values, "score": score, "history": hist,
+                    }
                 except Exception as e:
                     LOGGER.debug("Suppressed exception: %s", e)
-                    return "Neutral"
+                    return "Neutral", {"reason": "Indicator calculation failed", "history": pd.DataFrame()}
 
-            fut_bias = determine_futures_bias()
-            hist_for_atr = fetch_upstox_history(spot_key, access_token, days=60)
+            fut_bias, fut_evidence = determine_futures_bias()
+            hist_for_atr = fut_evidence.get("history", pd.DataFrame())
             atr_series = ta.atr(hist_for_atr['High'], hist_for_atr['Low'], hist_for_atr['Close'], length=14).dropna() if not hist_for_atr.empty else pd.Series(dtype=float)
 
             st.markdown("### 🎯 Recommended Futures Trade")
@@ -6358,21 +6494,51 @@ elif selected_tab == "Futures & Derivatives":
                 entry = fut_ltp
                 engine_direction = "long" if fut_bias == "Bullish" else "short"
 
-                target = risk_engine.calculate_target(entry, atr_val, engine_direction, 2.0)
-                stop = risk_engine.calculate_stop(entry, atr_val, engine_direction, 1.5)
+                target = risk_engine.calculate_target(entry, atr_val, engine_direction, 2.5)
+                stop = risk_engine.calculate_stop(entry, atr_val, engine_direction, 1.0)
+                futures_cost = estimate_execution_cost(
+                    price=entry, order_value=0, average_daily_value=0, asset_class="futures",
+                )
+                futures_math = trade_contracts.calculate_trade_math(
+                    entry, stop, target, direction=engine_direction,
+                    round_trip_cost_bps=futures_cost.round_trip_bps,
+                )
+                timing = trade_contracts.build_trade_timing(datetime.datetime.now(IST), intraday=True)
 
                 # Deliberately fixed 1-lot reference here (not risk-sized) — this
                 # tab's own caption below explains it's a setup only.
                 lots = 1
-                st.success(
-                    f"**{fut_bias} trend** → {direction} **{fut_symbol}** @ ~₹{entry:,.2f} (lot size {lot_size}) · "
-                    f"Target ~₹{target:,.2f} · Stop ~₹{stop:,.2f}"
-                )
-                st.caption("Setup only — no position sizing or capital/margin figures shown; size your own quantity per your own risk management.")
-                st.session_state["last_futures_summary"] = {
-                    "index": selected_fut_index, "symbol": fut_symbol, "direction": direction,
-                    "entry": entry, "target": target, "stop": stop, "lots": lots, "bias": fut_bias,
-                }
+                if not futures_math["passes_gate"] or not timing["entry_window_open"]:
+                    st.info(
+                        f"⚪ **NO TRADE — risk/reward or timing gate.** Candidate net R:R was "
+                        f"1:{futures_math['net_ratio']:.2f}; at least 1:2 is required."
+                    )
+                else:
+                    factors = fut_evidence.get("bull_factors" if fut_bias == "Bullish" else "bear_factors", [])
+                    confidence = trade_contracts.rule_confidence(fut_evidence.get("score", 0))
+                    st.success(
+                        f"**{fut_bias} multi-indicator setup** → {direction} **{fut_symbol}** @ ~₹{entry:,.2f} "
+                        f"(lot size {lot_size}) · Target ~₹{target:,.2f} · Stop ~₹{stop:,.2f} · "
+                        f"Net R:R 1:{futures_math['net_ratio']:.2f}"
+                    )
+                    st.dataframe(pd.DataFrame([{
+                        "Timestamp": timing["entry_at_text"], "Action (Buy/Sell)": direction,
+                        "Entry Price": f"₹{entry:,.2f}", "Exit Price": f"Target ₹{target:,.2f} / Stop ₹{stop:,.2f}",
+                        "Risk/Reward": f"1:{futures_math['net_ratio']:.2f} net",
+                        "Indicators Used": ", ".join(factors),
+                        "Notes": f"{confidence}; probability unavailable until calibrated",
+                    }]), width="stretch", hide_index=True)
+                    st.info(
+                        f"Enter only during **{timing['entry_at_text']}–{timing['entry_valid_until_text']} IST**. "
+                        f"Exit on target/stop or no later than **{timing['mandatory_exit_at_text']} IST**."
+                    )
+                    st.caption("Setup only — rule confidence is not a win probability; actual fills and costs can reduce R:R.")
+                    st.session_state["last_futures_summary"] = {
+                        "index": selected_fut_index, "symbol": fut_symbol, "direction": direction,
+                        "entry": entry, "target": target, "stop": stop, "lots": lots, "bias": fut_bias,
+                        "risk_reward": futures_math["net_ratio"], "confidence": confidence,
+                        "entry_at": timing["entry_at_text"], "exit_by": timing["mandatory_exit_at_text"],
+                    }
 
 # ==========================================
 # TAB 2: EQUITIES SCREENER & RISK MANAGEMENT
@@ -6972,9 +7138,18 @@ elif selected_tab == "Equities Screener & Risk":
                 )
                 cost_per_share = price * cost_estimate.round_trip_bps / 10_000.0
                 risk_per_share = risk_engine.calculate_risk_per_unit(price, sl, cost_buffer=cost_per_share)
-                rr_ratio = (tgt - price - cost_per_share) / risk_per_share if risk_per_share > 0 else 0
-                if rr_ratio < 1.35:
-                    return _reject("Risk:Reward", f"Net reward:risk {rr_ratio:.2f} is below 1.35 after estimated {cost_estimate.round_trip_bps:.0f} bps costs")
+                trade_math = trade_contracts.calculate_trade_math(
+                    price, sl, tgt, direction="long",
+                    round_trip_cost_bps=cost_estimate.round_trip_bps,
+                    minimum_ratio=trade_contracts.MIN_NET_REWARD_RISK,
+                )
+                rr_ratio = trade_math["net_ratio"]
+                if not trade_math["passes_gate"]:
+                    return _reject(
+                        "Risk:Reward",
+                        f"Net reward:risk {rr_ratio:.2f} is below 2.00 after estimated "
+                        f"{cost_estimate.round_trip_bps:.0f} bps costs",
+                    )
                 if risk_per_share <= 0:
                     return _reject("Data", "Invalid risk-per-share calculation")
                 # Reference qty for this screener signal (shows risk % per share
@@ -7055,6 +7230,17 @@ elif selected_tab == "Equities Screener & Risk":
                 if price > float(latest.get('VWAP20', price)): confirmations += 1
                 if volume_pace_ratio is not None and volume_pace_ratio >= 1.2: confirmations += 1
 
+                aligned_indicators = []
+                if ema_trend.startswith("🟢"): aligned_indicators.append("EMA20/50/200 alignment")
+                if supertrend_bullish: aligned_indicators.append("Supertrend")
+                if macd_status in ("🟢 Bullish Crossover", "🟢 Above Signal"): aligned_indicators.append("MACD")
+                if not pd.isna(rsi_val) and 50.0 <= float(rsi_val) <= 70.0: aligned_indicators.append("RSI")
+                if not pd.isna(adx_val) and float(adx_val) > 25: aligned_indicators.append("ADX")
+                if weekly_trend == "Bullish (Weekly)": aligned_indicators.append("Weekly trend")
+                if rs_vs_nifty is not None and rs_vs_nifty > 0: aligned_indicators.append("Relative strength")
+                if price > float(latest.get('VWAP20', price)): aligned_indicators.append("VWAP20")
+                if volume_pace_ratio is not None and volume_pace_ratio >= 1.2: aligned_indicators.append("Volume pace")
+
                 trend_score = _clamp(
                     (40 if ema_trend.startswith("🟢") else 20)
                     + (20 if supertrend_bullish else 0)
@@ -7125,6 +7311,9 @@ elif selected_tab == "Equities Screener & Risk":
                         return _reject("Volume", f"Breakout Quality score {breakout_quality['score']:.0f}/100 is below the 40 minimum")
 
                 action, action_reason = runtime.equity_action(score, price, sl, tgt, atr_val, custom_days)
+                timing = trade_contracts.build_trade_timing(
+                    datetime.datetime.now(IST), horizon_sessions=custom_days, intraday=False,
+                )
                 _archive_stage2(
                     True, score=score, entry=price, stop=sl, target=tgt,
                     features={
@@ -7160,6 +7349,15 @@ elif selected_tab == "Equities Screener & Risk":
                     "Risk:Reward": risk_reward_str,
                     "Risk %": round(risk_pct, 2),
                     "Estimated Costs": f"{cost_estimate.round_trip_bps:.0f} bps round trip (spread/slippage/impact/statutory estimate)",
+                    "Timestamp": timing["entry_at_text"],
+                    "Entry Valid Until": timing["entry_valid_until_text"],
+                    "Mandatory Exit By": timing["mandatory_exit_at_text"],
+                    "Indicators Used": ", ".join(aligned_indicators) or "Insufficient aligned evidence",
+                    "Probability": (
+                        f"Historical base-rule rate {historical_win_prob:.1f}% ({probability_ci})"
+                        if historical_win_prob is not None else
+                        "N/A — insufficient calibrated outcome evidence"
+                    ),
                     "Target Move (scenario)": f"+{exp_return_pct:.2f}%",
                     "Historical Win Rate": f"{historical_win_prob:.1f}%" if historical_win_prob is not None else "N/A",
                     "Probability 95% CI": probability_ci,
@@ -7370,6 +7568,34 @@ elif selected_tab == "Equities Screener & Risk":
         if any(s["Sector"] == "Unclassified" for s in valid_signals):
             st.warning("Some industries are unclassified. Unknown names share one capped bucket; verified sector diversification cannot be claimed.")
         st.markdown(f"##### {len(valid_signals)} Screened Equities — {custom_days}-Day Horizon (Under ₹{max_stock_price:,.0f})")
+
+        trade_summary_rows = []
+        for sig in valid_signals:
+            is_actionable = sig.get("Action") == "Buy"
+            trade_summary_rows.append({
+                "Timestamp": sig.get("Timestamp", "N/A"),
+                "Action (Buy/Sell)": sig.get("Action", "Watch"),
+                "Entry Price": sig.get("Live Price", "N/A") if is_actionable else "Not actionable",
+                "Exit Price": (
+                    f"Target {sig.get('Target')} / Stop {sig.get('Stop Loss')} / "
+                    f"time exit {sig.get('Mandatory Exit By', 'N/A')}"
+                ),
+                "Risk/Reward": sig.get("Risk:Reward", "N/A"),
+                "Indicators Used": sig.get("Indicators Used", "N/A"),
+                "Notes": f"{sig.get('Conviction', 'N/A')}; {sig.get('Probability', 'N/A')}",
+            })
+        st.dataframe(pd.DataFrame(trade_summary_rows), width="stretch", hide_index=True)
+        st.caption(
+            "An actionable entry is valid for 15 minutes from its timestamp while quotes remain fresh. "
+            "Exit earlier at target/stop; the displayed multi-session time exit is a weekday estimate, "
+            "so an NSE holiday moves it to the corresponding trading session."
+        )
+        with st.expander("Formula reference and calculation method", expanded=False):
+            st.dataframe(pd.DataFrame(trade_contracts.indicator_formula_reference()), width="stretch", hide_index=True)
+            st.caption(
+                "The formula panel explains inputs; it does not imply that adding more indicators increases accuracy. "
+                "Rule confidence is kept separate from calibrated probability."
+            )
 
         def _render_risk_card(sig):
             """Requirement 1: trader-friendly risk card, per stock. All numbers
@@ -7806,13 +8032,39 @@ elif selected_tab == "Commodities (MCX)":
                     c_target = round(mcx_ltp + direction_sign * 3.0 * curr_atr, 2)
                     matching_rows = mcx_fut_df[mcx_fut_df['instrument_key'] == mcx_key]
                     c_lot_size = get_lot_size_from_row(matching_rows.iloc[0], None) if not matching_rows.empty else None
-
-                    st.success(
-                        f"**Rule-based setup for {selected_commodity}** → {direction} @ ~₹{mcx_ltp:,.2f} "
-                        f"(exchange lot size {c_lot_size if c_lot_size else 'unavailable'}) · "
-                        f"Target ~₹{c_target:,.2f} · Stop ~₹{c_stop:,.2f}"
+                    mcx_cost = estimate_execution_cost(
+                        price=mcx_ltp, order_value=0, average_daily_value=0, asset_class="futures",
                     )
-                    st.caption("Setup only — no position sizing or margin figures shown; size your own quantity per your own risk management.")
+                    mcx_math = trade_contracts.calculate_trade_math(
+                        mcx_ltp, c_stop, c_target,
+                        direction="long" if bullish_setup else "short",
+                        round_trip_cost_bps=mcx_cost.round_trip_bps,
+                    )
+                    mcx_timing = trade_contracts.build_trade_timing(datetime.datetime.now(IST), intraday=True)
+                    if not mcx_math["passes_gate"] or not mcx_timing["entry_window_open"]:
+                        st.info(
+                            f"⚪ **NO TRADE — risk/reward or timing gate.** Candidate net R:R was "
+                            f"1:{mcx_math['net_ratio']:.2f}; at least 1:2 is required."
+                        )
+                    else:
+                        st.success(
+                            f"**Rule-based setup for {selected_commodity}** → {direction} @ ~₹{mcx_ltp:,.2f} "
+                            f"(exchange lot size {c_lot_size if c_lot_size else 'unavailable'}) · "
+                            f"Target ~₹{c_target:,.2f} · Stop ~₹{c_stop:,.2f} · Net R:R 1:{mcx_math['net_ratio']:.2f}"
+                        )
+                        st.dataframe(pd.DataFrame([{
+                            "Timestamp": mcx_timing["entry_at_text"], "Action (Buy/Sell)": direction,
+                            "Entry Price": f"₹{mcx_ltp:,.2f}",
+                            "Exit Price": f"Target ₹{c_target:,.2f} / Stop ₹{c_stop:,.2f}",
+                            "Risk/Reward": f"1:{mcx_math['net_ratio']:.2f} net",
+                            "Indicators Used": "Price/EMA20, EMA20/EMA50, RSI14",
+                            "Notes": "Medium (rule evidence, not probability); calibrated probability unavailable",
+                        }]), width="stretch", hide_index=True)
+                        st.info(
+                            f"Enter only during **{mcx_timing['entry_at_text']}–{mcx_timing['entry_valid_until_text']} IST**. "
+                            f"Exit on target/stop or no later than **{mcx_timing['mandatory_exit_at_text']} IST**."
+                        )
+                        st.caption("Setup only — no position sizing or margin figures shown; actual fills and costs can reduce R:R.")
                 elif not MARKET_OPEN or not mcx_quotes.get(mcx_key):
                     st.info("Research snapshot only: a verified open MCX session and a current quote are required for a directional setup.")
                 elif mcx_ltp > 0 and curr_atr > 0:
@@ -8132,10 +8384,58 @@ elif selected_tab == "SMC & Technical Analysis":
                             s_tgt = None
                         s_return = round(((s_tgt - s_price) / s_price) * 100, 2) if s_tgt is not None else None
 
-                        bias_label = "🟢 LONG" if smc_bias == "Bullish" else ("🔴 SHORT" if smc_bias == "Bearish" else "⚪ NO TRADE")
+                        smc_math, smc_timing = None, None
+                        smc_actionable = False
+                        if s_sl is not None and s_tgt is not None and s_price:
+                            s_market_data = (s_quotes.get(s_key, {}).get("market_data") or s_quotes.get(s_key, {})) if s_quotes else {}
+                            s_avg_daily_value = float(pd.to_numeric(s_df.get("Volume"), errors="coerce").tail(20).mean()) * float(s_price) if "Volume" in s_df else 0.0
+                            s_cost = estimate_execution_cost(
+                                price=s_price, bid=s_market_data.get("bid_price"), ask=s_market_data.get("ask_price"),
+                                order_value=risk_engine.position_capital_budget(), average_daily_value=s_avg_daily_value,
+                                asset_class="equity",
+                            )
+                            smc_math = trade_contracts.calculate_trade_math(
+                                s_price, s_sl, s_tgt,
+                                direction="long" if smc_bias == "Bullish" else "short",
+                                round_trip_cost_bps=s_cost.round_trip_bps,
+                            )
+                            smc_timing = trade_contracts.build_trade_timing(
+                                datetime.datetime.now(IST), horizon_sessions=lookup_days, intraday=False,
+                            )
+                            smc_actionable = bool(
+                                MARKET_OPEN and s_quotes and s_quotes.get(s_key)
+                                and smc_math["passes_gate"] and smc_timing["entry_window_open"]
+                            )
+
+                        bias_label = (
+                            "🟢 LONG" if smc_actionable and smc_bias == "Bullish" else
+                            "🔴 SHORT" if smc_actionable and smc_bias == "Bearish" else "⚪ NO TRADE"
+                        )
                         st.markdown(f"### Technical Setup for {search_ticker} — {bias_label}")
                         if smc_bias == "Neutral":
                             st.info("Market structure is neutral or conflicting. Target and stop are intentionally withheld until a directional structure is confirmed.")
+                        elif not smc_actionable:
+                            ratio_text = f" Net R:R is 1:{smc_math['net_ratio']:.2f}." if smc_math else ""
+                            st.info(
+                                "Research levels only—not actionable. A verified open session, fresh quote, and minimum 1:2 "
+                                f"net reward:risk are required.{ratio_text}"
+                            )
+                        else:
+                            smc_factors = ["Market structure", "BOS/CHoCH", "Weekly trend", "Relative strength", "Volume profile"]
+                            st.dataframe(pd.DataFrame([{
+                                "Timestamp": smc_timing["entry_at_text"],
+                                "Action (Buy/Sell)": "Buy" if smc_bias == "Bullish" else "Sell",
+                                "Entry Price": f"₹{s_price:,.2f}",
+                                "Exit Price": f"Target ₹{s_tgt:,.2f} / Stop ₹{s_sl:,.2f}",
+                                "Risk/Reward": f"1:{smc_math['net_ratio']:.2f} net",
+                                "Indicators Used": ", ".join(smc_factors),
+                                "Notes": "Rule-based structure; calibrated probability unavailable",
+                            }]), width="stretch", hide_index=True)
+                            st.info(
+                                f"Enter only during **{smc_timing['entry_at_text']}–{smc_timing['entry_valid_until_text']} IST**. "
+                                f"Exit on target/stop or no later than **{smc_timing['mandatory_exit_at_text']} IST** "
+                                "(weekday estimate; NSE holidays move the final session)."
+                            )
                         sc1, sc2, sc3, sc4 = st.columns(4)
                         sc1.metric("Research Price (snapshot)", f"₹{s_price:,.2f}")
                         sc2.metric("Target Price", f"₹{s_tgt:,.2f}" if s_tgt is not None else "N/A", f"{s_return:+.2f}%" if s_return is not None else None)
