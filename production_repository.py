@@ -46,6 +46,11 @@ def _json(value):
 def _finite_decimal(value):
     if value is None or value == "":
         return None
+    try:
+        result = Decimal(str(value))
+        return result if result.is_finite() else None
+    except Exception:
+        return None
 
 
 def _date_value(value):
@@ -62,11 +67,17 @@ def _date_value(value):
         except ValueError:
             continue
     return None
-    try:
-        result = Decimal(str(value))
-        return result if result.is_finite() else None
-    except Exception:
-        return None
+
+
+def _executemany(conn, statement: str, rows) -> None:
+    """Execute a parameter batch through a DB-API cursor.
+
+    Psycopg 3 exposes ``executemany`` on cursors, not connections. Keeping the
+    compatibility detail here prevents bulk archive methods from accidentally
+    using the SQLite-style connection API.
+    """
+    with conn.cursor() as cur:
+        cur.executemany(statement, rows)
 
 
 class ProductionRepository:
@@ -384,7 +395,7 @@ class ProductionRepository:
                 (snapshot_date, observed_at, source, len(rows), payload_hash, complete, SCHEMA_VERSION),
             )
             conn.execute(f"DELETE FROM {SCHEMA}.universe_membership WHERE snapshot_date=%s", (snapshot_date,))
-            conn.executemany(
+            _executemany(conn,
                 f"INSERT INTO {SCHEMA}.universe_membership VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 [(snapshot_date, r["instrument_key"], r["trading_symbol"], r["isin"], r["name"],
                   r["exchange"], r["segment"], r["instrument_type"], r["security_type"], r["sector"],
@@ -434,7 +445,7 @@ class ProductionRepository:
             ))
         if rows:
             with self.connect() as conn:
-                conn.executemany(f"""
+                _executemany(conn, f"""
                     INSERT INTO {SCHEMA}.corporate_actions VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT(isin,action_type,ex_date,source) DO UPDATE SET
                         record_date=EXCLUDED.record_date,amount=EXCLUDED.amount,ratio=EXCLUDED.ratio,
@@ -482,7 +493,7 @@ class ProductionRepository:
         if not rows:
             return 0
         with self.connect() as conn:
-            conn.executemany(
+            _executemany(conn,
                 f"INSERT INTO {SCHEMA}.market_quotes VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                 rows,
             )
@@ -509,7 +520,7 @@ class ProductionRepository:
         if not rows:
             return 0
         with self.connect() as conn:
-            conn.executemany(f"""
+            _executemany(conn, f"""
                 INSERT INTO {SCHEMA}.scanner_observations VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(observation_id) DO UPDATE SET
                     observed_at=EXCLUDED.observed_at, stage1_pass=EXCLUDED.stage1_pass,
@@ -615,7 +626,7 @@ class ProductionRepository:
         if not rows:
             return 0
         with self.connect() as conn:
-            conn.executemany(f"""
+            _executemany(conn, f"""
                 INSERT INTO {SCHEMA}.mf_nav VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(scheme_code,nav_date) DO UPDATE SET
                     isin_growth=EXCLUDED.isin_growth,isin_reinvestment=EXCLUDED.isin_reinvestment,
@@ -647,7 +658,7 @@ class ProductionRepository:
         if not rows:
             return 0
         with self.connect() as conn:
-            conn.executemany(f"""
+            _executemany(conn, f"""
                 INSERT INTO {SCHEMA}.mf_disclosures VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(scheme_code,effective_date,source) DO UPDATE SET
                     scheme_name=EXCLUDED.scheme_name,category=EXCLUDED.category,ter=EXCLUDED.ter,

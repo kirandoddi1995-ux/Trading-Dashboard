@@ -20,6 +20,7 @@ FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_
                    'tests/test_regressions.py', 'tests/test_mf_research.py', 'tests/test_audit_fixes.py',
                    'tests/test_performance_foundation.py', 'tests/test_prediction_validation.py',
                    'tests/test_remaining_upgrades.py', 'tests/test_production_data_pipeline.py',
+                   'tests/test_production_repository_dbapi.py',
                    '.github/workflows/quality.yml', '.github/workflows/scheduled-collector.yml']
 
 

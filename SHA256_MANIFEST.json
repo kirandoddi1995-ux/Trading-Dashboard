@@ -18,7 +18,7 @@
   "mf_archive.py": "828aaa32390e5ca21b40ecd5626b0dafd2f07b0483523b821499fd3674050fb8",
   "risk_engine.py": "1666c79032eeadbbb7339ef35ef7de1f45f60d5a1f51321201e4dbd994cd2c1f",
   "deployment_canary.py": "dc240fbfdfb722f00ce446b806488e1067e68d4b049380bba25d1fe8978904ca",
-  "production_repository.py": "b932b321a9b4d58f9f04571b8219bf31f03002b37df1e7f5cef673efe4b6c4aa",
+  "production_repository.py": "3ccea997a748b8f3ef850977b84fbdaa3cb972fa2b789463b694c2386c8457c3",
   "amfi_ingestion.py": "41bb80bf5559b04c79c10ce3a1e86f120c160626180c5719f689e29cfedc1e5a",
   "scheduled_collector.py": "1f3b46f095502d49c0bdb1650e320d6c2b4db1abc11ae9aa39237fce2348ee07",
   "requirements.txt": "121f40b9b0ee2831c35567970c5bf5b822725e99d69e74600208cb9871843eda",
@@ -28,7 +28,7 @@
   "PRODUCTION_GUIDE.md": "6208878b6be88019987ad6641d7a3c313451f78d5a529b75bf8ed35b6e4c8ae1",
   "FIX_VERIFICATION_2026-08-31.md": "fb8388f5d9676dd30412b998069813dea7c17bd24ddda0511b7f1142f87f514f",
   "provider_smoke.py": "1dfc16afe79cb27190303129ac1f8e3510598a331ad32c156ba47e377e90fabb",
-  "package_release.py": "50683b61a86133fc6d5d087b4ae756a09a34e93798788ceba84a9c8b6159e086",
+  "package_release.py": "93bf62dfd059d013db3ae36a202105760dd2af712774a507bd2a79c266024a50",
   "tests/test_regressions.py": "de2b0f84c7972a73f20f2f3a8d7ee5f26e18c09e3c8da8a939f216a2b66104fc",
   "tests/test_mf_research.py": "c9e5be8183e52cf7394766ab56ec77b191d549faa18e9286ee9b841a3c04c0a2",
   "tests/test_audit_fixes.py": "a31bf24479cb5ea7c850e79f0bcefc732841e7eeda480adac2a75bc2a19c07c4",
@@ -36,6 +36,7 @@
   "tests/test_prediction_validation.py": "7ca1aad5a20ef541988eb5b4c392e401fc0e569d3fc333e350580c239d61e444",
   "tests/test_remaining_upgrades.py": "d9f0c74a06ea7e6a889624f334af5d5e0c5b3130b01b0a758259f9bf80e36cb8",
   "tests/test_production_data_pipeline.py": "899765399103a947b81092edd31827c63c6c1a8562701a25b892d391397924ee",
+  "tests/test_production_repository_dbapi.py": "0b50d6c7f92f1e94e8bf0fb1d596c2ae0df76c165a2f3e5e2c58a78b4af623c8",
   ".github/workflows/quality.yml": "22d04fabf0777b19c7b31d1e7cf37ce40746af0f1e9387b5f305e42fc26d598c",
   ".github/workflows/scheduled-collector.yml": "ccfbea0b0b2cbe7fee1af75fb496f2a3fcba5f8774cacd9b5d0cc17ef9e19beb"
 }
