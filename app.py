@@ -60,6 +60,58 @@ OBSERVABILITY = observability.get_registry()
 MARKET_DATA_GATEWAY = get_market_data_gateway()
 _RERUN_ID, _RERUN_STARTED = OBSERVABILITY.begin_rerun()
 
+
+def render_trade_transparency_panel(
+    entry,
+    stop,
+    target,
+    *,
+    direction="long",
+    cost_bps=0.0,
+    label="Trade",
+):
+    """Render the same auditable maths immediately after every setup table."""
+    try:
+        calculation = trade_contracts.calculate_trade_math(
+            entry,
+            stop,
+            target,
+            direction=direction,
+            round_trip_cost_bps=cost_bps,
+        )
+    except (TypeError, ValueError) as exc:
+        st.warning(f"Transparency calculation unavailable: {exc}")
+        return
+
+    is_short = str(direction).strip().lower() in {"short", "sell", "bearish", "pe_short"}
+    risk_formula = "Stop − Entry" if is_short else "Entry − Stop"
+    reward_formula = "Entry − Target" if is_short else "Target − Entry"
+    risk_values = f"{float(stop):.2f} − {float(entry):.2f}" if is_short else f"{float(entry):.2f} − {float(stop):.2f}"
+    reward_values = f"{float(entry):.2f} − {float(target):.2f}" if is_short else f"{float(target):.2f} − {float(entry):.2f}"
+    gate_result = "PASS" if calculation["passes_gate"] else "NO TRADE"
+
+    with st.expander(f"Transparency panel — {label}", expanded=False):
+        st.markdown("**Step-by-step reward/risk calculation**")
+        st.code(
+            f"Gross risk = {risk_formula} = {risk_values} = {calculation['gross_risk']:.2f}\n"
+            f"Gross reward = {reward_formula} = {reward_values} = {calculation['gross_reward']:.2f}\n"
+            f"Estimated round-trip cost = Entry × {float(cost_bps):.2f} / 10,000 "
+            f"= {calculation['cost_per_unit']:.2f}\n"
+            f"Net risk = Gross risk + cost = {calculation['net_risk']:.2f}\n"
+            f"Net reward = Gross reward − cost = {calculation['net_reward']:.2f}\n"
+            f"Net reward/risk = Net reward / Net risk = 1:{calculation['net_ratio']:.2f}\n"
+            f"Minimum required = 1:{calculation['minimum_ratio']:.2f} → {gate_result}"
+        )
+        st.dataframe(
+            pd.DataFrame(trade_contracts.indicator_formula_reference()),
+            width="stretch",
+            hide_index=True,
+        )
+        st.caption(
+            "These formulas document the evidence inputs and trade gate. Rule confidence is not a "
+            "calibrated probability; probability remains N/A until sufficient out-of-sample evidence exists."
+        )
+
 # ==========================================
 # EMBEDDED RISK ENGINE + ADVANCED MARGIN API
 # ==========================================
@@ -6190,10 +6242,15 @@ elif selected_tab == "Options & Derivatives Chain":
                 "Action (Buy/Sell)": f"Buy {selected_opt_asset} {int(best['strike'])} {best['side']}",
                 "Entry Price": f"₹{best['premium']:.2f}",
                 "Exit Price": f"Target ₹{best['target_premium']:.2f} / Stop ₹{best['stop_premium']:.2f}",
-                "Risk/Reward": f"1:{best['reward_risk']:.2f} net",
+                "Reward/Risk": f"1:{best['reward_risk']:.2f} net",
                 "Indicators Used": option_indicators_text,
                 "Notes": f"{best['confidence']}; {stop_method_note}; {best['probability']}",
             }]), width="stretch", hide_index=True)
+            render_trade_transparency_panel(
+                best["premium"], best["stop_premium"], best["target_premium"],
+                direction="long", cost_bps=70.0,
+                label=f"{selected_opt_asset} {int(best['strike'])} {best['side']}",
+            )
             st.info(
                 f"Enter only during **{best['entry_at_text']}–{best['entry_valid_until_text']} IST** at or below the displayed ask. "
                 f"Exit earlier when target/stop trades; otherwise exit no later than **{best['mandatory_exit_at_text']} IST**."
@@ -6278,14 +6335,6 @@ elif selected_tab == "Options & Derivatives Chain":
                     "net reward:risk falls below 1:2 after DTE adjustment and costs are filtered out entirely. "
                     "Not investment advice — check liquidity before sizing up."
                 )
-                st.markdown("**Calculation audit**")
-                st.code(
-                    f"Gross risk = Entry − Stop = {best['premium']:.2f} − {best['stop_premium']:.2f}\n"
-                    f"Gross reward = Target − Entry = {best['target_premium']:.2f} − {best['premium']:.2f}\n"
-                    f"Estimated cost = Entry × 0.7% = {best['premium'] * 0.007:.2f}\n"
-                    f"Net R:R = (Gross reward − cost) / (Gross risk + cost) = {best['reward_risk']:.2f}"
-                )
-                st.dataframe(pd.DataFrame(trade_contracts.indicator_formula_reference()), width="stretch", hide_index=True)
         if not recommendations:
             # recommendations may have been reset to [] by the MTF-mixed
             # filter above even though we're inside this branch — these
@@ -6524,10 +6573,16 @@ elif selected_tab == "Futures & Derivatives":
                     st.dataframe(pd.DataFrame([{
                         "Timestamp": timing["entry_at_text"], "Action (Buy/Sell)": direction,
                         "Entry Price": f"₹{entry:,.2f}", "Exit Price": f"Target ₹{target:,.2f} / Stop ₹{stop:,.2f}",
-                        "Risk/Reward": f"1:{futures_math['net_ratio']:.2f} net",
+                        "Reward/Risk": f"1:{futures_math['net_ratio']:.2f} net",
                         "Indicators Used": ", ".join(factors),
                         "Notes": f"{confidence}; probability unavailable until calibrated",
                     }]), width="stretch", hide_index=True)
+                    render_trade_transparency_panel(
+                        entry, stop, target,
+                        direction=engine_direction,
+                        cost_bps=futures_cost.round_trip_bps,
+                        label=fut_symbol,
+                    )
                     st.info(
                         f"Enter only during **{timing['entry_at_text']}–{timing['entry_valid_until_text']} IST**. "
                         f"Exit on target/stop or no later than **{timing['mandatory_exit_at_text']} IST**."
@@ -7580,23 +7635,22 @@ elif selected_tab == "Equities Screener & Risk":
                     f"Target {sig.get('Target')} / Stop {sig.get('Stop Loss')} / "
                     f"time exit {sig.get('Mandatory Exit By', 'N/A')}"
                 ),
-                "Risk/Reward": sig.get("Risk:Reward", "N/A"),
+                "Reward/Risk": sig.get("Risk:Reward", "N/A"),
                 "Indicators Used": sig.get("Indicators Used", "N/A"),
                 "Notes": f"{sig.get('Conviction', 'N/A')}; {sig.get('Probability', 'N/A')}",
             })
         st.dataframe(pd.DataFrame(trade_summary_rows), width="stretch", hide_index=True)
+        render_trade_transparency_panel(
+            best["_price_val"], best["_sl"], best["_tgt"],
+            direction="long",
+            cost_bps=best.get("_execution_cost_bps", 30.0),
+            label=f"{best['Ticker']} equity",
+        )
         st.caption(
             "An actionable entry is valid for 15 minutes from its timestamp while quotes remain fresh. "
             "Exit earlier at target/stop; the displayed multi-session time exit is a weekday estimate, "
             "so an NSE holiday moves it to the corresponding trading session."
         )
-        with st.expander("Formula reference and calculation method", expanded=False):
-            st.dataframe(pd.DataFrame(trade_contracts.indicator_formula_reference()), width="stretch", hide_index=True)
-            st.caption(
-                "The formula panel explains inputs; it does not imply that adding more indicators increases accuracy. "
-                "Rule confidence is kept separate from calibrated probability."
-            )
-
         def _render_risk_card(sig):
             """Requirement 1: trader-friendly risk card, per stock. All numbers
             here are re-derived from values evaluate_stock already computed —
@@ -8056,10 +8110,16 @@ elif selected_tab == "Commodities (MCX)":
                             "Timestamp": mcx_timing["entry_at_text"], "Action (Buy/Sell)": direction,
                             "Entry Price": f"₹{mcx_ltp:,.2f}",
                             "Exit Price": f"Target ₹{c_target:,.2f} / Stop ₹{c_stop:,.2f}",
-                            "Risk/Reward": f"1:{mcx_math['net_ratio']:.2f} net",
+                            "Reward/Risk": f"1:{mcx_math['net_ratio']:.2f} net",
                             "Indicators Used": "Price/EMA20, EMA20/EMA50, RSI14",
                             "Notes": "Medium (rule evidence, not probability); calibrated probability unavailable",
                         }]), width="stretch", hide_index=True)
+                        render_trade_transparency_panel(
+                            mcx_ltp, c_stop, c_target,
+                            direction="long" if bullish_setup else "short",
+                            cost_bps=mcx_cost.round_trip_bps,
+                            label=selected_commodity,
+                        )
                         st.info(
                             f"Enter only during **{mcx_timing['entry_at_text']}–{mcx_timing['entry_valid_until_text']} IST**. "
                             f"Exit on target/stop or no later than **{mcx_timing['mandatory_exit_at_text']} IST**."
@@ -8427,10 +8487,16 @@ elif selected_tab == "SMC & Technical Analysis":
                                 "Action (Buy/Sell)": "Buy" if smc_bias == "Bullish" else "Sell",
                                 "Entry Price": f"₹{s_price:,.2f}",
                                 "Exit Price": f"Target ₹{s_tgt:,.2f} / Stop ₹{s_sl:,.2f}",
-                                "Risk/Reward": f"1:{smc_math['net_ratio']:.2f} net",
+                                "Reward/Risk": f"1:{smc_math['net_ratio']:.2f} net",
                                 "Indicators Used": ", ".join(smc_factors),
                                 "Notes": "Rule-based structure; calibrated probability unavailable",
                             }]), width="stretch", hide_index=True)
+                            render_trade_transparency_panel(
+                                s_price, s_sl, s_tgt,
+                                direction="long" if smc_bias == "Bullish" else "short",
+                                cost_bps=s_cost.round_trip_bps,
+                                label=f"{search_ticker} technical research",
+                            )
                             st.info(
                                 f"Enter only during **{smc_timing['entry_at_text']}–{smc_timing['entry_valid_until_text']} IST**. "
                                 f"Exit on target/stop or no later than **{smc_timing['mandatory_exit_at_text']} IST** "
