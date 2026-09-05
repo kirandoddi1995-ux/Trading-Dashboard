@@ -13,6 +13,8 @@ import gzip
 import json
 import os
 import sys
+import socket
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -41,6 +43,58 @@ NSE_INSTRUMENTS = "https://assets.upstox.com/market-quote/instruments/exchange/N
 NIFTY_KEY = "NSE_INDEX|Nifty 50"
 MINIMUM_UNIVERSE = 1000
 QUOTE_BATCH_SIZE = 200
+
+
+class CollectorLease:
+    """Distributed collector lease with fencing and background renewal."""
+
+    def __init__(self, repo, *, ttl_seconds=180):
+        self.repo = repo
+        self.ttl_seconds = max(int(ttl_seconds), 30)
+        self.owner_id = f"{socket.gethostname()}:{os.getpid()}:{os.urandom(6).hex()}"
+        self.lease_name = "scheduled-evidence-collector"
+        self.token = None
+        self._stop = threading.Event()
+        self._lost = threading.Event()
+        self._thread = None
+
+    def __enter__(self):
+        lease = self.repo.acquire_collector_lease(
+            self.lease_name, self.owner_id, ttl_seconds=self.ttl_seconds,
+        )
+        if not lease:
+            raise RuntimeError("Another scheduled evidence collector owns the active lease")
+        self.token = int(lease["fencing_token"])
+        self._thread = threading.Thread(target=self._renew_loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def _renew_loop(self):
+        while not self._stop.wait(max(self.ttl_seconds / 3, 10)):
+            try:
+                renewed = self.repo.renew_collector_lease(
+                    self.lease_name, self.owner_id, self.token,
+                    ttl_seconds=self.ttl_seconds,
+                )
+            except Exception:
+                renewed = False
+            if not renewed:
+                self._lost.set()
+                return
+
+    def assert_valid(self):
+        if self._lost.is_set():
+            raise RuntimeError("Collector lease was lost; fenced worker stopped")
+
+    def __exit__(self, *_):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=2)
+        if self.token is not None:
+            try:
+                self.repo.release_collector_lease(self.lease_name, self.owner_id, self.token)
+            except Exception:
+                pass
 
 
 def session() -> requests.Session:
@@ -183,10 +237,10 @@ def update_matured_targets(repo: ProductionRepository, client: requests.Session,
                            *, limit=40) -> dict:
     pending = repo.pending_observations(target_version=TARGET_VERSION, limit=limit)
     if not pending:
-        return {"pending": 0, "stored": 0, "failed": 0}
+        return {"pending": 0, "stored": 0, "failed": 0, "failures": []}
     earliest = min(pd.Timestamp(row["as_of_date"]).date() for row in pending) - dt.timedelta(days=5)
     benchmark = fetch_daily_history(client, token, NIFTY_KEY, earliest)
-    stored, failed = 0, 0
+    stored, failed, deferred, failures = 0, 0, 0, []
     for observation in pending:
         try:
             start = pd.Timestamp(observation["as_of_date"]).date() - dt.timedelta(days=5)
@@ -204,18 +258,48 @@ def update_matured_targets(repo: ProductionRepository, client: requests.Session,
             market_close = observed_at.replace(hour=15, minute=30, second=0, microsecond=0)
             signal_timestamp = observed_at if market_open <= observed_at <= market_close else None
             for horizon in observation["missing_horizons"]:
-                target = compute_forward_target(
-                    history, observation["as_of_date"],
-                    TargetDefinition(int(horizon), round_trip_cost_bps=cost_bps, entry_rule="exact_intraday"),
-                    stop=float(observation["stop"]), target=float(observation["target"]), benchmark=benchmark,
-                    intraday=intraday, signal_timestamp=signal_timestamp,
-                )
-                if target is not None:
+                try:
+                    completed_sessions = history.loc[
+                        history.index.normalize() > pd.Timestamp(observation["as_of_date"]).normalize()
+                    ]
+                    if len(completed_sessions) < int(horizon):
+                        deferred += 1
+                        continue
+                    target = compute_forward_target(
+                        history, observation["as_of_date"],
+                        TargetDefinition(int(horizon), round_trip_cost_bps=cost_bps, entry_rule="exact_intraday"),
+                        stop=float(observation["stop"]), target=float(observation["target"]), benchmark=benchmark,
+                        intraday=intraday, signal_timestamp=signal_timestamp,
+                    )
+                    if target is None:
+                        raise ValueError("Exact target evidence is incomplete or ambiguous")
                     repo.save_prediction_target(observation["observation_id"], target)
                     stored += 1
-        except Exception:
-            failed += 1
-    return {"pending": len(pending), "stored": stored, "failed": failed}
+                except Exception as exc:
+                    failed += 1
+                    detail = {
+                        "observation_id": observation["observation_id"], "horizon": int(horizon),
+                        "error_kind": type(exc).__name__, "message": str(exc)[:300],
+                    }
+                    failures.append(detail)
+                    repo.record_quality_event(
+                        "prediction_targets", "ERROR", "TARGET_GENERATION_FAILED",
+                        f"Target generation failed for observation {observation['observation_id']}", detail,
+                    )
+        except Exception as exc:
+            missing_count = max(len(observation.get("missing_horizons") or []), 1)
+            failed += missing_count
+            detail = {
+                "observation_id": observation.get("observation_id"),
+                "error_kind": type(exc).__name__, "message": str(exc)[:300],
+            }
+            failures.append(detail)
+            repo.record_quality_event(
+                "prediction_targets", "ERROR", "TARGET_INPUT_FETCH_FAILED",
+                f"Target inputs failed for observation {observation.get('observation_id')}", detail,
+            )
+    return {"pending": len(pending), "stored": stored, "failed": failed, "deferred": deferred,
+            "failures": failures[:50]}
 
 
 def update_corporate_actions(repo: ProductionRepository, client: requests.Session, token: str,
@@ -350,54 +434,68 @@ def resolve_mode(requested: str, now=None) -> str:
 def run(mode: str, *, nav_file=None) -> dict:
     mode = resolve_mode(mode)
     token = analytics_token()
-    repo = ProductionRepository(os.environ.get("DATABASE_URL"))
+    repo = ProductionRepository(
+        os.environ.get("DATABASE_URL"), schema_mode="validate", enforce_restricted_role=True,
+    )
     client = session()
-    run_id = repo.start_run(mode, scheduled_for=dt.datetime.now(IST), metadata={"headless": True})
-    result = {"mode": mode}
-    record_count = 0
-    try:
-        if mode in {"open", "close", "all"}:
-            universe = fetch_nse_universe(client)
-            universe_result = repo.archive_universe(universe, dt.datetime.now(IST).date())
-            quotes = fetch_quotes(client, token, [row["instrument_key"] for row in universe])
-            quote_count = repo.archive_quotes(quotes, observed_at=dt.datetime.now(dt.timezone.utc))
-            coverage = quote_count / len(universe) if universe else 0.0
-            result.update(universe=universe_result, quotes=quote_count, quote_coverage=coverage)
-            record_count += universe_result["count"] + quote_count
-            if coverage < 0.90:
-                repo.record_quality_event(
-                    "market_quotes", "ERROR", "QUOTE_COVERAGE_LOW",
-                    f"Scheduled quote coverage was {coverage:.1%}; minimum is 90%",
-                    {"universe": len(universe), "quotes": quote_count},
-                )
-                raise RuntimeError(f"Quote coverage {coverage:.1%} is below 90%")
-        if mode in {"close", "all"}:
-            target_result = update_matured_targets(repo, client, token)
-            result["targets"] = target_result
-            record_count += target_result["stored"]
-            mf_result = archive_mutual_funds(repo, client, nav_file=nav_file)
-            result["mutual_funds"] = mf_result
-            record_count += mf_result["nav_archived"]
-        if mode in {"weekly", "all"}:
-            if mode == "weekly":
+    lease_ttl = int(os.environ.get("COLLECTOR_LEASE_TTL_SECONDS", "180"))
+    with CollectorLease(repo, ttl_seconds=lease_ttl) as lease:
+        run_id = repo.start_run(
+            mode, scheduled_for=dt.datetime.now(IST),
+            metadata={"headless": True, "fencing_token": lease.token},
+        )
+        result = {"mode": mode, "fencing_token": lease.token}
+        record_count = 0
+        try:
+            if mode in {"open", "close", "all"}:
+                lease.assert_valid()
                 universe = fetch_nse_universe(client)
                 universe_result = repo.archive_universe(universe, dt.datetime.now(IST).date())
-                result["universe"] = universe_result
-                record_count += universe_result["count"]
-            corporate_actions = update_corporate_actions(repo, client, token)
-            result["corporate_actions"] = corporate_actions
-            record_count += corporate_actions["archived"]
-            mf_result = archive_mutual_funds(repo, client, nav_file=nav_file, include_disclosures=True)
-            result["mutual_funds"] = mf_result
-            record_count += mf_result["nav_archived"] + mf_result["disclosures_archived"]
-        repo.finish_run(run_id, status="SUCCESS", record_count=record_count, metadata=result)
-        return result
-    except Exception as exc:
-        repo.finish_run(
-            run_id, status="FAILED", record_count=record_count,
-            error_kind=type(exc).__name__, error_message=str(exc), metadata=result,
-        )
-        raise
+                quotes = fetch_quotes(client, token, [row["instrument_key"] for row in universe])
+                lease.assert_valid()
+                quote_count = repo.archive_quotes(quotes, observed_at=dt.datetime.now(dt.timezone.utc))
+                coverage = quote_count / len(universe) if universe else 0.0
+                result.update(universe=universe_result, quotes=quote_count, quote_coverage=coverage)
+                record_count += universe_result["count"] + quote_count
+                if coverage < 0.90:
+                    repo.record_quality_event(
+                        "market_quotes", "ERROR", "QUOTE_COVERAGE_LOW",
+                        f"Scheduled quote coverage was {coverage:.1%}; minimum is 90%",
+                        {"universe": len(universe), "quotes": quote_count},
+                    )
+                    raise RuntimeError(f"Quote coverage {coverage:.1%} is below 90%")
+            if mode in {"close", "all"}:
+                lease.assert_valid()
+                target_result = update_matured_targets(repo, client, token)
+                result["targets"] = target_result
+                record_count += target_result["stored"]
+                mf_result = archive_mutual_funds(repo, client, nav_file=nav_file)
+                result["mutual_funds"] = mf_result
+                record_count += mf_result["nav_archived"]
+            if mode in {"weekly", "all"}:
+                lease.assert_valid()
+                if mode == "weekly":
+                    universe = fetch_nse_universe(client)
+                    universe_result = repo.archive_universe(universe, dt.datetime.now(IST).date())
+                    result["universe"] = universe_result
+                    record_count += universe_result["count"]
+                corporate_actions = update_corporate_actions(repo, client, token)
+                result["corporate_actions"] = corporate_actions
+                record_count += corporate_actions["archived"]
+                mf_result = archive_mutual_funds(repo, client, nav_file=nav_file, include_disclosures=True)
+                result["mutual_funds"] = mf_result
+                record_count += mf_result["nav_archived"] + mf_result["disclosures_archived"]
+            lease.assert_valid()
+            run_status = "PARTIAL" if result.get("targets", {}).get("failed", 0) else "SUCCESS"
+            result["status"] = run_status
+            repo.finish_run(run_id, status=run_status, record_count=record_count, metadata=result)
+            return result
+        except Exception as exc:
+            repo.finish_run(
+                run_id, status="FAILED", record_count=record_count,
+                error_kind=type(exc).__name__, error_message=str(exc), metadata=result,
+            )
+            raise
 
 
 def main(argv=None) -> int:
@@ -405,14 +503,25 @@ def main(argv=None) -> int:
     parser.add_argument("--mode", choices=("auto", "open", "close", "weekly", "all"), default="auto")
     parser.add_argument("--nav-file", help="Optional local AMFI NAV file for a controlled import")
     parser.add_argument("--check", action="store_true", help="Validate configuration and schema only")
+    parser.add_argument("--migrate", action="store_true", help="Apply schema migrations with the owner-only URL")
     args = parser.parse_args(argv)
+    if args.migrate:
+        migration_url = str(os.environ.get("DATABASE_MIGRATION_URL") or "").strip()
+        if not migration_url:
+            print(json.dumps({"configured": False, "status": "DATABASE_MIGRATION_URL is not configured"}))
+            return 1
+        health = ProductionRepository(migration_url, schema_mode="migrate").health()
+        print(json.dumps(health, default=str))
+        return 0 if health.get("connected") else 1
     if args.check:
-        health = ProductionRepository(os.environ.get("DATABASE_URL")).health()
+        health = ProductionRepository(
+            os.environ.get("DATABASE_URL"), schema_mode="validate", enforce_restricted_role=True,
+        ).health()
         print(json.dumps(health, default=str))
         return 0 if health.get("connected") else 1
     result = run(args.mode, nav_file=args.nav_file)
     print(json.dumps(result, indent=2, default=str))
-    return 0
+    return 0 if result.get("status") == "SUCCESS" else 2
 
 
 if __name__ == "__main__":

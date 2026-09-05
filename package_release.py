@@ -15,16 +15,25 @@ RUNTIME = ['app.py', 'app_runtime.py', 'scan_jobs.py', 'reliable_charts.py',
            'model_registry.py', 'mf_archive.py', 'risk_engine.py', 'deployment_canary.py',
            'production_repository.py', 'amfi_ingestion.py', 'scheduled_collector.py',
            'trade_contracts.py', 'evidence_ledger.py', 'quant_foundation.py',
+           'deployment_security.py', 'environment_preflight.py',
+           'resilience_control_plane.py', 'resilience_acceptance.py',
+           'resilience_policy.json', 'resilience_policy.sha256',
            'requirements.txt', 'constraints.txt']
 FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_GUIDE.md',
+                   'RESILIENCE_IMPLEMENTATION.md', 'RESILIENCE_RUNBOOK.md',
                    'FIX_VERIFICATION_2026-08-31.md', 'provider_smoke.py', 'package_release.py',
+                   'database_runtime_role.sql.example', 'bootstrap_clean_environment.ps1',
                    'tests/test_regressions.py', 'tests/test_mf_research.py', 'tests/test_audit_fixes.py',
                    'tests/test_performance_foundation.py', 'tests/test_prediction_validation.py',
                    'tests/test_remaining_upgrades.py', 'tests/test_production_data_pipeline.py',
                    'tests/test_production_repository_dbapi.py',
                    'tests/test_trade_contracts.py',
                    'tests/test_quant_foundation.py',
-                   '.github/workflows/quality.yml', '.github/workflows/scheduled-collector.yml']
+                   'tests/test_quant_governance_adversarial.py',
+                   'tests/test_deployment_hardening.py',
+                   'tests/test_resilience_control_plane.py',
+                   '.github/workflows/quality.yml', '.github/workflows/scheduled-collector.yml',
+                   '.github/workflows/resilience.yml']
 
 
 def package():
@@ -32,7 +41,7 @@ def package():
     if not canaries['ok']:
         raise RuntimeError(f"Release canaries failed: {canaries['checks']}")
     manifest = {}
-    archive = ROOT / 'release-v21.0-quant-governance.zip'
+    archive = ROOT / 'release-v22.0-resilience-control-plane.zip'
     for name in FILES:
         path = (ROOT / name).resolve()
         if not path.is_relative_to(ROOT) or not path.is_file():

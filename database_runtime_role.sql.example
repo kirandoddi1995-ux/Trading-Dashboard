@@ -1,0 +1,36 @@
+-- Run in Supabase SQL Editor as the project owner AFTER the migration job has
+-- created quant_app. Replace the placeholder with a password-manager-generated
+-- value. Never commit the completed file or its password.
+
+CREATE ROLE quant_app_runtime WITH
+    LOGIN
+    PASSWORD 'REPLACE_WITH_A_LONG_RANDOM_PASSWORD'
+    NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+
+GRANT CONNECT ON DATABASE postgres TO quant_app_runtime;
+GRANT USAGE ON SCHEMA quant_app TO quant_app_runtime;
+REVOKE CREATE ON SCHEMA quant_app FROM quant_app_runtime;
+
+GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA quant_app TO quant_app_runtime;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA quant_app TO quant_app_runtime;
+GRANT DELETE ON TABLE quant_app.universe_membership TO quant_app_runtime;
+
+-- The ledger is append-only even if another broad grant is added later.
+REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
+    ON TABLE quant_app.evidence_ledger_events FROM quant_app_runtime;
+REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
+    ON TABLE quant_app.resilience_state_events FROM quant_app_runtime;
+
+-- Keep future migration-created objects usable but not owner-controlled.
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA quant_app
+    GRANT SELECT, INSERT, UPDATE ON TABLES TO quant_app_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA quant_app
+    GRANT USAGE, SELECT ON SEQUENCES TO quant_app_runtime;
+
+-- Deployment verification (all privilege columns except SELECT/INSERT must be false):
+SELECT current_user,
+       has_schema_privilege('quant_app_runtime','quant_app','CREATE') AS schema_create,
+       has_table_privilege('quant_app_runtime','quant_app.evidence_ledger_events','SELECT') AS ledger_select,
+       has_table_privilege('quant_app_runtime','quant_app.evidence_ledger_events','INSERT') AS ledger_insert,
+       has_table_privilege('quant_app_runtime','quant_app.evidence_ledger_events','UPDATE') AS ledger_update,
+       has_table_privilege('quant_app_runtime','quant_app.evidence_ledger_events','DELETE') AS ledger_delete;

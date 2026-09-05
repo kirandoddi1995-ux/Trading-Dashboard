@@ -22,7 +22,16 @@ from mf_archive import MutualFundArchive
 from risk_engine import RiskEngine
 from production_repository import ProductionRepository
 from evidence_ledger import ImmutableEvidenceLedger
-from quant_foundation import PRODUCTION_QUANT_CONFIG
+from quant_foundation import (
+    PRODUCTION_QUANT_CONFIG,
+    executable_expected_value,
+    execution_quality_gate,
+    portfolio_risk_report,
+    system_kill_switch,
+    validate_point_in_time_features,
+)
+from deployment_security import require_streamlit_auth
+from resilience_control_plane import get_resilience_control_plane
 import pandas as pd
 import numpy as np
 import requests
@@ -46,6 +55,7 @@ import logging
 import hashlib
 import gzip
 import io
+import uuid
 from collections import deque
 from pathlib import Path
 warnings.filterwarnings("default")
@@ -56,11 +66,126 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("god_mode_quant")
-APP_BUILD = "v21.0-QUANT-GOVERNANCE"
+APP_BUILD = "v22.0-RESILIENCE-CONTROL-PLANE"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
-OBSERVABILITY = observability.get_registry()
-MARKET_DATA_GATEWAY = get_market_data_gateway()
-_RERUN_ID, _RERUN_STARTED = OBSERVABILITY.begin_rerun()
+
+
+def evaluate_live_governance_contract(
+    *, instrument, entry, stop, target, direction="long", quantity=1, cost_bps=0.0,
+    feature_values=None, source="Upstox live", spread_bps=None, order_value=None,
+    average_daily_value=None, quote_age_seconds=0.0, provider_available=True,
+    exchange_open=True, calibration_evidence=None, portfolio_returns=None,
+    portfolio_weights=None, stress_scenarios=None,
+):
+    """One fail-closed contract shared by every live recommendation path."""
+    decision_at = datetime.datetime.now(datetime.timezone.utc)
+    lineage = {
+        str(name): {
+            "value": value, "source": source, "available_at": decision_at,
+            "effective_at": decision_at, "maximum_age_seconds": 5,
+        }
+        for name, value in dict(feature_values or {}).items()
+    }
+    pit = validate_point_in_time_features(
+        decision_at, lineage, universe_observed_at=decision_at,
+        universe_effective_at=decision_at, pit_coverage=1.0,
+        policy=PRODUCTION_QUANT_CONFIG.evidence,
+    )
+    execution = execution_quality_gate(
+        spread_bps=spread_bps, order_value=order_value,
+        average_daily_value=average_daily_value, quote_age_seconds=quote_age_seconds,
+        policy=PRODUCTION_QUANT_CONFIG.execution,
+    )
+    kill = system_kill_switch(
+        feed_age_seconds=quote_age_seconds, provider_available=provider_available,
+        exchange_open=exchange_open, policy=PRODUCTION_QUANT_CONFIG.portfolio,
+        maximum_feed_age_seconds=PRODUCTION_QUANT_CONFIG.execution.maximum_quote_age_seconds,
+    )
+    expected_value = executable_expected_value(
+        entry=entry, stop=stop, target=target, direction=direction, quantity=quantity,
+        round_trip_cost_bps=cost_bps, calibration_evidence=calibration_evidence,
+        config=PRODUCTION_QUANT_CONFIG,
+    )
+    portfolio = {"status": "UNAVAILABLE", "reason": "Current portfolio histories were not supplied"}
+    if isinstance(portfolio_returns, pd.DataFrame) and portfolio_weights:
+        portfolio = portfolio_risk_report(
+            portfolio_returns, portfolio_weights, stress_scenarios=stress_scenarios,
+            policy=PRODUCTION_QUANT_CONFIG.portfolio,
+        )
+    blocking = []
+    if pit["status"] != "PASS":
+        blocking.extend(item.get("detail", item.get("code")) for item in pit["failures"])
+    if execution["status"] != "PASS":
+        blocking.extend(execution["failures"])
+    if kill["status"] != "PASS":
+        blocking.extend(kill["reasons"])
+    if expected_value["status"] == "NO_TRADE":
+        blocking.append(expected_value["reason"])
+    if portfolio["status"] == "NO_TRADE":
+        blocking.extend(portfolio.get("failures", [portfolio.get("reason", "Portfolio gate failed")]))
+    outbox_stats = None
+    try:
+        outbox_stats = EVIDENCE_LEDGER.outbox_stats()
+    except Exception as exc:
+        blocking.append(f"Evidence outbox telemetry failed: {type(exc).__name__}")
+    resilience = RESILIENCE_CONTROL_PLANE.evaluate_recommendation(
+        price=entry,
+        quote_at=decision_at,
+        received_at=decision_at,
+        quote_age_seconds=quote_age_seconds,
+        provider_available=provider_available,
+        exchange_open=exchange_open,
+        calibration_evidence=calibration_evidence,
+        outbox_stats=outbox_stats,
+        runtime_expected={
+            "build": os.environ.get("EXPECTED_APP_BUILD", APP_BUILD),
+            "policy_hash": os.environ.get(
+                "RESILIENCE_POLICY_SHA256", RESILIENCE_CONTROL_PLANE.policy.digest
+            ),
+        },
+        runtime_actual={
+            "build": APP_BUILD,
+            "policy_hash": RESILIENCE_CONTROL_PLANE.policy.digest,
+        },
+    )
+    resilience_public = resilience.public_dict()
+    OBSERVABILITY.record(
+        "safety_state", resilience_public["state"], 0.0,
+        ok=resilience.allow_new_trades, status=resilience_public["state"],
+        correlation_id=resilience_public["correlation_id"],
+    )
+    LOGGER.info(
+        "resilience_decision %s",
+        json.dumps({
+            "correlation_id": resilience_public["correlation_id"],
+            "state": resilience_public["state"], "instrument": str(instrument),
+            "codes": [item["code"] for item in resilience_public["findings"]],
+            "build": APP_BUILD, "policy_hash": resilience_public["policy_hash"],
+        }, sort_keys=True),
+    )
+    evidence_recorder = globals().get("_record_trade_evidence")
+    if callable(evidence_recorder):
+        try:
+            resilience_event = evidence_recorder(
+                aggregate_id=f"safety:{resilience_public['correlation_id']}",
+                event_type="RISK_DECISION", payload=resilience_public,
+                effective_at=decision_at,
+                idempotency_key=f"{APP_BUILD}:safety:{resilience_public['correlation_id']}",
+                source="resilience-control-plane",
+            )
+            if resilience_event is None:
+                blocking.append("Local resilience evidence append failed")
+        except Exception as exc:
+            blocking.append(f"Resilience evidence append failed: {type(exc).__name__}")
+    if not resilience.allow_new_trades:
+        blocking.extend(item.detail for item in resilience.findings if item.state.value >= 2)
+    return {
+        "status": "PASS" if not blocking else "NO_TRADE", "allow_trade": not blocking,
+        "instrument": str(instrument), "decision_at": decision_at.isoformat(),
+        "blocking_reasons": blocking, "pit": pit, "execution": execution,
+        "kill_switch": kill, "expected_value": expected_value, "portfolio": portfolio,
+        "resilience": resilience_public,
+    }
 
 
 def render_trade_transparency_panel(
@@ -71,6 +196,7 @@ def render_trade_transparency_panel(
     direction="long",
     cost_bps=0.0,
     label="Trade",
+    governance=None,
 ):
     """Render the same auditable maths immediately after every setup table."""
     try:
@@ -113,6 +239,17 @@ def render_trade_transparency_panel(
             "These formulas document the evidence inputs and trade gate. Rule confidence is not a "
             "calibrated probability; probability remains N/A until sufficient out-of-sample evidence exists."
         )
+        if governance and governance.get("resilience"):
+            resilient = governance["resilience"]
+            st.markdown("**Production safety decision**")
+            st.json({
+                "state": resilient.get("state"),
+                "correlation_id": resilient.get("correlation_id"),
+                "policy_version": resilient.get("policy_version"),
+                "policy_hash": resilient.get("policy_hash"),
+                "findings": resilient.get("findings", []),
+                "exits_remain_enabled": resilient.get("allow_exits", True),
+            }, expanded=False)
 
 # ==========================================
 # EMBEDDED RISK ENGINE + ADVANCED MARGIN API
@@ -615,6 +752,11 @@ except ImportError:
 
 # --- PAGE CONFIG & RESPONSIVE CSS ---
 st.set_page_config(layout="wide", page_title="Quant Terminal")
+AUTHENTICATED_USER = require_streamlit_auth(st)
+OBSERVABILITY = observability.get_registry()
+RESILIENCE_CONTROL_PLANE = get_resilience_control_plane()
+MARKET_DATA_GATEWAY = get_market_data_gateway()
+_RERUN_ID, _RERUN_STARTED = OBSERVABILITY.begin_rerun()
 
 
 @st.cache_resource(show_spinner=False)
@@ -697,10 +839,12 @@ def get_evidence_ledger(db_path=DEFAULT_DB_PATH, signing_key=""):
 
 
 @st.cache_resource(show_spinner=False)
-def get_production_repository(database_url="", signing_key=""):
+def get_production_repository(database_url="", signing_key="", schema_mode="validate"):
     return ProductionRepository(
         database_url or os.environ.get("DATABASE_URL"),
         evidence_signing_key=signing_key,
+        schema_mode=schema_mode,
+        enforce_restricted_role=True,
     )
 
 
@@ -709,39 +853,66 @@ EVIDENCE_LEDGER = get_evidence_ledger(DEFAULT_DB_PATH, _EVIDENCE_SIGNING_KEY)
 DURABLE_REPOSITORY = get_production_repository(
     _server_secret("DATABASE_URL") or os.environ.get("DATABASE_URL", ""),
     _EVIDENCE_SIGNING_KEY,
+    "validate",
 )
+
+
+def _append_durable_with_retry(event, attempts=3):
+    """Idempotently deliver one ledger event with bounded exponential retry."""
+    last_error = None
+    for attempt in range(max(int(attempts), 1)):
+        try:
+            return DURABLE_REPOSITORY.append_evidence_event(**event)
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                time.sleep(0.25 * (3 ** attempt))
+    raise last_error
+
+
+def _flush_evidence_outbox(limit=50):
+    if not DURABLE_REPOSITORY.configured:
+        return {"delivered": 0, "failed": 0}
+    delivered = failed = 0
+    for pending in EVIDENCE_LEDGER.pending_deliveries(limit=limit):
+        try:
+            _append_durable_with_retry(pending)
+            EVIDENCE_LEDGER.mark_delivered(pending["idempotency_key"])
+            delivered += 1
+        except Exception as exc:
+            failed += 1
+            EVIDENCE_LEDGER.queue_delivery(pending, type(exc).__name__)
+    return {"delivered": delivered, "failed": failed}
 
 
 def _record_trade_evidence(*, aggregate_id, event_type, payload, effective_at,
                            idempotency_key, source="quant-terminal-ui"):
-    """Write once locally, then durably; evidence failures never alter a trade decision."""
+    """Write locally and durably, retaining failed deliveries in a local outbox."""
+    delivery = {
+        "aggregate_id": aggregate_id, "event_type": event_type, "payload": payload,
+        "effective_at": effective_at, "source": source, "actor_id": "single-user-session",
+        "idempotency_key": idempotency_key,
+    }
     try:
-        local_event = EVIDENCE_LEDGER.append(
-            aggregate_id=aggregate_id,
-            event_type=event_type,
-            payload=payload,
-            effective_at=effective_at,
-            source=source,
-            actor_id="single-user-session",
-            idempotency_key=idempotency_key,
-        )
+        local_event = EVIDENCE_LEDGER.append(**delivery)
     except Exception as exc:
         LOGGER.error("Local evidence ledger append failed: %s", type(exc).__name__)
         return None
-    if not local_event.get("duplicate") and DURABLE_REPOSITORY.configured:
+    if DURABLE_REPOSITORY.configured:
         try:
-            DURABLE_REPOSITORY.append_evidence_event(
-                aggregate_id=aggregate_id,
-                event_type=event_type,
-                payload=payload,
-                effective_at=effective_at,
-                source=source,
-                actor_id="single-user-session",
-                idempotency_key=idempotency_key,
-            )
+            _flush_evidence_outbox()
+            _append_durable_with_retry(delivery)
+            EVIDENCE_LEDGER.mark_delivered(idempotency_key)
         except Exception as exc:
             LOGGER.error("Durable evidence ledger append failed: %s", type(exc).__name__)
+            EVIDENCE_LEDGER.queue_delivery(delivery, type(exc).__name__)
     return local_event
+
+
+try:
+    _EVIDENCE_OUTBOX_STARTUP = _flush_evidence_outbox()
+except Exception as exc:
+    LOGGER.warning("Evidence outbox startup flush deferred: %s", type(exc).__name__)
 
 
 def _durable_sync_local_scanner(as_of_date, strategy_version):
@@ -770,11 +941,11 @@ def _durable_sync_local_scanner(as_of_date, strategy_version):
     return DURABLE_REPOSITORY.upsert_scanner_observations(records)
 
 
-# No login is required. Never assign unrelated browser visitors the same owner.
-# Reloading starts a new private session; legacy shared-owner rows stay untouched.
+# OIDC authenticates access. Local rows still use a distinct browser-session owner;
+# legacy shared-owner rows stay untouched and are never assigned automatically.
 runtime.retain_preferences(st.session_state)
 CURRENT_USER_ID = runtime.session_identity(st.session_state)
-CURRENT_USER_DISPLAY = "Session-isolated / no login"
+CURRENT_USER_DISPLAY = "OIDC allowlisted / session-isolated data"
 
 # ==========================================
 # DYNAMIC MARKET STATUS ENGINE (Upstox API v2)
@@ -4837,6 +5008,15 @@ def render_mf_research_results(saved):
         f"NAV as of {top['latest_date']}. Data confidence: {top['confidence_label']} (not predictive accuracy). "
         f"Official TER matched for {sum(pd.notna(r.get('ter')) for r in ranked)}/{len(ranked)}."
     )
+    if governance:
+        state = governance.get("status", "UNAVAILABLE")
+        ev = governance.get("expected_value", {})
+        st.caption(
+            f"Governance: **{state}** · PIT {governance.get('pit', {}).get('status', 'N/A')} · "
+            f"Execution {governance.get('execution', {}).get('status', 'N/A')} · "
+            f"Kill switch {governance.get('kill_switch', {}).get('status', 'N/A')} · "
+            f"Executable EV {ev.get('status', 'N/A')}"
+        )
     with st.expander("Official benchmark comparisons & Riskometer", expanded=True):
         top_disclosure = records.get(str(top["scheme_code"]), {})
         st.write(
@@ -5140,7 +5320,7 @@ if selected_tab == "Settings":
     st.subheader("Settings")
     st.caption("Risk, data-source and production-safety configuration.")
     sec1, sec2, sec3 = st.columns(3)
-    sec1.metric("Access mode", "Session-isolated / no login")
+    sec1.metric("Access mode", "OIDC authenticated")
     sec2.metric("Upstox server secret", "Configured" if access_token else "Missing")
     sec3.metric("Gemini server secret", "Configured" if gemini_api_key else "Missing")
     durable_health = DURABLE_REPOSITORY.health() if DURABLE_REPOSITORY.configured else {
@@ -5210,6 +5390,27 @@ if selected_tab == "Settings":
             "The system records what would pass or fail; it must not manufacture probability from rule confidence."
         )
 
+    with st.expander("Production resilience control plane", expanded=False):
+        resilience_state = RESILIENCE_CONTROL_PLANE.state_machine.state
+        outbox_health = EVIDENCE_LEDGER.outbox_stats()
+        rs1, rs2, rs3 = st.columns(3)
+        rs1.metric("Safety state", resilience_state.name)
+        rs2.metric("Policy", RESILIENCE_CONTROL_PLANE.policy.version)
+        rs3.metric("Pending evidence", outbox_health["pending"])
+        st.caption(f"Policy hash: {RESILIENCE_CONTROL_PLANE.policy.digest}")
+        st.json({
+            "new_trades": resilience_state.value < 2,
+            "writes": resilience_state.value < 3,
+            "exits": True,
+            "audit_reads": True,
+            "outbox": outbox_health,
+        }, expanded=False)
+        st.info(
+            "Independent quote reconciliation, external telemetry export, automated Streamlit rollback, "
+            "managed secret rotation and Supabase recovery drills require provider-side configuration. "
+            "Their absence remains visible and is never reported as verified."
+        )
+
     with st.expander("Point-in-time evidence & prediction validation", expanded=False):
         pit_coverage = PIT_STORE.coverage()
         validation_evidence = VALIDATION_STORE.evidence_summary()
@@ -5240,34 +5441,11 @@ if selected_tab == "Settings":
 
         label_col, validate_col = st.columns(2)
         if label_col.button("Update matured outcome labels", key="pit_update_labels", width="stretch"):
-            label_count = 0
-            benchmark_history = get_cached_history(
-                NIFTY_INDEX_KEY, access_token, days=4000, fetch_fn=fetch_upstox_history,
-            ) if access_token else _read_cached_history(NIFTY_INDEX_KEY, 4000)
-            for horizon in (5, 10, 20):
-                definition = TargetDefinition(horizon_sessions=horizon)
-                for observation in VALIDATION_STORE.pending_observations(horizon, limit=25):
-                    history = get_cached_history(
-                        observation["instrument_key"], access_token, days=4000,
-                        fetch_fn=fetch_upstox_history,
-                    ) if access_token else _read_cached_history(observation["instrument_key"], 4000)
-                    target_label = compute_forward_target(
-                        history, observation["as_of_date"], definition,
-                        stop=observation["stop"], target=observation["target"],
-                        benchmark=benchmark_history,
-                    )
-                    if target_label is not None:
-                        VALIDATION_STORE.save_target(observation["observation_id"], target_label)
-                        try:
-                            if DURABLE_REPOSITORY.configured:
-                                DURABLE_REPOSITORY.save_prediction_target(observation["observation_id"], target_label)
-                        except Exception as durable_exc:
-                            LOGGER.error("Durable target sync failed: %s", type(durable_exc).__name__)
-                        label_count += 1
-            if label_count:
-                st.success(f"Stored {label_count} newly matured, cost-adjusted outcome labels.")
-            else:
-                st.info("No additional signals have completed their 5/10/20-session horizons yet.")
+            st.info(
+                "Outcome labels are generated only by the scheduled collector, which retrieves one-minute "
+                "evidence and rejects ambiguous entry-day touches. The previous daily-bar fallback has been "
+                "disabled to prevent incompatible labels entering production validation."
+            )
 
         if validate_col.button("Run purged walk-forward validation", key="pit_run_validation", width="stretch"):
             validation_messages = []
@@ -5283,7 +5461,7 @@ if selected_tab == "Settings":
                 )
                 if result["status"] != "INSUFFICIENT_EVIDENCE":
                     validation_run_id = VALIDATION_STORE.save_validation_run(
-                        result, horizon, strategy_version=STRATEGY_VERSION
+                        result, horizon, strategy_version=STRATEGY_VERSION, dataset=dataset
                     )
                     try:
                         if DURABLE_REPOSITORY.configured:
@@ -6147,6 +6325,29 @@ elif selected_tab == "Options & Derivatives Chain":
             if not timing["entry_window_open"]:
                 return None
 
+            try:
+                traded_volume = float(str(best_row.get(vol_key, 0)).replace(",", ""))
+            except (TypeError, ValueError):
+                traded_volume = 0.0
+            governance_evaluator = globals().get("evaluate_live_governance_contract")
+            governance = (
+                governance_evaluator(
+                    instrument=f"{selected_opt_asset} {actual_strike:g} {side}",
+                    entry=premium, stop=stop_premium, target=target_premium,
+                    quantity=lots * lot_size, cost_bps=ESTIMATED_ROUND_TRIP_COST_PCT * 100,
+                    feature_values={"market_bias_score": market_bias_scores.get("net_score"), "dte": dte},
+                    spread_bps=(spread_rupees / premium * 10_000.0),
+                    order_value=required_capital,
+                    average_daily_value=traded_volume * premium,
+                    quote_age_seconds=0.0, provider_available=using_live_chain,
+                    exchange_open=MARKET_OPEN,
+                )
+                if callable(governance_evaluator)
+                else {"status": "TEST_HARNESS", "allow_trade": True, "blocking_reasons": []}
+            )
+            if not governance["allow_trade"]:
+                return None
+
             return {
                 "side": side, "strike": actual_strike, "premium": premium, "lots": lots,
                 "lot_size": lot_size, "target_premium": target_premium,
@@ -6172,9 +6373,10 @@ elif selected_tab == "Options & Derivatives Chain":
                 "timing_qualification": timing["timing_qualification"],
                 "confidence": trade_contracts.rule_confidence(abs(float(market_bias_scores.get("net_score", 0)))),
                 "probability": "N/A — no calibrated option-outcome probability",
+                "governance": governance,
             }
         except Exception as e:
-            LOGGER.debug("Suppressed exception: %s", e)
+            LOGGER.warning("Option recommendation rejected after internal error: %s", type(e).__name__)
             return None
 
     def generate_ranked_recommendations(bias, max_ideas=3):
@@ -6324,6 +6526,7 @@ elif selected_tab == "Options & Derivatives Chain":
                 best["premium"], best["stop_premium"], best["target_premium"],
                 direction="long", cost_bps=70.0,
                 label=f"{selected_opt_asset} {int(best['strike'])} {best['side']}",
+                governance=best.get("governance"),
             )
             option_aggregate = (
                 f"options:{selected_opt_asset}:{selected_expiry}:{int(best['strike'])}:"
@@ -6345,6 +6548,7 @@ elif selected_tab == "Options & Derivatives Chain":
                     "indicators": option_indicators, "rule_confidence": best["confidence"],
                     "calibrated_probability": None, "model_version": STRATEGY_VERSION,
                     "thresholds": {"minimum_net_reward_risk": 2.0},
+                    "governance": best.get("governance"),
                 },
             )
             st.info(
@@ -6373,6 +6577,25 @@ elif selected_tab == "Options & Derivatives Chain":
                     f"target ₹{lifecycle_signal['target']:.2f}, stop ₹{lifecycle_signal['stop']:.2f}. "
                     "This history is separate from the freshly priced proposal above."
                 )
+                lifecycle_event_type = {
+                    "NEW": "SIGNAL_CREATED", "REVALIDATED": "SIGNAL_AMENDED",
+                    "EXIT_TARGET": "EXIT_TARGET", "EXIT_STOP": "EXIT_STOP",
+                }.get(lifecycle_status)
+                if lifecycle_event_type:
+                    lifecycle_aggregate = f"tracked-option:{lifecycle_signal['signal_id']}"
+                    _record_trade_evidence(
+                        aggregate_id=lifecycle_aggregate, event_type=lifecycle_event_type,
+                        effective_at=datetime.datetime.now(IST),
+                        idempotency_key=(
+                            f"{APP_BUILD}:{lifecycle_aggregate}:{datetime.datetime.now(IST).date()}:{lifecycle_status}"
+                        ),
+                        payload={
+                            "lifecycle_status": lifecycle_status, "instrument": selected_opt_asset,
+                            "expiry": selected_expiry, "strike": lifecycle_signal["strike"],
+                            "direction": lifecycle_signal["direction"], "entry": lifecycle_signal["entry"],
+                            "target": lifecycle_signal["target"], "stop": lifecycle_signal["stop"],
+                        },
+                    )
             st.caption(f"Generated: {best.get('signal_generated_at', 'N/A')} — freshly evaluated this run, not carried over from a previous day.")
 
             if alternatives:
@@ -6623,7 +6846,7 @@ elif selected_tab == "Futures & Derivatives":
                         "bear_factors": bear, "values": values, "score": score, "history": hist,
                     }
                 except Exception as e:
-                    LOGGER.debug("Suppressed exception: %s", e)
+                    LOGGER.warning("Futures indicator calculation failed: %s", type(e).__name__)
                     return "Neutral", {"reason": "Indicator calculation failed", "history": pd.DataFrame()}
 
             fut_bias, fut_evidence = determine_futures_bias()
@@ -6641,8 +6864,15 @@ elif selected_tab == "Futures & Derivatives":
 
                 target = risk_engine.calculate_target(entry, atr_val, engine_direction, 2.5)
                 stop = risk_engine.calculate_stop(entry, atr_val, engine_direction, 1.0)
+                futures_adv = (
+                    float(pd.to_numeric(hist_for_atr.get("Volume"), errors="coerce").tail(20).mean()) * entry
+                    if "Volume" in hist_for_atr else 0.0
+                )
+                futures_quote = fq.get(fut_instrument_key, {}) if fq and fut_instrument_key else {}
+                futures_market_data = futures_quote.get("market_data") or futures_quote
                 futures_cost = estimate_execution_cost(
-                    price=entry, order_value=0, average_daily_value=0, asset_class="futures",
+                    price=entry, bid=futures_market_data.get("bid_price"), ask=futures_market_data.get("ask_price"),
+                    order_value=entry * lot_size, average_daily_value=futures_adv, asset_class="futures",
                 )
                 futures_math = trade_contracts.calculate_trade_math(
                     entry, stop, target, direction=engine_direction,
@@ -6653,10 +6883,22 @@ elif selected_tab == "Futures & Derivatives":
                 # Deliberately fixed 1-lot reference here (not risk-sized) — this
                 # tab's own caption below explains it's a setup only.
                 lots = 1
-                if not futures_math["passes_gate"] or not timing["entry_window_open"]:
+                futures_spread = (futures_cost.spread_bps if futures_market_data.get("bid_price")
+                                  and futures_market_data.get("ask_price") else None)
+                futures_governance = evaluate_live_governance_contract(
+                    instrument=fut_symbol, entry=entry, stop=stop, target=target,
+                    direction=engine_direction, quantity=lot_size, cost_bps=futures_cost.round_trip_bps,
+                    feature_values=fut_evidence.get("values", {}),
+                    spread_bps=futures_spread, order_value=entry * lot_size,
+                    average_daily_value=futures_adv, quote_age_seconds=0.0,
+                    provider_available=bool(fut_ltp and spot_quote_available), exchange_open=MARKET_OPEN,
+                )
+                if (not futures_math["passes_gate"] or not timing["entry_window_open"]
+                        or not futures_governance["allow_trade"]):
                     st.info(
-                        f"⚪ **NO TRADE — risk/reward or timing gate.** Candidate net R:R was "
-                        f"1:{futures_math['net_ratio']:.2f}; at least 1:2 is required."
+                        f"⚪ **NO TRADE — governance, risk/reward, or timing gate.** Candidate net R:R was "
+                        f"1:{futures_math['net_ratio']:.2f}; at least 1:2 is required. "
+                        f"{'; '.join(futures_governance['blocking_reasons'][:2])}"
                     )
                 else:
                     factors = fut_evidence.get("bull_factors" if fut_bias == "Bullish" else "bear_factors", [])
@@ -6678,6 +6920,7 @@ elif selected_tab == "Futures & Derivatives":
                         direction=engine_direction,
                         cost_bps=futures_cost.round_trip_bps,
                         label=fut_symbol,
+                        governance=futures_governance,
                     )
                     futures_aggregate = f"futures:{fut_symbol}:{direction}:{timing['entry_at_text']}"
                     _record_trade_evidence(
@@ -6695,6 +6938,7 @@ elif selected_tab == "Futures & Derivatives":
                             "indicators": factors, "rule_confidence": confidence,
                             "calibrated_probability": None, "model_version": STRATEGY_VERSION,
                             "thresholds": {"minimum_net_reward_risk": 2.0, "minimum_aligned_indicators": 3},
+                            "governance": futures_governance,
                         },
                     )
                     st.info(
@@ -7079,6 +7323,7 @@ elif selected_tab == "Equities Screener & Risk":
     if run_scan_now:
         scan_timing = {}
         _scan_as_of_date = datetime.datetime.now(IST).date().isoformat()
+        _scan_run_id = uuid.uuid4().hex
         _scanner_strategy_version = f"{STRATEGY_VERSION}:{'full' if scan_mode.startswith('Full') else 'quick'}"
         scan_stage_status = st.empty()
         _t0 = time.perf_counter()
@@ -7116,6 +7361,7 @@ elif selected_tab == "Equities Screener & Risk":
                 strategy_version=_scanner_strategy_version,
                 universe_snapshot_date=_scan_as_of_date,
                 evidence=stage1_evidence,
+                scan_run_id=_scan_run_id,
             )
         except Exception as exc:
             LOGGER.error("PIT Stage-1 evidence archival failed: %s", exc)
@@ -7199,6 +7445,7 @@ elif selected_tab == "Equities Screener & Risk":
                         universe_snapshot_date=_scan_as_of_date, stage1_pass=True,
                         stage2_pass=passed, rejection_reason=(f"{category}: {reason}" if reason else None),
                         score=score, entry=entry, stop=stop, target=target, features=evidence_features,
+                        scan_run_id=_scan_run_id,
                     )
                 except Exception as archive_exc:
                     LOGGER.error("PIT Stage-2 evidence archival failed for %s: %s", ticker, archive_exc)
@@ -7483,6 +7730,18 @@ elif selected_tab == "Equities Screener & Risk":
                 timing = trade_contracts.build_trade_timing(
                     datetime.datetime.now(IST), horizon_sessions=custom_days, intraday=False,
                 )
+                equity_governance = evaluate_live_governance_contract(
+                    instrument=ticker, entry=price, stop=sl, target=tgt, direction="long",
+                    quantity=qty_to_buy, cost_bps=cost_estimate.round_trip_bps,
+                    feature_values=scanner_components,
+                    spread_bps=(cost_estimate.spread_bps if market_data.get("bid_price")
+                                and market_data.get("ask_price") else None),
+                    order_value=price * qty_to_buy, average_daily_value=average_daily_value,
+                    quote_age_seconds=0.0, provider_available=bool(raw_quote),
+                    exchange_open=MARKET_OPEN,
+                )
+                if not equity_governance["allow_trade"]:
+                    return _reject("Governance", "; ".join(equity_governance["blocking_reasons"][:3]))
                 _archive_stage2(
                     True, score=score, entry=price, stop=sl, target=tgt,
                     features={
@@ -7527,6 +7786,7 @@ elif selected_tab == "Equities Screener & Risk":
                         if historical_win_prob is not None else
                         "N/A — insufficient calibrated outcome evidence"
                     ),
+                    "_governance": equity_governance,
                     "Target Move (scenario)": f"+{exp_return_pct:.2f}%",
                     "Historical Win Rate": f"{historical_win_prob:.1f}%" if historical_win_prob is not None else "N/A",
                     "Probability 95% CI": probability_ci,
@@ -7568,7 +7828,7 @@ elif selected_tab == "Equities Screener & Risk":
                     "score": float(score),
                 }, None
             except Exception as exc:
-                LOGGER.debug("evaluate_stock failed for %s: %s", ticker, type(exc).__name__)
+                LOGGER.warning("Equity analysis failed for %s: %s", ticker, type(exc).__name__)
                 return _reject("Error", f"Analysis error: {type(exc).__name__}")
 
         funnel_stats["live_quote_data_count"] = len(live_quote_data)
@@ -7759,6 +8019,7 @@ elif selected_tab == "Equities Screener & Risk":
             direction="long",
             cost_bps=best.get("_execution_cost_bps", 30.0),
             label=f"{best['Ticker']} equity",
+            governance=best.get("_governance"),
         )
         for sig in valid_signals:
             equity_aggregate = f"equity:{sig['Ticker']}:{sig.get('Timestamp', 'unknown')}"
@@ -7780,6 +8041,7 @@ elif selected_tab == "Equities Screener & Risk":
                     "rule_confidence": sig.get("Conviction"),
                     "calibrated_probability": None, "model_version": STRATEGY_VERSION,
                     "thresholds": {"minimum_net_reward_risk": 2.0},
+                    "governance": sig.get("_governance"),
                 },
             )
         st.caption(
@@ -8223,7 +8485,12 @@ elif selected_tab == "Commodities (MCX)":
                     matching_rows = mcx_fut_df[mcx_fut_df['instrument_key'] == mcx_key]
                     c_lot_size = get_lot_size_from_row(matching_rows.iloc[0], None) if not matching_rows.empty else None
                     mcx_cost = estimate_execution_cost(
-                        price=mcx_ltp, order_value=0, average_daily_value=0, asset_class="futures",
+                        price=mcx_ltp,
+                        bid=(mcx_quotes.get(mcx_key, {}).get("market_data") or mcx_quotes.get(mcx_key, {})).get("bid_price"),
+                        ask=(mcx_quotes.get(mcx_key, {}).get("market_data") or mcx_quotes.get(mcx_key, {})).get("ask_price"),
+                        order_value=mcx_ltp * (c_lot_size or 1),
+                        average_daily_value=(float(pd.to_numeric(hist_df.get("Volume"), errors="coerce").tail(20).mean()) * mcx_ltp
+                                             if "Volume" in hist_df else 0.0), asset_class="futures",
                     )
                     mcx_math = trade_contracts.calculate_trade_math(
                         mcx_ltp, c_stop, c_target,
@@ -8231,7 +8498,25 @@ elif selected_tab == "Commodities (MCX)":
                         round_trip_cost_bps=mcx_cost.round_trip_bps,
                     )
                     mcx_timing = trade_contracts.build_trade_timing(datetime.datetime.now(IST), intraday=True)
-                    if not mcx_math["passes_gate"] or not mcx_timing["entry_window_open"]:
+                    mcx_adv = (float(pd.to_numeric(hist_df.get("Volume"), errors="coerce").tail(20).mean()) * mcx_ltp
+                               if "Volume" in hist_df else 0.0)
+                    mcx_governance = evaluate_live_governance_contract(
+                        instrument=selected_commodity, entry=mcx_ltp, stop=c_stop, target=c_target,
+                        direction="long" if bullish_setup else "short", quantity=c_lot_size or 1,
+                        cost_bps=mcx_cost.round_trip_bps,
+                        feature_values={"atr14": curr_atr, "rsi14": curr_rsi,
+                                        "ema20": float(ema_20.dropna().iloc[-1]),
+                                        "ema50": float(ema_50.dropna().iloc[-1])},
+                        spread_bps=(mcx_cost.spread_bps if (mcx_quotes.get(mcx_key, {}).get("market_data")
+                                    or mcx_quotes.get(mcx_key, {})).get("bid_price") and
+                                    (mcx_quotes.get(mcx_key, {}).get("market_data")
+                                    or mcx_quotes.get(mcx_key, {})).get("ask_price") else None),
+                        order_value=mcx_ltp * (c_lot_size or 1), average_daily_value=mcx_adv,
+                        quote_age_seconds=0.0, provider_available=bool(mcx_quotes.get(mcx_key)),
+                        exchange_open=MARKET_OPEN,
+                    )
+                    if (not mcx_math["passes_gate"] or not mcx_timing["entry_window_open"]
+                            or not mcx_governance["allow_trade"]):
                         st.info(
                             f"⚪ **NO TRADE — risk/reward or timing gate.** Candidate net R:R was "
                             f"1:{mcx_math['net_ratio']:.2f}; at least 1:2 is required."
@@ -8255,6 +8540,7 @@ elif selected_tab == "Commodities (MCX)":
                             direction="long" if bullish_setup else "short",
                             cost_bps=mcx_cost.round_trip_bps,
                             label=selected_commodity,
+                            governance=mcx_governance,
                         )
                         mcx_aggregate = f"mcx:{selected_commodity}:{direction}:{mcx_timing['entry_at_text']}"
                         _record_trade_evidence(
@@ -8274,6 +8560,7 @@ elif selected_tab == "Commodities (MCX)":
                                 "rule_confidence": "Medium (rule evidence, not probability)",
                                 "calibrated_probability": None, "model_version": STRATEGY_VERSION,
                                 "thresholds": {"minimum_net_reward_risk": 2.0},
+                                "governance": mcx_governance,
                             },
                         )
                         st.info(
@@ -8600,7 +8887,7 @@ elif selected_tab == "SMC & Technical Analysis":
                             s_tgt = None
                         s_return = round(((s_tgt - s_price) / s_price) * 100, 2) if s_tgt is not None else None
 
-                        smc_math, smc_timing = None, None
+                        smc_math, smc_timing, smc_governance = None, None, None
                         smc_actionable = False
                         if s_sl is not None and s_tgt is not None and s_price:
                             s_market_data = (s_quotes.get(s_key, {}).get("market_data") or s_quotes.get(s_key, {})) if s_quotes else {}
@@ -8618,9 +8905,21 @@ elif selected_tab == "SMC & Technical Analysis":
                             smc_timing = trade_contracts.build_trade_timing(
                                 datetime.datetime.now(IST), horizon_sessions=lookup_days, intraday=False,
                             )
+                            smc_governance = evaluate_live_governance_contract(
+                                instrument=search_ticker, entry=s_price, stop=s_sl, target=s_tgt,
+                                direction="long" if smc_bias == "Bullish" else "short",
+                                quantity=1, cost_bps=s_cost.round_trip_bps,
+                                feature_values={"atr14": s_atr, "relative_strength": rs_vs_nifty or 0.0},
+                                spread_bps=(s_cost.spread_bps if s_market_data.get("bid_price")
+                                            and s_market_data.get("ask_price") else None),
+                                average_daily_value=s_avg_daily_value, quote_age_seconds=0.0,
+                                provider_available=bool(s_quotes and s_quotes.get(s_key)),
+                                exchange_open=MARKET_OPEN,
+                            )
                             smc_actionable = bool(
                                 MARKET_OPEN and s_quotes and s_quotes.get(s_key)
                                 and smc_math["passes_gate"] and smc_timing["entry_window_open"]
+                                and smc_governance["allow_trade"]
                             )
 
                         bias_label = (
@@ -8652,6 +8951,7 @@ elif selected_tab == "SMC & Technical Analysis":
                                 direction="long" if smc_bias == "Bullish" else "short",
                                 cost_bps=s_cost.round_trip_bps,
                                 label=f"{search_ticker} technical research",
+                                governance=smc_governance,
                             )
                             smc_aggregate = f"technical:{search_ticker}:{smc_bias}:{smc_timing['entry_at_text']}"
                             _record_trade_evidence(
@@ -8670,6 +8970,7 @@ elif selected_tab == "SMC & Technical Analysis":
                                     "rule_confidence": "Rule-based structure, not probability",
                                     "calibrated_probability": None, "model_version": STRATEGY_VERSION,
                                     "thresholds": {"minimum_net_reward_risk": 2.0},
+                                    "governance": smc_governance,
                                 },
                             )
                             st.info(

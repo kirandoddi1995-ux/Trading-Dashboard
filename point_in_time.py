@@ -18,7 +18,7 @@ from typing import Iterable, Mapping
 import pandas as pd
 
 
-PIT_SCHEMA_VERSION = 1
+PIT_SCHEMA_VERSION = 2
 
 
 def _text(value) -> str | None:
@@ -26,6 +26,23 @@ def _text(value) -> str | None:
         return None
     value = str(value).strip()
     return value or None
+
+
+def _utc_text(value) -> str:
+    """Canonical UTC timestamp used for storage and lexical SQLite ordering."""
+    parsed = pd.Timestamp(value)
+    if pd.isna(parsed):
+        raise ValueError("Timestamp is invalid")
+    if parsed.tzinfo is None:
+        parsed = parsed.tz_localize("UTC")
+    return parsed.tz_convert("UTC").isoformat()
+
+
+def _date_text(value) -> str:
+    parsed = pd.Timestamp(value)
+    if pd.isna(parsed):
+        raise ValueError("Date is invalid")
+    return parsed.date().isoformat()
 
 
 class PointInTimeStore:
@@ -158,6 +175,7 @@ class PointInTimeStore:
 
                     CREATE TABLE IF NOT EXISTS scanner_observations (
                         observation_id TEXT PRIMARY KEY,
+                        scan_run_id TEXT,
                         as_of_date TEXT NOT NULL,
                         observed_at TEXT NOT NULL,
                         instrument_key TEXT NOT NULL,
@@ -177,6 +195,10 @@ class PointInTimeStore:
                     CREATE INDEX IF NOT EXISTS idx_scanner_observations_date
                         ON scanner_observations(as_of_date, strategy_version);
                 """)
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(scanner_observations)")}
+                if "scan_run_id" not in columns:
+                    conn.execute("ALTER TABLE scanner_observations ADD COLUMN scan_run_id TEXT")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_scanner_run ON scanner_observations(scan_run_id)")
                 conn.commit()
             finally:
                 conn.close()
@@ -201,10 +223,13 @@ class PointInTimeStore:
                 "security_type": _text(row.get("security_type")),
                 "sector": _text(row.get("sector")),
             })
-        return sorted(normalized, key=lambda item: (item["instrument_key"], item["trading_symbol"]))
+        # Provider payloads can contain duplicates. Last occurrence wins, but
+        # completeness and hashes count unique instruments only.
+        deduplicated = {item["instrument_key"]: item for item in normalized}
+        return sorted(deduplicated.values(), key=lambda item: (item["instrument_key"], item["trading_symbol"]))
 
     def archive_universe(self, records, snapshot_date=None, source="Upstox BOD NSE JSON") -> dict:
-        snapshot_date = str(snapshot_date or dt.date.today())
+        snapshot_date = _date_text(snapshot_date or dt.date.today())
         rows = self._normalize_records(records)
         canonical = json.dumps(rows, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -241,37 +266,37 @@ class PointInTimeStore:
                 row["exchange"], row["segment"], row["instrument_type"], row["security_type"],
                 row["sector"], source, observed_at,
             ) for row in rows])
-            conn.execute("DELETE FROM pit_universe_membership WHERE snapshot_date=?", (snapshot_date,))
-            conn.execute("""
-                INSERT INTO pit_universe_snapshots(snapshot_date, observed_at, source, instrument_count,
-                    payload_hash, is_complete, schema_version) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(snapshot_date) DO UPDATE SET observed_at=excluded.observed_at, source=excluded.source,
-                    instrument_count=excluded.instrument_count, payload_hash=excluded.payload_hash,
-                    is_complete=excluded.is_complete, schema_version=excluded.schema_version
-            """, (snapshot_date, observed_at, source, len(rows), digest, int(complete), PIT_SCHEMA_VERSION))
-            conn.executemany("""
-                INSERT INTO pit_universe_membership(snapshot_date, instrument_key, trading_symbol, isin, name,
-                    exchange, segment, instrument_type, security_type, sector, source, observed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, [(
-                snapshot_date, row["instrument_key"], row["trading_symbol"], row["isin"], row["name"],
-                row["exchange"], row["segment"], row["instrument_type"], row["security_type"],
-                row["sector"], source, observed_at,
-            ) for row in rows])
+            preserve_canonical = bool(existing and existing[2] and not complete)
+            if not preserve_canonical:
+                conn.execute("DELETE FROM pit_universe_membership WHERE snapshot_date=?", (snapshot_date,))
+                conn.execute("""
+                    INSERT INTO pit_universe_snapshots(snapshot_date, observed_at, source, instrument_count,
+                        payload_hash, is_complete, schema_version) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(snapshot_date) DO UPDATE SET observed_at=excluded.observed_at, source=excluded.source,
+                        instrument_count=excluded.instrument_count, payload_hash=excluded.payload_hash,
+                        is_complete=excluded.is_complete, schema_version=excluded.schema_version
+                """, (snapshot_date, observed_at, source, len(rows), digest, int(complete), PIT_SCHEMA_VERSION))
+                conn.executemany("""
+                    INSERT INTO pit_universe_membership(snapshot_date, instrument_key, trading_symbol, isin, name,
+                        exchange, segment, instrument_type, security_type, sector, source, observed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, [(
+                    snapshot_date, row["instrument_key"], row["trading_symbol"], row["isin"], row["name"],
+                    row["exchange"], row["segment"], row["instrument_type"], row["security_type"],
+                    row["sector"], source, observed_at,
+                ) for row in rows])
             conn.commit()
         except sqlite3.Error:
             conn.rollback()
             raise
         finally:
             conn.close()
-        return {"date": snapshot_date, "count": len(rows), "complete": complete, "changed": True}
+        return {"date": snapshot_date, "count": len(rows), "complete": complete, "changed": True,
+                "canonical_preserved": bool(existing and existing[2] and not complete)}
 
     def universe_as_known_at(self, as_of_date, known_at, require_complete=True) -> pd.DataFrame:
         """Universe effective by ``as_of_date`` and actually observed by ``known_at``."""
-        known = pd.Timestamp(known_at)
-        if known.tzinfo is None:
-            known = known.tz_localize("UTC")
-        known_text = known.tz_convert("UTC").isoformat()
+        known_text = _utc_text(known_at)
         conn = self._connect()
         try:
             clause = "AND is_complete=1" if require_complete else ""
@@ -279,7 +304,7 @@ class PointInTimeStore:
                 f"SELECT snapshot_id FROM pit_universe_snapshot_versions "
                 f"WHERE snapshot_date<=? AND observed_at<=? {clause} "
                 "ORDER BY snapshot_date DESC, observed_at DESC LIMIT 1",
-                (str(as_of_date), known_text),
+                (_date_text(as_of_date), known_text),
             ).fetchone()
             if not row:
                 return pd.DataFrame()
@@ -292,15 +317,17 @@ class PointInTimeStore:
 
     def record_feature_observation(self, *, instrument_key, feature_name, value,
                                    effective_at, available_at, source) -> str:
+        effective_text = _utc_text(effective_at)
+        available_text = _utc_text(available_at)
         payload = {
             "instrument_key": str(instrument_key), "feature_name": str(feature_name),
-            "value": value, "effective_at": str(effective_at),
-            "available_at": str(available_at), "source": str(source),
+            "value": value, "effective_at": effective_text,
+            "available_at": available_text, "source": str(source),
         }
         canonical = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
         payload_hash = hashlib.sha256(canonical.encode()).hexdigest()
         feature_id = hashlib.sha256(
-            f"{instrument_key}|{feature_name}|{effective_at}|{available_at}|{payload_hash}".encode()
+            f"{instrument_key}|{feature_name}|{effective_text}|{available_text}|{payload_hash}".encode()
         ).hexdigest()
         observed_at = dt.datetime.now(dt.timezone.utc).isoformat()
         conn = self._connect()
@@ -311,7 +338,7 @@ class PointInTimeStore:
                     source,value_json,payload_hash
                 ) VALUES (?,?,?,?,?,?,?,?,?)
             """, (
-                feature_id, str(instrument_key), str(feature_name), str(effective_at), str(available_at),
+                feature_id, str(instrument_key), str(feature_name), effective_text, available_text,
                 observed_at, str(source), json.dumps(value, default=str, sort_keys=True), payload_hash,
             ))
             conn.commit()
@@ -321,30 +348,33 @@ class PointInTimeStore:
 
     def features_as_of(self, instrument_key, decision_at) -> dict:
         """Return the latest feature values available no later than decision_at."""
-        decision = pd.Timestamp(decision_at)
-        if decision.tzinfo is None:
-            decision = decision.tz_localize("UTC")
-        decision_text = decision.tz_convert("UTC").isoformat()
+        decision = pd.Timestamp(_utc_text(decision_at))
         conn = self._connect()
         try:
             rows = conn.execute("""
-                SELECT feature_name,value_json,effective_at,available_at,observed_at,source
-                FROM pit_feature_observations f
-                WHERE instrument_key=? AND available_at<=?
-                  AND available_at=(
-                      SELECT MAX(x.available_at) FROM pit_feature_observations x
-                      WHERE x.instrument_key=f.instrument_key AND x.feature_name=f.feature_name
-                        AND x.available_at<=?
-                  )
-                ORDER BY feature_name
-            """, (str(instrument_key), decision_text, decision_text)).fetchall()
+                SELECT feature_name,value_json,effective_at,available_at,observed_at,source,feature_id
+                FROM pit_feature_observations WHERE instrument_key=?
+            """, (str(instrument_key),)).fetchall()
         finally:
             conn.close()
-        return {
-            row[0]: {"value": json.loads(row[1]), "effective_at": row[2],
-                     "available_at": row[3], "observed_at": row[4], "source": row[5]}
-            for row in rows
-        }
+        eligible = []
+        for row in rows:
+            try:
+                effective = pd.Timestamp(_utc_text(row[2]))
+                available = pd.Timestamp(_utc_text(row[3]))
+                observed = pd.Timestamp(_utc_text(row[4]))
+            except (TypeError, ValueError):
+                continue
+            if effective <= decision and available <= decision:
+                eligible.append((row, effective, available, observed))
+        eligible.sort(key=lambda item: (item[0][0], item[2], item[1], item[3], item[0][6]))
+        latest = {}
+        for row, effective, available, observed in eligible:
+            latest[row[0]] = {
+                "value": json.loads(row[1]), "effective_at": effective.isoformat(),
+                "available_at": available.isoformat(), "observed_at": observed.isoformat(), "source": row[5],
+            }
+        return latest
 
     def universe_as_of(self, as_of_date, require_complete=True) -> pd.DataFrame:
         """Return the latest genuinely observed snapshot on/before a date.
@@ -357,7 +387,7 @@ class PointInTimeStore:
             clause = "AND is_complete=1" if require_complete else ""
             row = conn.execute(
                 f"SELECT snapshot_date FROM pit_universe_snapshots WHERE snapshot_date<=? {clause} "
-                "ORDER BY snapshot_date DESC LIMIT 1", (str(as_of_date),),
+                "ORDER BY snapshot_date DESC LIMIT 1", (_date_text(as_of_date),),
             ).fetchone()
             if not row:
                 return pd.DataFrame()
@@ -461,27 +491,39 @@ class PointInTimeStore:
     def record_scanner_observation(self, *, as_of_date, instrument_key, trading_symbol,
                                    strategy_version, universe_snapshot_date, stage1_pass,
                                    stage2_pass, features, rejection_reason=None, score=None,
-                                   entry=None, stop=None, target=None) -> str:
-        stable = "|".join(map(str, (as_of_date, instrument_key, strategy_version)))
+                                   entry=None, stop=None, target=None, scan_run_id=None) -> str:
+        as_of_date = _date_text(as_of_date)
+        universe_snapshot_date = _date_text(universe_snapshot_date)
+        run_id = _text(scan_run_id) or hashlib.sha256(
+            f"legacy|{as_of_date}|{strategy_version}".encode()
+        ).hexdigest()
+        stable = "|".join(map(str, (run_id, instrument_key, strategy_version)))
         observation_id = hashlib.sha256(stable.encode()).hexdigest()
         feature_json = json.dumps(features or {}, sort_keys=True, default=str, separators=(",", ":"))
         conn = self._connect()
         try:
             conn.execute("""
-                INSERT INTO scanner_observations(observation_id, as_of_date, observed_at, instrument_key,
+                INSERT INTO scanner_observations(observation_id, scan_run_id, as_of_date, observed_at, instrument_key,
                     trading_symbol, strategy_version, universe_snapshot_date, stage1_pass, stage2_pass,
                     rejection_reason, score, entry, stop, target, feature_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(observation_id) DO UPDATE SET observed_at=excluded.observed_at,
-                    stage1_pass=excluded.stage1_pass, stage2_pass=excluded.stage2_pass,
-                    rejection_reason=excluded.rejection_reason,
-                    score=COALESCE(excluded.score, scanner_observations.score),
+                    stage1_pass=excluded.stage1_pass,
+                    stage2_pass=MAX(scanner_observations.stage2_pass, excluded.stage2_pass),
+                    rejection_reason=CASE WHEN scanner_observations.stage2_pass=1 AND excluded.stage2_pass=0
+                                          THEN scanner_observations.rejection_reason
+                                          ELSE excluded.rejection_reason END,
+                    score=CASE WHEN scanner_observations.stage2_pass=1 AND excluded.stage2_pass=0
+                               THEN scanner_observations.score
+                               ELSE COALESCE(excluded.score, scanner_observations.score) END,
                     entry=COALESCE(excluded.entry, scanner_observations.entry),
                     stop=COALESCE(excluded.stop, scanner_observations.stop),
                     target=COALESCE(excluded.target, scanner_observations.target),
-                    feature_json=CASE WHEN excluded.feature_json='{}' THEN scanner_observations.feature_json
+                    feature_json=CASE WHEN scanner_observations.stage2_pass=1 AND excluded.stage2_pass=0
+                                      THEN scanner_observations.feature_json
+                                      WHEN excluded.feature_json='{}' THEN scanner_observations.feature_json
                                       ELSE excluded.feature_json END
-            """, (observation_id, str(as_of_date), dt.datetime.now(dt.timezone.utc).isoformat(),
+            """, (observation_id, run_id, str(as_of_date), dt.datetime.now(dt.timezone.utc).isoformat(),
                   str(instrument_key), str(trading_symbol), str(strategy_version), str(universe_snapshot_date),
                   int(bool(stage1_pass)), int(bool(stage2_pass)), _text(rejection_reason), score, entry, stop,
                   target, feature_json))
@@ -491,21 +533,26 @@ class PointInTimeStore:
         return observation_id
 
     def record_stage1_batch(self, *, as_of_date, strategy_version, universe_snapshot_date,
-                            evidence: Iterable[Mapping]) -> int:
+                            evidence: Iterable[Mapping], scan_run_id=None) -> int:
         """Persist the complete quote funnel in one transaction."""
         observed_at = dt.datetime.now(dt.timezone.utc).isoformat()
+        run_id = _text(scan_run_id) or hashlib.sha256(
+            f"legacy|{_date_text(as_of_date)}|{strategy_version}".encode()
+        ).hexdigest()
+        as_of_date = _date_text(as_of_date)
+        universe_snapshot_date = _date_text(universe_snapshot_date)
         rows = []
         for item in evidence:
             key = _text(item.get("instrument_key"))
             symbol = _text(item.get("trading_symbol"))
             if not key or not symbol:
                 continue
-            stable = "|".join(map(str, (as_of_date, key, strategy_version)))
+            stable = "|".join(map(str, (run_id, key, strategy_version)))
             observation_id = hashlib.sha256(stable.encode()).hexdigest()
             passed = bool(item.get("stage1_pass"))
             features = item.get("features") or {}
             rows.append((
-                observation_id, str(as_of_date), observed_at, key, symbol, str(strategy_version),
+                observation_id, run_id, str(as_of_date), observed_at, key, symbol, str(strategy_version),
                 str(universe_snapshot_date), int(passed), 0,
                 None if passed else _text(item.get("rejection_reason") or "Not selected by Stage 1"),
                 item.get("score"), None, None, None,
@@ -514,15 +561,24 @@ class PointInTimeStore:
         conn = self._connect()
         try:
             conn.executemany("""
-                INSERT INTO scanner_observations(observation_id, as_of_date, observed_at, instrument_key,
+                INSERT INTO scanner_observations(observation_id, scan_run_id, as_of_date, observed_at, instrument_key,
                     trading_symbol, strategy_version, universe_snapshot_date, stage1_pass, stage2_pass,
                     rejection_reason, score, entry, stop, target, feature_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(observation_id) DO UPDATE SET observed_at=excluded.observed_at,
                     universe_snapshot_date=excluded.universe_snapshot_date,
-                    stage1_pass=excluded.stage1_pass, stage2_pass=0,
-                    rejection_reason=excluded.rejection_reason, score=excluded.score,
-                    entry=NULL, stop=NULL, target=NULL, feature_json=excluded.feature_json
+                    stage1_pass=excluded.stage1_pass,
+                    stage2_pass=MAX(scanner_observations.stage2_pass, excluded.stage2_pass),
+                    rejection_reason=CASE WHEN scanner_observations.stage2_pass=1
+                                          THEN scanner_observations.rejection_reason
+                                          ELSE excluded.rejection_reason END,
+                    score=CASE WHEN scanner_observations.stage2_pass=1 THEN scanner_observations.score
+                               ELSE excluded.score END,
+                    entry=scanner_observations.entry, stop=scanner_observations.stop,
+                    target=scanner_observations.target,
+                    feature_json=CASE WHEN scanner_observations.stage2_pass=1
+                                      THEN scanner_observations.feature_json
+                                      ELSE excluded.feature_json END
             """, rows)
             conn.commit()
         finally:

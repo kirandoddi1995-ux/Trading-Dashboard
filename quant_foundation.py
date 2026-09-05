@@ -29,6 +29,8 @@ class EvidencePolicy:
     maximum_feature_age_seconds: int = 120
     maximum_clock_skew_seconds: int = 2
     minimum_pit_coverage: float = 0.90
+    maximum_feature_psi: float = 0.20
+    maximum_calibration_decay: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,12 @@ class PortfolioRiskPolicy:
     covariance_shrinkage: float = 0.25
     kelly_fraction: float = 0.25
     maximum_fractional_kelly_weight: float = 0.10
+    minimum_history_observations: int = 60
+    minimum_complete_history_fraction: float = 0.95
+    maximum_gross_exposure: float = 1.00
+    maximum_absolute_net_exposure: float = 0.60
+    maximum_stress_loss: float = 0.10
+    require_stress_scenarios: bool = True
 
 
 @dataclass(frozen=True)
@@ -95,6 +103,21 @@ def _timestamp(value) -> pd.Timestamp:
     return parsed.tz_convert("UTC")
 
 
+def _finite_number(value, *, name: str, minimum=None, maximum=None) -> float:
+    """Parse a policy input and reject missing, non-finite, or out-of-range values."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a finite number") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"{name} must be a finite number")
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{name} must be at least {minimum}")
+    if maximum is not None and parsed > maximum:
+        raise ValueError(f"{name} must be at most {maximum}")
+    return parsed
+
+
 def validate_point_in_time_features(
     decision_at,
     features: Mapping[str, Mapping],
@@ -105,16 +128,40 @@ def validate_point_in_time_features(
     policy: EvidencePolicy = EvidencePolicy(),
 ) -> dict:
     """Fail closed when any feature was unavailable at the decision timestamp."""
-    decision = _timestamp(decision_at)
+    try:
+        decision = _timestamp(decision_at)
+    except Exception:
+        return {
+            "status": "NO_TRADE", "decision_at": None, "features_checked": 0,
+            "pit_coverage": None,
+            "failures": [{"code": "INVALID_DECISION_TIME", "detail": "decision timestamp is invalid"}],
+            "warnings": [],
+        }
     failures, warnings, checked = [], [], 0
     skew = pd.Timedelta(seconds=max(int(policy.maximum_clock_skew_seconds), 0))
     default_age = pd.Timedelta(seconds=max(int(policy.maximum_feature_age_seconds), 0))
 
-    if float(pit_coverage) < policy.minimum_pit_coverage:
-        failures.append({"code": "PIT_COVERAGE", "detail": f"coverage={float(pit_coverage):.3f}"})
+    try:
+        coverage = _finite_number(pit_coverage, name="pit_coverage", minimum=0.0, maximum=1.0)
+    except ValueError as exc:
+        coverage = None
+        failures.append({"code": "INVALID_PIT_COVERAGE", "detail": str(exc)})
+    if coverage is not None and coverage < policy.minimum_pit_coverage:
+        failures.append({"code": "PIT_COVERAGE", "detail": f"coverage={coverage:.3f}"})
+    if not isinstance(features, Mapping) or not features:
+        failures.append({"code": "NO_FEATURE_EVIDENCE", "detail": "At least one timestamped feature is required"})
+        features = {}
     for label, value in (("universe observed", universe_observed_at), ("universe effective", universe_effective_at)):
-        if value is not None and _timestamp(value) > decision + skew:
-            failures.append({"code": "FUTURE_UNIVERSE", "detail": f"{label} timestamp is after decision"})
+        if value is None:
+            failures.append({"code": "MISSING_UNIVERSE_LINEAGE", "detail": f"{label} timestamp is required"})
+        else:
+            try:
+                universe_time = _timestamp(value)
+            except Exception:
+                failures.append({"code": "INVALID_UNIVERSE_LINEAGE", "detail": f"{label} timestamp is invalid"})
+                continue
+            if universe_time > decision + skew:
+                failures.append({"code": "FUTURE_UNIVERSE", "detail": f"{label} timestamp is after decision"})
 
     for name, observation in features.items():
         checked += 1
@@ -126,57 +173,112 @@ def validate_point_in_time_features(
         if available_at is None or not source:
             failures.append({"feature": name, "code": "MISSING_LINEAGE", "detail": "source and available_at are required"})
             continue
-        available = _timestamp(available_at)
+        value = observation.get("value")
+        if value is None or (isinstance(value, str) and not value.strip()):
+            failures.append({"feature": name, "code": "MISSING_VALUE", "detail": "feature value is required"})
+            continue
+        if isinstance(value, (int, float, np.number)) and not math.isfinite(float(value)):
+            failures.append({"feature": name, "code": "INVALID_VALUE", "detail": "feature value is non-finite"})
+            continue
+        try:
+            available = _timestamp(available_at)
+        except Exception:
+            failures.append({"feature": name, "code": "INVALID_LINEAGE", "detail": "available_at is invalid"})
+            continue
         if available > decision + skew:
             failures.append({"feature": name, "code": "LOOKAHEAD", "detail": "feature was not available at decision time"})
             continue
         maximum_age = observation.get("maximum_age_seconds")
-        allowed_age = pd.Timedelta(seconds=float(maximum_age)) if maximum_age is not None else default_age
+        try:
+            allowed_seconds = (_finite_number(maximum_age, name=f"{name}.maximum_age_seconds", minimum=0.0)
+                               if maximum_age is not None else default_age.total_seconds())
+        except ValueError as exc:
+            failures.append({"feature": name, "code": "INVALID_LINEAGE", "detail": str(exc)})
+            continue
+        allowed_age = pd.Timedelta(seconds=allowed_seconds)
         age = decision - available
         if age > allowed_age:
             failures.append({"feature": name, "code": "STALE", "detail": f"age_seconds={age.total_seconds():.1f}"})
         effective_at = observation.get("effective_at")
-        if effective_at is not None and _timestamp(effective_at) > decision + skew:
-            failures.append({"feature": name, "code": "FUTURE_EFFECTIVE_DATE", "detail": "effective timestamp is after decision"})
+        if effective_at is not None:
+            try:
+                effective = _timestamp(effective_at)
+            except Exception:
+                failures.append({"feature": name, "code": "INVALID_LINEAGE", "detail": "effective_at is invalid"})
+                continue
+            if effective > decision + skew:
+                failures.append({"feature": name, "code": "FUTURE_EFFECTIVE_DATE", "detail": "effective timestamp is after decision"})
         if observation.get("revised") and not observation.get("original_release_at"):
-            warnings.append({"feature": name, "code": "REVISION_LINEAGE", "detail": "revised value lacks original release timestamp"})
+            failures.append({"feature": name, "code": "REVISION_LINEAGE", "detail": "revised value lacks original release timestamp"})
     return {
         "status": "PASS" if not failures else "NO_TRADE",
         "decision_at": decision.isoformat(),
         "features_checked": checked,
-        "pit_coverage": float(pit_coverage),
+        "pit_coverage": coverage,
         "failures": failures,
         "warnings": warnings,
     }
 
 
-def calibration_evidence_status(evidence: Mapping | None, policy: EvidencePolicy = EvidencePolicy()) -> dict:
+def calibration_evidence_status(evidence: Mapping | None, policy: EvidencePolicy = EvidencePolicy(),
+                                expected_context: Mapping | None = None) -> dict:
     """Validate evidence without converting rule confidence into probability."""
     if not evidence:
         return {"usable": False, "reason": "Calibrated probability is unavailable"}
-    required = {"probability", "oos_samples", "positive_samples", "negative_samples", "ece", "brier", "baseline_brier", "model_version"}
+    required = {"probability", "oos_samples", "positive_samples", "negative_samples", "ece", "brier",
+                "baseline_brier", "model_version", "validated_at", "valid_until", "feature_psi",
+                "calibration_decay"}
     missing = sorted(required - set(evidence))
     if missing:
         return {"usable": False, "reason": f"Calibration evidence is incomplete: {', '.join(missing)}"}
-    probability = float(evidence["probability"])
-    brier = float(evidence["brier"])
-    baseline = float(evidence["baseline_brier"])
+    try:
+        probability = _finite_number(evidence["probability"], name="probability", minimum=0.0, maximum=1.0)
+        brier = _finite_number(evidence["brier"], name="brier", minimum=0.0)
+        baseline = _finite_number(evidence["baseline_brier"], name="baseline_brier", minimum=0.0)
+        ece = _finite_number(evidence["ece"], name="ece", minimum=0.0, maximum=1.0)
+        oos_samples = int(_finite_number(evidence["oos_samples"], name="oos_samples", minimum=0.0))
+        positive_samples = int(_finite_number(evidence["positive_samples"], name="positive_samples", minimum=0.0))
+        negative_samples = int(_finite_number(evidence["negative_samples"], name="negative_samples", minimum=0.0))
+        observation_days = int(_finite_number(evidence.get("observation_days", 0), name="observation_days", minimum=0.0))
+        feature_psi = _finite_number(evidence["feature_psi"], name="feature_psi", minimum=0.0)
+        calibration_decay = _finite_number(evidence["calibration_decay"], name="calibration_decay", minimum=0.0)
+    except ValueError as exc:
+        return {"usable": False, "reason": str(exc)}
+    try:
+        validated_at = _timestamp(evidence["validated_at"])
+        valid_until = _timestamp(evidence["valid_until"])
+        now = pd.Timestamp.now(tz="UTC")
+    except Exception:
+        return {"usable": False, "reason": "Calibration validity timestamps are invalid"}
     brier_skill = 1.0 - brier / baseline if baseline > 0 else -math.inf
     checks = [
         (str(evidence.get("status", "")).upper() not in {"VALIDATED", "PASS"}, "Model has not passed validation"),
-        (int(evidence["oos_samples"]) < policy.minimum_oos_samples, "Insufficient out-of-sample samples"),
-        (min(int(evidence["positive_samples"]), int(evidence["negative_samples"])) < policy.minimum_class_samples, "Insufficient class samples"),
-        (int(evidence.get("observation_days", 0)) < policy.minimum_observation_days, "Insufficient observation days"),
-        (float(evidence["ece"]) > policy.maximum_ece, "Calibration error exceeds policy"),
+        (oos_samples < policy.minimum_oos_samples, "Insufficient out-of-sample samples"),
+        (min(positive_samples, negative_samples) < policy.minimum_class_samples, "Insufficient class samples"),
+        (observation_days < policy.minimum_observation_days, "Insufficient observation days"),
+        (ece > policy.maximum_ece, "Calibration error exceeds policy"),
         (brier_skill < policy.minimum_brier_skill, "Brier skill does not beat policy"),
         (not 0.0 < probability < 1.0, "Probability must be strictly between zero and one"),
         (probability < policy.minimum_probability, "Probability is below the production threshold"),
+        (validated_at > now, "Calibration validation timestamp is in the future"),
+        (valid_until < now or valid_until <= validated_at, "Calibration evidence has expired"),
+        (feature_psi > policy.maximum_feature_psi, "Feature drift exceeds policy"),
+        (calibration_decay > policy.maximum_calibration_decay, "Calibration decay exceeds policy"),
     ]
     for failed, reason in checks:
         if failed:
             return {"usable": False, "reason": reason, "brier_skill": brier_skill}
-    lower = float(evidence.get("probability_interval_low", probability))
-    upper = float(evidence.get("probability_interval_high", probability))
+    for key, expected in dict(expected_context or {}).items():
+        if str(evidence.get(key, "")) != str(expected):
+            return {"usable": False, "reason": f"Calibration evidence context mismatch: {key}",
+                    "brier_skill": brier_skill}
+    if "probability_interval_low" not in evidence or "probability_interval_high" not in evidence:
+        return {"usable": False, "reason": "An out-of-sample probability interval is required", "brier_skill": brier_skill}
+    try:
+        lower = _finite_number(evidence["probability_interval_low"], name="probability_interval_low", minimum=0.0, maximum=1.0)
+        upper = _finite_number(evidence["probability_interval_high"], name="probability_interval_high", minimum=0.0, maximum=1.0)
+    except ValueError as exc:
+        return {"usable": False, "reason": str(exc), "brier_skill": brier_skill}
     if not 0.0 <= lower <= probability <= upper <= 1.0:
         return {"usable": False, "reason": "Probability interval is invalid", "brier_skill": brier_skill}
     return {
@@ -199,16 +301,26 @@ def executable_expected_value(
     quantity=1,
     round_trip_cost_bps=0.0,
     calibration_evidence: Mapping | None = None,
+    model_context: Mapping | None = None,
     residual_cost_bps=None,
     config: AdvancedQuantConfig = PRODUCTION_QUANT_CONFIG,
 ) -> dict:
     """Cost-adjusted conservative EV; unavailable until calibration passes."""
-    trade_math = trade_contracts.calculate_trade_math(
-        entry, stop, target, direction=direction,
-        round_trip_cost_bps=round_trip_cost_bps,
-        minimum_ratio=config.execution.minimum_net_reward_risk,
-    )
-    status = calibration_evidence_status(calibration_evidence, config.evidence)
+    try:
+        trade_math = trade_contracts.calculate_trade_math(
+            entry, stop, target, direction=direction,
+            round_trip_cost_bps=round_trip_cost_bps,
+            minimum_ratio=config.execution.minimum_net_reward_risk,
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        return {
+            "status": "UNAVAILABLE", "action": "NO_TRADE",
+            "reason": f"Trade inputs are invalid: {exc}", "trade_math": None,
+            "probability": None, "conservative_probability": None,
+            "expected_value_per_unit": None, "expected_value_total": None,
+            "expected_value_bps": None,
+        }
+    status = calibration_evidence_status(calibration_evidence, config.evidence, model_context)
     base = {
         "status": "UNAVAILABLE",
         "action": "NO_TRADE",
@@ -222,17 +334,22 @@ def executable_expected_value(
     }
     if not status["usable"]:
         return base
+    try:
+        quantity_value = int(_finite_number(quantity, name="quantity", minimum=1.0))
+        entry_value = _finite_number(entry, name="entry", minimum=1e-12)
+        residual_bps = _finite_number(
+            config.execution.residual_uncertainty_cost_bps if residual_cost_bps is None else residual_cost_bps,
+            name="residual_cost_bps", minimum=0.0,
+        )
+    except ValueError as exc:
+        return {**base, "reason": str(exc)}
     probability = float(status["probability"])
     conservative_probability = float(status["conservative_probability"])
-    residual_bps = (
-        config.execution.residual_uncertainty_cost_bps
-        if residual_cost_bps is None else max(float(residual_cost_bps), 0.0)
-    )
-    residual_cost = float(entry) * residual_bps / 10_000.0
+    residual_cost = entry_value * residual_bps / 10_000.0
     net_win = float(trade_math["net_reward"])
     net_loss = float(trade_math["net_risk"])
     ev = conservative_probability * net_win - (1.0 - conservative_probability) * net_loss - residual_cost
-    ev_bps = ev / float(entry) * 10_000.0
+    ev_bps = ev / entry_value * 10_000.0
     gate_failures = []
     if not trade_math["passes_gate"]:
         gate_failures.append("Net reward/risk is below policy")
@@ -249,7 +366,7 @@ def executable_expected_value(
         "model_version": status["model_version"],
         "brier_skill": status["brier_skill"],
         "expected_value_per_unit": ev,
-        "expected_value_total": ev * max(int(quantity), 0),
+        "expected_value_total": ev * quantity_value,
         "expected_value_bps": ev_bps,
         "residual_cost_per_unit": residual_cost,
     }
@@ -410,16 +527,37 @@ def execution_quality_gate(
     policy: ExecutionPolicy = ExecutionPolicy(),
 ) -> dict:
     """Liquidity gate; intentionally reports no fill probability without a fitted model."""
-    participation = max(float(order_value or 0.0), 0.0) / max(float(average_daily_value or 0.0), 1.0)
+    invalid = []
+    parsed = {}
+    for name, value, minimum in (
+        ("spread_bps", spread_bps, 0.0), ("order_value", order_value, 1e-12),
+        ("average_daily_value", average_daily_value, 1e-12),
+        ("quote_age_seconds", quote_age_seconds, 0.0),
+    ):
+        try:
+            parsed[name] = _finite_number(value, name=name, minimum=minimum)
+        except ValueError as exc:
+            invalid.append(str(exc))
+    if invalid:
+        return {
+            "status": "NO_TRADE", "failures": invalid, "participation_rate": None,
+            "visible_depth_participation": None, "fill_probability": None,
+            "fill_probability_reason": "Execution inputs are invalid",
+        }
+    participation = parsed["order_value"] / parsed["average_daily_value"]
     depth_participation = None
     if market_depth_value is not None:
-        depth_participation = max(float(order_value or 0.0), 0.0) / max(float(market_depth_value), 1.0)
-    failures = []
-    if float(spread_bps) > policy.maximum_spread_bps:
+        try:
+            depth = _finite_number(market_depth_value, name="market_depth_value", minimum=1e-12)
+            depth_participation = parsed["order_value"] / depth
+        except ValueError as exc:
+            invalid.append(str(exc))
+    failures = list(invalid)
+    if parsed["spread_bps"] > policy.maximum_spread_bps:
         failures.append("Spread exceeds policy")
     if participation > policy.maximum_participation_rate:
         failures.append("Order participation exceeds policy")
-    if float(quote_age_seconds) > policy.maximum_quote_age_seconds:
+    if parsed["quote_age_seconds"] > policy.maximum_quote_age_seconds:
         failures.append("Quote is stale")
     if depth_participation is not None and depth_participation > 1.0:
         failures.append("Visible market depth cannot absorb the order")
@@ -452,10 +590,12 @@ def historical_expected_shortfall(returns, confidence=0.975) -> dict:
 
 
 def shrinkage_covariance(returns: pd.DataFrame, shrinkage=0.25) -> pd.DataFrame:
-    clean = returns.apply(pd.to_numeric, errors="coerce").dropna(how="all")
+    clean = returns.apply(pd.to_numeric, errors="coerce").dropna(how="any")
     if clean.shape[0] < 20 or clean.shape[1] == 0:
         raise ValueError("At least 20 observations and one asset are required")
-    sample = clean.cov(min_periods=20).fillna(0.0)
+    sample = clean.cov(min_periods=20)
+    if sample.isna().any().any() or not np.isfinite(sample.to_numpy(dtype=float)).all():
+        raise ValueError("A finite covariance matrix requires aligned complete histories")
     diagonal = pd.DataFrame(np.diag(np.diag(sample)), index=sample.index, columns=sample.columns)
     strength = float(np.clip(shrinkage, 0.0, 1.0))
     return (1.0 - strength) * sample + strength * diagonal
@@ -471,20 +611,32 @@ def portfolio_risk_report(
     stress_scenarios: Mapping[str, Mapping[str, float]] | None = None,
     policy: PortfolioRiskPolicy = PortfolioRiskPolicy(),
 ) -> dict:
-    names = [name for name in returns.columns if name in weights]
-    if not names:
+    if not isinstance(returns, pd.DataFrame) or returns.empty or not weights:
         return {"status": "UNAVAILABLE", "reason": "No weighted return series are available"}
+    names = list(weights)
+    missing = sorted(set(names) - set(returns.columns))
+    if missing:
+        return {"status": "UNAVAILABLE", "reason": f"Missing return histories for: {', '.join(missing)}"}
     vector = np.asarray([float(weights[name]) for name in names], dtype=float)
     if not np.all(np.isfinite(vector)) or np.abs(vector).sum() <= 0:
         return {"status": "UNAVAILABLE", "reason": "Portfolio weights are invalid"}
-    covariance = shrinkage_covariance(returns[names], policy.covariance_shrinkage)
+    numeric_returns = returns[names].apply(pd.to_numeric, errors="coerce")
+    row_coverage = float(numeric_returns.notna().all(axis=1).mean()) if len(numeric_returns) else 0.0
+    aligned_returns = numeric_returns.dropna(how="any")
+    if row_coverage < policy.minimum_complete_history_fraction:
+        return {"status": "UNAVAILABLE", "reason": "Aligned portfolio history coverage is below policy",
+                "history_coverage": row_coverage}
+    if len(aligned_returns) < policy.minimum_history_observations:
+        return {"status": "UNAVAILABLE", "reason": "Insufficient aligned portfolio return history",
+                "history_observations": int(len(aligned_returns)), "history_coverage": row_coverage}
+    covariance = shrinkage_covariance(aligned_returns, policy.covariance_shrinkage)
     covariance_values = covariance.to_numpy(dtype=float)
     variance = max(float(vector @ covariance_values @ vector), 0.0)
     daily_volatility = math.sqrt(variance)
     annualized_volatility = daily_volatility * math.sqrt(252.0)
     component = covariance_values @ vector
     marginal_risk = vector * component / variance if variance > 1e-16 else np.zeros_like(vector)
-    portfolio_returns = returns[names].fillna(0.0).to_numpy(dtype=float) @ vector
+    portfolio_returns = aligned_returns.to_numpy(dtype=float) @ vector
     es = historical_expected_shortfall(portfolio_returns)
     curve = np.cumprod(1.0 + portfolio_returns)
     running_max = np.maximum.accumulate(curve)
@@ -499,15 +651,41 @@ def portfolio_risk_report(
         if expiry:
             expiry_weights[str(expiry)] = expiry_weights.get(str(expiry), 0.0) + abs(float(weight))
     aggregate_greeks = {"delta": 0.0, "gamma_1pct": 0.0, "vega_1point": 0.0}
+    invalid_greeks = []
     for name, weight in zip(names, vector):
         exposure = (greek_exposures or {}).get(name, {})
         for greek in aggregate_greeks:
-            aggregate_greeks[greek] += float(weight) * float(exposure.get(greek, 0.0))
-    stresses = {}
+            try:
+                greek_value = _finite_number(exposure.get(greek, 0.0), name=f"{name}.{greek}")
+                aggregate_greeks[greek] += float(weight) * greek_value
+            except ValueError:
+                invalid_greeks.append(f"{name}.{greek}")
+    stresses, invalid_stress = {}, []
     for scenario, shocks in (stress_scenarios or {}).items():
-        pnl = sum(float(weights.get(name, 0.0)) * float(shocks.get(name, 0.0)) for name in names)
+        if set(names) - set(shocks):
+            invalid_stress.append(str(scenario))
+            continue
+        try:
+            pnl = sum(float(weights[name]) * _finite_number(shocks[name], name=f"{scenario}.{name}") for name in names)
+        except ValueError:
+            invalid_stress.append(str(scenario))
+            continue
         stresses[str(scenario)] = pnl
     failures = []
+    if invalid_greeks:
+        failures.append("Greek exposures contain invalid values")
+    gross_exposure = float(np.abs(vector).sum())
+    net_exposure = float(vector.sum())
+    if gross_exposure > policy.maximum_gross_exposure + 1e-12:
+        failures.append("Gross-exposure limit exceeded")
+    if abs(net_exposure) > policy.maximum_absolute_net_exposure + 1e-12:
+        failures.append("Net-exposure limit exceeded")
+    if policy.require_stress_scenarios and not stresses:
+        failures.append("Required stress scenarios are unavailable")
+    if invalid_stress:
+        failures.append("Stress scenarios have missing or invalid shocks")
+    if stresses and min(stresses.values()) < -abs(policy.maximum_stress_loss):
+        failures.append("Stress-loss limit exceeded")
     if np.max(np.abs(vector)) > policy.maximum_position_weight + 1e-12:
         failures.append("Position-weight limit exceeded")
     if sector_weights and max(sector_weights.values()) > policy.maximum_sector_weight + 1e-12:
@@ -522,16 +700,22 @@ def portfolio_risk_report(
         failures.append("Vega stress limit exceeded")
     if annualized_volatility > policy.maximum_annualized_volatility:
         failures.append("Annualized volatility limit exceeded")
-    if es.get("status") == "PASS" and es["expected_shortfall_loss"] > policy.maximum_daily_expected_shortfall:
+    if es.get("status") != "PASS":
+        failures.append("Expected shortfall is unavailable")
+    elif es["expected_shortfall_loss"] > policy.maximum_daily_expected_shortfall:
         failures.append("Expected-shortfall limit exceeded")
     if maximum_drawdown > policy.maximum_drawdown:
         failures.append("Drawdown limit exceeded")
-    if len(marginal_risk) and float(np.max(marginal_risk)) > policy.maximum_marginal_risk_share:
+    if len(marginal_risk) and float(np.max(np.abs(marginal_risk))) > policy.maximum_marginal_risk_share:
         failures.append("Marginal-risk concentration exceeded")
     return {
         "status": "PASS" if not failures else "NO_TRADE",
         "failures": failures,
         "weights": dict(zip(names, vector.tolist())),
+        "gross_exposure": gross_exposure,
+        "net_exposure": net_exposure,
+        "history_observations": int(len(aligned_returns)),
+        "history_coverage": row_coverage,
         "sector_weights": sector_weights,
         "expiry_weights": expiry_weights,
         "greek_exposures": aggregate_greeks,
@@ -559,13 +743,29 @@ def system_kill_switch(
 ) -> dict:
     """Central fail-closed operational gate used before any new order."""
     reasons = []
-    if float(feed_age_seconds) > float(maximum_feed_age_seconds):
+    try:
+        feed_age = _finite_number(feed_age_seconds, name="feed_age_seconds", minimum=0.0)
+        maximum_feed_age = _finite_number(maximum_feed_age_seconds, name="maximum_feed_age_seconds", minimum=0.0)
+        daily_pnl = _finite_number(daily_pnl_fraction, name="daily_pnl_fraction")
+        weekly_pnl = _finite_number(weekly_pnl_fraction, name="weekly_pnl_fraction")
+    except ValueError as exc:
+        reasons.append(f"Invalid kill-switch input: {exc}")
+        feed_age, maximum_feed_age, daily_pnl, weekly_pnl = math.inf, 0.0, -math.inf, -math.inf
+    boolean_inputs = {
+        "broker_position_mismatch": broker_position_mismatch,
+        "provider_available": provider_available,
+        "exchange_open": exchange_open,
+        "event_restriction": event_restriction,
+    }
+    if any(not isinstance(value, (bool, np.bool_)) for value in boolean_inputs.values()):
+        reasons.append("Invalid kill-switch boolean input")
+    if feed_age > maximum_feed_age:
         reasons.append("Market data is stale")
     if bool(broker_position_mismatch):
         reasons.append("Broker position reconciliation failed")
-    if float(daily_pnl_fraction) <= -abs(policy.maximum_daily_loss):
+    if daily_pnl <= -abs(policy.maximum_daily_loss):
         reasons.append("Daily loss limit reached")
-    if float(weekly_pnl_fraction) <= -abs(policy.maximum_weekly_loss):
+    if weekly_pnl <= -abs(policy.maximum_weekly_loss):
         reasons.append("Weekly loss limit reached")
     if not provider_available:
         reasons.append("Required provider is unavailable")

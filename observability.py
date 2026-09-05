@@ -28,6 +28,7 @@ class MetricEvent:
     cache_hit: bool | None = None
     status: int | str | None = None
     count: int = 1
+    correlation_id: str | None = None
 
 
 def safe_endpoint(url: str) -> str:
@@ -58,6 +59,7 @@ class MetricsRegistry:
         cache_hit: bool | None = None,
         status: int | str | None = None,
         count: int = 1,
+        correlation_id: str | None = None,
     ) -> None:
         duration_ms = max(float(duration_seconds or 0.0) * 1000.0, 0.0)
         event = MetricEvent(
@@ -69,6 +71,7 @@ class MetricsRegistry:
             cache_hit=cache_hit if cache_hit is None else bool(cache_hit),
             status=status,
             count=max(int(count or 1), 1),
+            correlation_id=(str(correlation_id)[:64] if correlation_id else None),
         )
         with self._lock:
             self._events.append(event)

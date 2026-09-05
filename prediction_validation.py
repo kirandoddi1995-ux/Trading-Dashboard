@@ -137,16 +137,18 @@ def compute_forward_target(prices: pd.DataFrame, as_of_date, definition: TargetD
     exit_price = float(window.iloc[-1]["Close"])
     outcome = "horizon"
     outcome_date = window.index[-1]
-    # Daily bars are sufficient unless both levels occur on the same day. Exact
-    # one-minute evidence then resolves ordering; if both levels occur inside
-    # the same minute, the conservative stop-first convention still applies.
+    # Exact labels never use an entry-day daily high/low because those extrema
+    # may have occurred before the signal. When a daily bar indicates a touch,
+    # one-minute evidence at/after entry is mandatory to establish ordering.
     for date, bar in window.iterrows():
         hit_stop = float(bar["Low"]) <= float(stop)
         hit_target = float(bar["High"]) >= float(target)
-        if hit_stop and hit_target and not intraday_frame.empty:
+        if definition.entry_rule == "exact_intraday" and (hit_stop or hit_target):
             minute_rows = intraday_frame.loc[intraday_frame.index.normalize() == pd.Timestamp(date).normalize()]
             if entry_timestamp is not None and pd.Timestamp(date).normalize() == pd.Timestamp(entry_timestamp).normalize():
                 minute_rows = minute_rows.loc[minute_rows.index >= pd.Timestamp(entry_timestamp)]
+            if minute_rows.empty:
+                return None
             for minute, minute_bar in minute_rows.iterrows():
                 minute_stop = float(minute_bar["Low"]) <= float(stop)
                 minute_target = float(minute_bar["High"]) >= float(target)
@@ -158,6 +160,12 @@ def compute_forward_target(prices: pd.DataFrame, as_of_date, definition: TargetD
                     break
             if outcome != "horizon":
                 break
+            if entry_timestamp is not None and pd.Timestamp(date).normalize() == pd.Timestamp(entry_timestamp).normalize():
+                # The daily extreme occurred before entry; it is not an outcome.
+                continue
+            # Daily and minute sources disagree about a touch. Do not create a
+            # production label from ambiguous evidence.
+            return None
         if hit_stop:
             exit_price, outcome, outcome_date = float(stop), "stop", date
             break
@@ -275,9 +283,16 @@ class PlattCalibrator:
 
 def calibration_metrics(outcomes, probabilities, bins=10) -> dict:
     y = np.asarray(outcomes, dtype=float)
-    p = np.clip(np.asarray(probabilities, dtype=float), 1e-9, 1 - 1e-9)
+    raw_p = np.asarray(probabilities, dtype=float)
+    p = np.clip(raw_p, 1e-9, 1 - 1e-9)
     if not len(y) or len(y) != len(p):
         raise ValueError("Outcomes and probabilities must be equal and non-empty")
+    if not np.isfinite(y).all() or not np.isfinite(raw_p).all():
+        raise ValueError("Outcomes and probabilities must be finite")
+    if not np.isin(y, [0.0, 1.0]).all():
+        raise ValueError("Outcomes must be binary")
+    if int(bins) < 2:
+        raise ValueError("At least two calibration bins are required")
     brier = float(np.mean((p - y) ** 2))
     log_loss = float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
     baseline = float(np.mean((np.mean(y) - y) ** 2))
@@ -391,7 +406,7 @@ def deflated_sharpe_ratio(returns, *, trials=1, benchmark_sharpe=0.0,
 
 
 def chronological_holdout_split(rows: pd.DataFrame, *, holdout_fraction=0.15,
-                                minimum_holdout_dates=20) -> tuple[pd.DataFrame, pd.DataFrame]:
+                                 minimum_holdout_dates=20, embargo_sessions=0) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Reserve the most recent dates; callers must never tune on the holdout."""
     if "as_of_date" not in rows:
         raise ValueError("Rows require as_of_date")
@@ -403,13 +418,31 @@ def chronological_holdout_split(rows: pd.DataFrame, *, holdout_fraction=0.15,
     if len(dates) <= requested + 20:
         return ordered.iloc[0:0].copy(), ordered.copy()
     cutoff = pd.Timestamp(dates[-requested])
-    development = ordered[ordered["as_of_date"] < cutoff].copy()
     holdout = ordered[ordered["as_of_date"] >= cutoff].copy()
+    development_cutoff = cutoff - pd.offsets.BDay(max(int(embargo_sessions), 0))
+    development_mask = ordered["as_of_date"] < development_cutoff
+    if "label_end_date" in ordered:
+        ordered["label_end_date"] = pd.to_datetime(ordered["label_end_date"], errors="coerce")
+        development_mask &= ordered["label_end_date"].notna()
+        development_mask &= ordered["label_end_date"] < development_cutoff
+    development = ordered[development_mask].copy()
     return development, holdout
 
 
 def decide_abstention(probability, metrics, *, training_samples, positive_samples,
                       negative_samples, pit_coverage, policy=CalibrationPolicy()) -> tuple[bool, str]:
+    numeric_values = {
+        "probability": probability, "pit_coverage": pit_coverage,
+        "brier": metrics.get("brier"), "baseline_brier": metrics.get("baseline_brier"),
+        "ece": metrics.get("ece"), "samples": metrics.get("samples"),
+        "training_samples": training_samples, "positive_samples": positive_samples,
+        "negative_samples": negative_samples,
+    }
+    try:
+        if not all(np.isfinite(float(value)) for value in numeric_values.values()):
+            return True, "Calibration or abstention input is non-finite"
+    except (TypeError, ValueError, OverflowError):
+        return True, "Calibration or abstention input is missing or invalid"
     checks = [
         (pit_coverage < policy.minimum_pit_coverage, "Point-in-time universe coverage is below 90%"),
         (training_samples < policy.minimum_training_samples, "Insufficient completed training samples"),
@@ -497,6 +530,11 @@ def run_purged_walk_forward_validation(rows: pd.DataFrame, *, folds=5, embargo_s
     if not required.issubset(rows.columns):
         raise ValueError(f"Validation rows require {sorted(required)}")
     clean = rows.dropna(subset=list(required)).copy()
+    clean["as_of_date"] = pd.to_datetime(clean["as_of_date"], errors="coerce")
+    clean["label_end_date"] = pd.to_datetime(clean["label_end_date"], errors="coerce")
+    clean = clean.dropna(subset=["as_of_date", "label_end_date"]).sort_values(
+        ["as_of_date", "label_end_date"], kind="mergesort"
+    ).reset_index(drop=True)
     splits = purged_walk_forward_splits(
         clean, folds=folds, min_train=policy.minimum_training_samples,
         embargo_sessions=embargo_sessions,
@@ -529,11 +567,17 @@ def run_purged_walk_forward_validation(rows: pd.DataFrame, *, folds=5, embargo_s
         positive_samples=int(all_y.sum()), negative_samples=int((1 - all_y).sum()),
         pit_coverage=float(clean.get("pit_coverage", pd.Series([1.0])).min()), policy=policy,
     )
-    maturity = evidence_maturity(clean, oos_probability, policy)
+    maturity = evidence_maturity(clean.iloc[oos_index].reset_index(drop=True), oos_probability, policy)
     if not abstain and not maturity["credible"]:
         abstain = True
         reason = maturity["reasons"][0]
     returns = clean.iloc[oos_index]["excess_return"].astype(float).to_numpy()
+    evidence_valid = bool(
+        len(oos_index) >= policy.minimum_oos_samples
+        and metrics["brier"] < metrics["baseline_brier"]
+        and metrics["ece"] <= policy.maximum_ece
+        and maturity["credible"]
+    )
     return {
         "status": "ABSTAIN" if abstain else "VALIDATED",
         "reason": reason,
@@ -547,6 +591,7 @@ def run_purged_walk_forward_validation(rows: pd.DataFrame, *, folds=5, embargo_s
         },
         "policy": asdict(policy), "maturity": maturity,
         "embargo_sessions": int(embargo_sessions),
+        "evidence_valid": evidence_valid,
     }
 
 
@@ -571,6 +616,7 @@ def run_advanced_chronological_validation(
     development, holdout = chronological_holdout_split(
         rows, holdout_fraction=holdout_fraction,
         minimum_holdout_dates=minimum_holdout_dates,
+        embargo_sessions=embargo_sessions,
     )
     if development.empty or holdout.empty:
         return {
@@ -598,7 +644,13 @@ def run_advanced_chronological_validation(
     )
     holdout_y = holdout["target_before_stop"].astype(int).to_numpy()
     holdout_metrics = calibration_metrics(holdout_y, holdout_probability)
-    holdout_returns = holdout["excess_return"].astype(float).to_numpy()
+    # Multiple same-day signals are correlated. Aggregate by decision date
+    # before bootstrap and Sharpe inference instead of treating them as IID.
+    holdout_return_series = holdout.assign(
+        _validation_date=pd.to_datetime(holdout["as_of_date"], errors="coerce").dt.normalize(),
+        _excess_return=pd.to_numeric(holdout["excess_return"], errors="coerce"),
+    ).dropna(subset=["_validation_date", "_excess_return"]).groupby("_validation_date")["_excess_return"].mean()
+    holdout_returns = holdout_return_series.to_numpy(dtype=float)
     return_interval = moving_block_bootstrap_interval(
         holdout_returns, statistic="mean", samples=bootstrap_samples,
         block_length=bootstrap_block_length,
@@ -606,8 +658,8 @@ def run_advanced_chronological_validation(
     win_interval = wilson_score_interval(int(holdout_y.sum()), len(holdout_y))
     deflated = deflated_sharpe_ratio(holdout_returns, trials=experiment_trials)
     failures = []
-    if development_result["status"] != "VALIDATED":
-        failures.append(f"Development status is {development_result['status']}")
+    if not development_result.get("evidence_valid", False):
+        failures.append("Development walk-forward evidence did not pass")
     if holdout_metrics["brier"] >= holdout_metrics["baseline_brier"]:
         failures.append("Holdout Brier score does not beat the base rate")
     if holdout_metrics["ece"] > policy.maximum_ece:
@@ -634,6 +686,7 @@ def run_advanced_chronological_validation(
             "win_rate_interval": {"lower": win_interval[0], "upper": win_interval[1]},
             "excess_return_interval": return_interval,
             "deflated_sharpe": deflated,
+            "independent_return_periods": int(len(holdout_returns)),
         },
         "holdout_fraction": float(holdout_fraction),
         "embargo_sessions": int(embargo_sessions),
@@ -686,6 +739,10 @@ class ValidationStore:
                         status_reason TEXT NOT NULL
                     );
                 """)
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(validation_runs)")}
+                for name in ("result_json", "dataset_hash", "config_hash"):
+                    if name not in columns:
+                        conn.execute(f"ALTER TABLE validation_runs ADD COLUMN {name} TEXT")
                 conn.commit()
             finally:
                 conn.close()
@@ -766,23 +823,38 @@ class ValidationStore:
         frame["market_regime"] = frame["feature_json"].map(regime_from_features)
         return frame.drop(columns=["feature_json"])
 
-    def save_validation_run(self, result, horizon_sessions, strategy_version=STRATEGY_VERSION) -> str:
+    def save_validation_run(self, result, horizon_sessions, strategy_version=STRATEGY_VERSION,
+                            dataset: pd.DataFrame | None = None) -> str:
         created_at = dt.datetime.now(dt.timezone.utc).isoformat()
         material = json.dumps({"created_at": created_at, "strategy": strategy_version,
                                "horizon": horizon_sessions}, sort_keys=True)
         run_id = hashlib.sha256(material.encode()).hexdigest()
+        result_json = json.dumps(result, sort_keys=True, default=str, allow_nan=False)
+        dataset_hash = None
+        if isinstance(dataset, pd.DataFrame):
+            dataset_hash = hashlib.sha256(
+                pd.util.hash_pandas_object(dataset, index=True).values.tobytes()
+            ).hexdigest()
+        config_hash = hashlib.sha256(json.dumps({
+            "policy": result.get("policy") or result.get("development", {}).get("policy"),
+            "holdout_fraction": result.get("holdout_fraction"),
+            "embargo_sessions": result.get("embargo_sessions"),
+            "experiment_trials": result.get("experiment_trials"),
+        }, sort_keys=True, default=str).encode()).hexdigest()
         conn = self._connect()
         try:
             conn.execute("""
                 INSERT INTO validation_runs(run_id, created_at, strategy_version, target_version,
                     horizon_sessions, training_samples, oos_samples, metrics_json, model_json,
-                    status, status_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, status_reason, result_json, dataset_hash, config_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (run_id, created_at, strategy_version, TARGET_VERSION, int(horizon_sessions),
                   int(result.get("training_samples", 0)), int(result.get("oos_samples", 0)),
                   json.dumps(result.get("metrics", {}), sort_keys=True),
                   json.dumps({"model": result.get("model"), "return_quantiles": result.get("return_quantiles"),
                               "policy": result.get("policy"), "folds": result.get("folds")}, sort_keys=True),
-                  result.get("status", "INSUFFICIENT_EVIDENCE"), result.get("reason", "Unknown")))
+                  result.get("status", "INSUFFICIENT_EVIDENCE"), result.get("reason", "Unknown"),
+                  result_json, dataset_hash, config_hash))
             conn.commit()
         finally:
             conn.close()

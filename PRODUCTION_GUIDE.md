@@ -1,6 +1,44 @@
-# Quant Terminal production guide — v21.0
+# Quant Terminal production guide — v21.2 deployment hardening
 
-## Advanced quantitative governance (v21.0)
+## Deployment security (v21.2)
+
+The hosted app now fails closed behind Streamlit's native OIDC login and a separate authorization
+allowlist. Add the `[auth]` block from `.streamlit/secrets.example.toml` to Streamlit Secrets, set its
+`redirect_uri` to the exact deployed app URL plus `/oauth2callback`, and register the same callback at
+Google, Microsoft Entra, Okta, or another OIDC provider. Add the intended account to
+`AUTH_ALLOWED_EMAILS` (or a controlled organization domain to `AUTH_ALLOWED_DOMAINS`). A valid login
+that is not on the allowlist is denied. Never expose ID/access tokens or log raw identity claims.
+
+Authentication can be disabled only for local development when all three controls are explicit:
+`APP_ENV=development`, `APP_AUTH_MODE=disabled`, and the local process environment variable
+`QUANT_ALLOW_INSECURE_LOCAL=1`. Production defaults to OIDC and missing configuration stops execution
+before application data stores, provider clients, or recommendation paths are initialized.
+
+Database authority is split:
+
+1. Keep the existing Supabase owner/pooler URL only in GitHub Actions as `DATABASE_MIGRATION_URL`.
+2. Run `database_runtime_role.sql.example` once in Supabase SQL Editor after replacing its password
+   placeholder with a password-manager-generated value. Do not save or commit the completed SQL.
+3. Build a Session Pooler URL for `quant_app_runtime` and store it as `DATABASE_URL` in both Streamlit
+   Secrets and GitHub Actions. Percent-encode special password characters in the URL.
+4. The workflow first runs owner-only migrations, then verifies the restricted runtime connection.
+   The app and collector never execute DDL and reject admin roles, schema-CREATE privilege, RLS bypass,
+   or update/delete rights on the immutable evidence ledger.
+
+Do not put `DATABASE_MIGRATION_URL` in Streamlit Secrets. Rotate the old owner URL out of Streamlit
+after the restricted URL passes the scheduled collector's connection check.
+
+The repository does not depend on TensorFlow. A TensorFlow/protobuf conflict therefore indicates a
+contaminated local Python environment, not an application dependency. On Windows run
+`bootstrap_clean_environment.ps1` to create a dedicated Python 3.13 `.venv`. CI now runs both
+`pip check` and `environment_preflight.py --strict`, so any installed-package mismatch blocks release.
+
+## Advanced quantitative governance (v21.1)
+
+The v21.1 hardening release connects PIT, execution-quality, kill-switch, EV, and portfolio-risk
+contracts to live recommendation paths. It also isolates same-day scan runs, purges labels crossing
+the untouched holdout, rejects non-finite policy inputs, and retains failed durable ledger deliveries
+in a retry outbox. Exact one-minute target evidence is now the only production label path.
 
 Every displayed setup is now written to an append-only evidence ledger with an idempotency key,
 per-signal sequence number, previous-event hash, payload hash, model version, thresholds, timestamps,
@@ -25,8 +63,9 @@ out-of-sample value after costs is demonstrated.
 ## Durable evidence collection (v19.0)
 
 The app keeps SQLite as a fast local cache and writes irreplaceable research evidence to the
-`quant_app` schema in the configured Supabase PostgreSQL database. Configure the same Session
-Pooler `DATABASE_URL` in Streamlit Secrets and GitHub repository Actions secrets. Also configure
+`quant_app` schema in the configured Supabase PostgreSQL database. Configure the restricted runtime
+Pooler `DATABASE_URL` in Streamlit Secrets and GitHub repository Actions secrets. Configure the owner
+URL only as GitHub secret `DATABASE_MIGRATION_URL`. Also configure
 the read-only `UPSTOX_ANALYTICS_TOKEN` in both places. Never commit either value.
 
 The `Scheduled evidence collector` GitHub Action runs at 09:25 IST and 15:45 IST on weekdays,
@@ -36,7 +75,8 @@ and official AMFI data. Every run is audited as success or failure in PostgreSQL
 read-only and contains no order-placement code.
 
 Use GitHub **Actions → Scheduled evidence collector → Run workflow → all** once after deployment.
-The initial connection check creates the schema and fails safely if either secret is missing. A
+The owner-only migration step creates or upgrades the schema; the separate runtime connection check
+fails if the role is privileged or either URL is missing. A
 successful workflow is the deployment proof; merely seeing secrets listed in GitHub is not.
 
 Production validation never mixes daily-open fallback labels with exact intraday labels. For a
@@ -63,17 +103,17 @@ The source code now keeps credentials server-side, but code cannot revoke creden
 
 1. Revoke and recreate the Upstox token and Gemini API key in their provider consoles.
 2. Replace the values in Streamlit Community Cloud **App settings → Secrets**. Never place them in a widget or committed file.
-3. Keep the Streamlit deployment private and grant access only to trusted users. This owner-selected build intentionally has no application-level login.
+3. Configure OIDC and the application allowlist, then keep hosting access limited to trusted users as a second control.
 4. If the deleted `API AND TOPKENS.txt` was ever pushed, remove it from Git history with a history-rewrite tool and invalidate every value it contained. Deleting the latest copy alone does not erase repository history or forks.
 
 ## Security and data isolation
 
-- The application runs in single-user mode without OIDC. Anyone who can open the deployed URL can use its features, so hosting-layer privacy is required.
+- The application requires OIDC and an approved email/domain before loading application services. Hosting-layer privacy remains recommended as defense in depth.
 - Positions, watchlists, and option-signal history use unpredictable per-session ownership. One visitor does not receive another visitor's rows. Browser-session loss starts a new owner; this intentionally provides no durable account recovery. Existing rows are preserved, not reassigned. This is not a replacement for hosting-layer authentication.
 - Existing legacy rows use `__legacy__` and are not automatically assigned to a new user. Migrate them manually only after ownership is verified.
 - SQLite is acceptable for one local instance, but not for horizontally scaled production. Move user state to managed PostgreSQL, add `user_id NOT NULL` foreign keys, enforce row-level security, encrypt backups, and use short-lived database credentials.
 - Keep market-data caches separate from personal data. Apply retention limits to logs and never log access tokens, API keys, raw OIDC claims, or full provider error bodies.
-- Put the application behind TLS, enable provider-side MFA, restrict hosting access to approved accounts, and review dependency/security alerts. No OIDC configuration is required by this build.
+- Put the application behind TLS, enable provider-side MFA, restrict hosting access to approved accounts, and review dependency/security alerts. Keep OIDC callback URLs and allowlists under change control.
 - Use least-privilege provider keys, secret rotation, audit logs, per-user quotas, request-size limits, and secure HTTP headers at the hosting edge.
 
 ## Market data and reliability
@@ -159,3 +199,26 @@ same-bar ambiguity, 0.30% round-trip costs, and NIFTY excess returns. Validation
 walk-forward folds with a 20-session embargo, Platt probability calibration, Brier score, log loss, reliability
 error, and an explicit No-Trade policy. Until the minimum out-of-sample evidence is reached and beats the
 base-rate model, probability remains unavailable.
+
+## Unified resilience control plane (v22.0)
+
+Every live options, equity, futures, commodity, and technical-research candidate now passes through one
+fail-closed safety state machine before it can be shown as actionable. The states are NORMAL, DEGRADED,
+NO_TRADE, READ_ONLY, and EMERGENCY_STOP. More severe findings always win; exits and audit reads remain
+available in every state. Emergency recovery requires explicit authorization and three clean windows.
+
+The repository implements correlated decision IDs, SLO/error-budget evaluation, quote freshness/book/sequence
+validation, optional independent quote reconciliation, policy/build attestation, calibration abstention,
+append-only resilience events, an evidence-outbox backlog gate, model-promotion attestations, fill-state
+surveillance, distributed collector leases with fencing tokens, recovery/retention checks, credential-free
+game days, and capacity degradation contracts. Run `python resilience_acceptance.py --game-day` before release.
+
+`resilience_policy.json` is configuration-as-code and must match `resilience_policy.sha256`. If an approved
+policy change is made, update the sidecar in the same reviewed change and set `RESILIENCE_POLICY_SHA256` to
+the approved file digest in the deployment environment. Do not put quotation marks around GitHub secret
+values unless the quotation marks are intentionally part of the value.
+
+The code cannot provision external services. Before claiming full production resilience, connect telemetry
+export/alerts, a licensed secondary NSE quote source, Streamlit release rollback, secret-manager rotation,
+Supabase PITR/isolated restore drills, and protected independent deployment/model approvals. Until configured,
+these dependencies remain visibly unavailable or degraded; they are never reported as verified.
