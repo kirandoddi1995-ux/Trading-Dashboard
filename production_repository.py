@@ -14,6 +14,7 @@ import hmac
 import json
 import os
 import threading
+import urllib.parse
 import uuid
 from contextlib import contextmanager
 from decimal import Decimal
@@ -36,6 +37,61 @@ SCHEMA_VERSION = 4
 
 class RepositoryUnavailable(RuntimeError):
     """The durable repository is not configured or cannot be reached."""
+
+
+def _safe_database_url_shape(database_url: str | None) -> dict:
+    """Return non-secret connection metadata suitable for CI diagnostics."""
+    text = str(database_url or "")
+    result = {
+        "parseable": False,
+        "scheme_valid": text.startswith(("postgresql://", "postgres://")),
+        "has_whitespace": any(char.isspace() for char in text),
+        "has_surrounding_quotes": text[:1] in {"'", '"'} or text[-1:] in {"'", '"'},
+    }
+    try:
+        parsed = urllib.parse.urlsplit(text)
+        password = urllib.parse.unquote(parsed.password or "")
+        result.update({
+            "parseable": bool(parsed.scheme and parsed.hostname),
+            "scheme": parsed.scheme,
+            "username": urllib.parse.unquote(parsed.username or ""),
+            "host": parsed.hostname or "",
+            "port": parsed.port,
+            "database": parsed.path.lstrip("/"),
+            "password_present": parsed.password is not None,
+            "password_length": len(password),
+            "password_alphanumeric": bool(password) and password.isalnum(),
+        })
+    except Exception:
+        result["parseable"] = False
+    return result
+
+
+def _connection_error_code(exc: Exception) -> str:
+    """Classify a connection failure without returning provider text or secrets."""
+    message = str(exc).casefold()
+    checks = (
+        (("password authentication failed", "authentication failed", "no password supplied"),
+         "AUTHENTICATION_FAILED"),
+        (("tenant or user not found", "user not found", "unknown tenant"),
+         "POOLER_IDENTITY_NOT_FOUND"),
+        (("circuit breaker", "too many authentication failures"),
+         "POOLER_CIRCUIT_BREAKER"),
+        (("worker_not_found", "worker not found"), "POOLER_NOT_READY"),
+        (("could not translate host name", "name or service not known", "nodename nor servname",
+          "temporary failure in name resolution"), "DNS_RESOLUTION_FAILED"),
+        (("timeout", "timed out"), "CONNECTION_TIMEOUT"),
+        (("network is unreachable", "no route to host"), "NETWORK_UNREACHABLE"),
+        (("connection refused",), "CONNECTION_REFUSED"),
+        (("gssapi", "gssencmode"), "GSS_NEGOTIATION_FAILED"),
+        (("ssl", "tls"), "TLS_NEGOTIATION_FAILED"),
+        (("server closed the connection unexpectedly", "connection reset by peer"),
+         "CONNECTION_DROPPED"),
+    )
+    for needles, code in checks:
+        if any(needle in message for needle in needles):
+            return code
+    return "OPERATIONAL_ERROR"
 
 
 def _utcnow() -> dt.datetime:
@@ -142,7 +198,8 @@ class ProductionRepository:
                 sslmode="require",
             )
         except Exception as exc:
-            raise RepositoryUnavailable(f"PostgreSQL connection failed: {type(exc).__name__}") from exc
+            code = _connection_error_code(exc)
+            raise RepositoryUnavailable(f"PostgreSQL connection failed [{code}]") from exc
         try:
             yield conn
         finally:
@@ -595,7 +652,12 @@ class ProductionRepository:
                 value = conn.execute("SELECT 1").fetchone()[0]
             return {"configured": True, "connected": value == 1, "status": "Connected"}
         except Exception as exc:
-            return {"configured": True, "connected": False, "status": str(exc)}
+            return {
+                "configured": True,
+                "connected": False,
+                "status": str(exc),
+                "connection_shape": _safe_database_url_shape(self._database_url),
+            }
 
     def acquire_collector_lease(self, lease_name: str, owner_id: str, *, ttl_seconds=180) -> dict | None:
         """Acquire a distributed lease and return a monotonically increasing fencing token."""
