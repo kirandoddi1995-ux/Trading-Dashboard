@@ -25,9 +25,11 @@ def test_production_auth_is_before_service_initialization():
     source = (ROOT / "app.py").read_text(encoding="utf-8")
     page = source.index("st.set_page_config")
     gate = source.index("AUTHENTICATED_USER = require_streamlit_auth(st)")
+    observability = source.index("OBSERVABILITY = observability.get_registry()")
+    cache_schema = source.index("\n_ensure_cache_schema()\n", gate)
     first_service = source.index("MARKET_DATA_GATEWAY =")
     first_store = source.index("TECHNICAL_FEATURE_STORE =")
-    assert page < gate < first_service < first_store
+    assert page < gate < observability < cache_schema < first_service < first_store
 
 
 def test_oidc_configuration_and_authorization_fail_closed():
