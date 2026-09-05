@@ -166,6 +166,9 @@ def test_portfolio_expected_shortfall_stress_and_kelly_are_calibration_gated():
     assert blocked["status"] == "UNAVAILABLE" and blocked["weight"] == 0
     allowed = fractional_kelly_weight(.7, 2.0, calibration_evidence=calibrated_evidence())
     assert 0 < allowed["weight"] <= PortfolioRiskPolicy().maximum_fractional_kelly_weight
+    assert fractional_kelly_weight(
+        float("nan"), 2.0, calibration_evidence=calibrated_evidence()
+    ) == {"status": "UNAVAILABLE", "weight": 0.0, "reason": "probability must be a finite number"}
 
 
 def test_derivative_exposure_limits_and_kill_switch_fail_closed():

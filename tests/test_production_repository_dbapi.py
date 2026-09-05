@@ -1,6 +1,11 @@
 from decimal import Decimal
 
-from production_repository import _executemany, _finite_decimal
+from production_repository import (
+    _connection_error_code,
+    _executemany,
+    _finite_decimal,
+    _safe_database_url_shape,
+)
 
 
 class _Cursor:
@@ -41,3 +46,32 @@ def test_finite_decimal_preserves_valid_values_and_rejects_non_finite_values():
     assert _finite_decimal("Infinity") is None
     assert _finite_decimal(None) is None
 
+
+def test_database_url_shape_reports_structure_without_exposing_password():
+    url = "postgresql://quant_app_runtime.projectref:Secret123@pooler.example.com:5432/postgres"
+
+    shape = _safe_database_url_shape(url)
+
+    assert shape == {
+        "parseable": True,
+        "scheme_valid": True,
+        "has_whitespace": False,
+        "has_surrounding_quotes": False,
+        "scheme": "postgresql",
+        "username": "quant_app_runtime.projectref",
+        "host": "pooler.example.com",
+        "port": 5432,
+        "database": "postgres",
+        "password_present": True,
+        "password_length": 9,
+        "password_alphanumeric": True,
+    }
+    assert "Secret123" not in repr(shape)
+
+
+def test_database_connection_errors_are_safely_classified():
+    assert _connection_error_code(Exception("password authentication failed for user")) == "AUTHENTICATION_FAILED"
+    assert _connection_error_code(Exception("FATAL: Tenant or user not found")) == "POOLER_IDENTITY_NOT_FOUND"
+    assert _connection_error_code(Exception("circuit breaker open")) == "POOLER_CIRCUIT_BREAKER"
+    assert _connection_error_code(Exception("connection timed out")) == "CONNECTION_TIMEOUT"
+    assert _connection_error_code(Exception("unexpected provider text")) == "OPERATIONAL_ERROR"
