@@ -792,17 +792,24 @@ def fractional_kelly_weight(
     status = calibration_evidence_status(calibration_evidence, evidence_policy)
     if not status["usable"]:
         return {"status": "UNAVAILABLE", "weight": 0.0, "reason": status["reason"]}
-    p = min(float(probability), float(status["conservative_probability"]))
-    payoff = float(net_reward_risk)
-    if payoff <= 0:
-        return {"status": "UNAVAILABLE", "weight": 0.0, "reason": "Payoff ratio must be positive"}
+    try:
+        supplied_probability = _finite_number(probability, name="probability", minimum=0.0, maximum=1.0)
+        payoff = _finite_number(net_reward_risk, name="net_reward_risk", minimum=1e-12)
+        configured_fraction = _finite_number(policy.kelly_fraction, name="kelly_fraction", minimum=0.0, maximum=1.0)
+        configured_cap = _finite_number(
+            policy.maximum_fractional_kelly_weight,
+            name="maximum_fractional_kelly_weight", minimum=0.0, maximum=1.0,
+        )
+    except ValueError as exc:
+        return {"status": "UNAVAILABLE", "weight": 0.0, "reason": str(exc)}
+    p = min(supplied_probability, float(status["conservative_probability"]))
     full_kelly = max((payoff * p - (1.0 - p)) / payoff, 0.0)
-    weight = min(full_kelly * policy.kelly_fraction, policy.maximum_fractional_kelly_weight)
+    weight = min(full_kelly * configured_fraction, configured_cap)
     return {
         "status": "PASS" if weight > 0 else "NO_TRADE",
         "weight": weight,
         "full_kelly": full_kelly,
-        "fraction": policy.kelly_fraction,
+        "fraction": configured_fraction,
         "probability_used": p,
         "reason": "Calibration-gated fractional Kelly" if weight > 0 else "Kelly edge is non-positive",
     }

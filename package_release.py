@@ -17,10 +17,12 @@ RUNTIME = ['app.py', 'app_runtime.py', 'scan_jobs.py', 'reliable_charts.py',
            'trade_contracts.py', 'evidence_ledger.py', 'quant_foundation.py',
            'deployment_security.py', 'environment_preflight.py',
            'resilience_control_plane.py', 'resilience_acceptance.py',
+           'continuous_evolution.py',
            'resilience_policy.json', 'resilience_policy.sha256',
            'requirements.txt', 'constraints.txt']
 FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_GUIDE.md',
                    'RESILIENCE_IMPLEMENTATION.md', 'RESILIENCE_RUNBOOK.md',
+                   'CONTINUOUS_EVOLUTION_IMPLEMENTATION.md',
                    'FIX_VERIFICATION_2026-08-31.md', 'provider_smoke.py', 'package_release.py',
                    'database_runtime_role.sql.example', 'bootstrap_clean_environment.ps1',
                    'tests/test_regressions.py', 'tests/test_mf_research.py', 'tests/test_audit_fixes.py',
@@ -32,6 +34,7 @@ FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_
                    'tests/test_quant_governance_adversarial.py',
                    'tests/test_deployment_hardening.py',
                    'tests/test_resilience_control_plane.py',
+                   'tests/test_continuous_evolution.py',
                    '.github/workflows/quality.yml', '.github/workflows/scheduled-collector.yml',
                    '.github/workflows/resilience.yml']
 
@@ -41,7 +44,7 @@ def package():
     if not canaries['ok']:
         raise RuntimeError(f"Release canaries failed: {canaries['checks']}")
     manifest = {}
-    archive = ROOT / 'release-v22.0-resilience-control-plane.zip'
+    archive = ROOT / 'release-v22.1-continuous-evolution.zip'
     for name in FILES:
         path = (ROOT / name).resolve()
         if not path.is_relative_to(ROOT) or not path.is_file():

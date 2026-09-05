@@ -12,6 +12,8 @@ def run_canaries(root):
                    "evidence_ledger.py","quant_foundation.py","deployment_security.py","environment_preflight.py",
                    "resilience_control_plane.py","resilience_acceptance.py"):
         ast.parse((root/module).read_text(encoding="utf-8")); checks[f"parses:{module}"]=True
+    ast.parse((root/"continuous_evolution.py").read_text(encoding="utf-8"))
+    checks["parses:continuous_evolution.py"] = True
     db=sqlite3.connect(":memory:"); checks["sqlite_json"]=db.execute("SELECT json_valid('{}')").fetchone()[0]==1; db.close()
     archives=sorted(root.glob("release-*.zip"),key=lambda p:p.stat().st_mtime,reverse=True)
     if archives:
@@ -42,7 +44,10 @@ def run_canaries(root):
                                           and "test_resilience_control_plane.py" in resilience_workflow)
     checks["live_resilience_gate_wired"] = ("RESILIENCE_CONTROL_PLANE.evaluate_recommendation" in app_source
                                              and '"resilience": resilience_public' in app_source
-                                             and 'not resilience.allow_new_trades' in app_source)
+                                             and 'not resilience.allow_new_trades' in app_source
+                                             and "unified_control_findings" in app_source
+                                             and 'expected_value["status"] != "PASS"' in app_source
+                                             and 'portfolio["status"] != "PASS"' in app_source)
     return {"ok":all(checks.values()),"checks":checks}
 
 

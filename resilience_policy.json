@@ -1,5 +1,5 @@
 {
-  "version": "resilience-v1",
+  "version": "resilience-v2-continuous-evolution",
   "state_machine": {
     "clean_windows_to_recover": 3,
     "emergency_requires_authorization": true
@@ -29,6 +29,26 @@
     "maximum_log_loss": 0.69,
     "maximum_brier_deterioration": 0.05,
     "consecutive_breaches_to_abstain": 2
+  },
+  "continuous_evolution": {
+    "minimum_production_models": 1,
+    "maximum_model_probability_range": 0.15,
+    "maximum_single_model_weight": 0.8,
+    "minimum_conformal_samples": 500,
+    "conformal_alpha": 0.1,
+    "maximum_conformal_width": 0.35,
+    "minimum_conformal_coverage": 0.88,
+    "minimum_reliability_bin_samples": 30,
+    "maximum_log_loss": 0.69,
+    "minimum_fill_oos_samples": 500,
+    "maximum_fill_brier": 0.25,
+    "maximum_fill_ece": 0.08,
+    "minimum_fill_probability": 0.5,
+    "minimum_claim_samples": 1000,
+    "minimum_candidate_coverage": 0.05,
+    "minimum_claim_wilson_lower": 0.99,
+    "minimum_regime_samples": 100,
+    "minimum_claim_regimes": 3
   },
   "execution": {
     "maximum_slippage_bps": 50,

@@ -19,6 +19,11 @@ from resilience_control_plane import (
     SafetyStateMachine,
     UTC,
 )
+from continuous_evolution import (
+    evaluate_model_ensemble,
+    predictive_correctness_claim,
+    unified_control_findings,
+)
 
 
 def run_acceptance(*, game_day=False):
@@ -89,6 +94,28 @@ def run_acceptance(*, game_day=False):
         personal_data_retention_days=30, ledger_verified=True,
     )
     checks["retention_policy_valid"] = not retention
+
+    model = evaluate_model_ensemble(
+        [], weights={}, selected_regime="UNKNOWN", expected_feature_schema_hash="schema",
+        decision_at=now,
+    )
+    checks["missing_model_abstains"] = model["status"] == "ABSTAIN" and model["probability"] is None
+    claim = predictive_correctness_claim({
+        "matured_actionable": 999, "correct_predictions": 999,
+        "candidate_count": 999, "evaluated_count": 10_000,
+    })
+    checks["unsupported_99pct_claim_blocked"] = claim["claim"] == "99% not established"
+    quantitative_findings = unified_control_findings(
+        pit={"status": "PASS"}, model=model, calibration={"status": "PASS"},
+        conformal={"status": "PASS"}, execution={"status": "PASS"},
+        expected_value={"status": "PASS"}, portfolio={"status": "PASS"},
+        allocation={"status": "PASS"}, kill_switch={"status": "PASS"},
+    )
+    quantitative_snapshot = ResilienceControlPlane(policy).evaluate_recommendation(
+        price=100, quote_at=now, provider_available=True, exchange_open=True,
+        calibration_evidence=None, control_findings=quantitative_findings,
+    )
+    checks["quantitative_abstention_drives_no_trade"] = quantitative_snapshot.state == SafetyState.NO_TRADE
 
     if game_day:
         scenarios = {

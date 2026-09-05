@@ -189,7 +189,8 @@ class ResiliencePolicy:
             raise ValueError("Resilience policy must be an object")
         required = {
             "state_machine", "slo", "market_data", "calibration", "execution",
-            "clock", "collector", "outbox", "secrets", "recovery", "capacity", "retention",
+            "continuous_evolution", "clock", "collector", "outbox", "secrets",
+            "recovery", "capacity", "retention",
         }
         missing = sorted(required - set(data))
         if missing:
@@ -633,7 +634,7 @@ class ResilienceControlPlane:
                                 secondary_quote=None, tick_size=None, heartbeat_age_seconds=0,
                                 ntp_offset_seconds=0, runtime_expected=None, runtime_actual=None,
                                 outbox_stats=None, capacity_sample=None, authorized_recovery=False,
-                                correlation_id=None):
+                                correlation_id=None, control_findings=None):
         _CORRELATION_ID.set(str(correlation_id or new_correlation_id()))
         started = time.perf_counter()
         now = utcnow()
@@ -657,6 +658,10 @@ class ResilienceControlPlane:
                 sequence=secondary_quote.get("sequence"),
             )
         findings = list(pre_findings)
+        for item in control_findings or ():
+            if not isinstance(item, SafetyFinding):
+                raise TypeError("control_findings must contain SafetyFinding values")
+            findings.append(item)
         findings.extend(self.market_data.evaluate(
             primary, secondary=secondary, now=now, tick_size=tick_size,
             heartbeat_age_seconds=heartbeat_age_seconds, provider_available=provider_available,
