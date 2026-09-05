@@ -24,6 +24,8 @@ def run_canaries(root):
                                           and "AUTH_ALLOWED_EMAILS" in example and "[auth]" in example)
     app_source=app.read_text(encoding="utf-8")
     checks["auth_precedes_services"]=(app_source.index("require_streamlit_auth(st)")
+                                       < app_source.index("OBSERVABILITY = observability.get_registry()")
+                                       < app_source.index("\n_ensure_cache_schema()\n")
                                        < app_source.index("MARKET_DATA_GATEWAY =")
                                        < app_source.index("TECHNICAL_FEATURE_STORE ="))
     workflow=(root/".github"/"workflows"/"scheduled-collector.yml").read_text(encoding="utf-8")

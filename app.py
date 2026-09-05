@@ -380,9 +380,6 @@ def _ensure_cache_schema(db_path=DEFAULT_DB_PATH):
             conn.close()
 
 
-_ensure_cache_schema()
-
-
 def _previous_weekday(day):
     day = day - datetime.timedelta(days=1)
     while day.weekday() >= 5:
@@ -754,6 +751,7 @@ except ImportError:
 st.set_page_config(layout="wide", page_title="Quant Terminal")
 AUTHENTICATED_USER = require_streamlit_auth(st)
 OBSERVABILITY = observability.get_registry()
+_ensure_cache_schema()
 RESILIENCE_CONTROL_PLANE = get_resilience_control_plane()
 MARKET_DATA_GATEWAY = get_market_data_gateway()
 _RERUN_ID, _RERUN_STARTED = OBSERVABILITY.begin_rerun()
