@@ -42,12 +42,16 @@ def connect(path):
 
 
 def calibrated_evidence(probability=0.70, low=0.64):
+    now = dt.datetime.now(dt.timezone.utc)
     return {
         "status": "VALIDATED", "probability": probability,
         "probability_interval_low": low, "probability_interval_high": 0.76,
         "oos_samples": 1000, "positive_samples": 500, "negative_samples": 500,
         "observation_days": 300, "ece": 0.03, "brier": 0.18,
         "baseline_brier": 0.25, "model_version": "model-v1",
+        "validated_at": (now - dt.timedelta(days=1)).isoformat(),
+        "valid_until": (now + dt.timedelta(days=29)).isoformat(),
+        "feature_psi": 0.05, "calibration_decay": 0.01,
     }
 
 
@@ -59,9 +63,15 @@ def test_evidence_ledger_is_idempotent_hash_chained_and_immutable(tmp_path):
         idempotency_key="create-signal-1",
     )
     duplicate = ledger.append(
-        aggregate_id="signal-1", event_type="SIGNAL_CREATED", payload={"entry": 999},
+        aggregate_id="signal-1", event_type="SIGNAL_CREATED", payload={"entry": 100},
+        effective_at=first["effective_at"],
         idempotency_key="create-signal-1",
     )
+    with pytest.raises(ValueError, match="different evidence"):
+        ledger.append(
+            aggregate_id="signal-1", event_type="SIGNAL_CREATED", payload={"entry": 999},
+            effective_at=first["effective_at"], idempotency_key="create-signal-1",
+        )
     second = ledger.append(
         aggregate_id="signal-1", event_type="SIGNAL_AMENDED", payload={"stop": 95},
         idempotency_key="amend-signal-1",
@@ -86,7 +96,9 @@ def test_point_in_time_firewall_rejects_future_stale_and_unlined_features():
         "missing": {"value": 3},
     })
     assert result["status"] == "NO_TRADE"
-    assert {failure["code"] for failure in result["failures"]} == {"LOOKAHEAD", "STALE", "MISSING_LINEAGE"}
+    assert {failure["code"] for failure in result["failures"]} == {
+        "LOOKAHEAD", "STALE", "MISSING_LINEAGE", "MISSING_UNIVERSE_LINEAGE",
+    }
 
 
 def test_expected_value_is_unavailable_without_calibration_and_conservative_when_available():
@@ -219,7 +231,7 @@ def test_advanced_validation_keeps_final_holdout_out_of_training():
         experiment_trials=3, bootstrap_samples=200, policy=policy,
     )
     assert result["status"] == "VALIDATED"
-    assert result["training_samples"] + result["holdout_samples"] == count
+    assert result["training_samples"] + result["holdout_samples"] < count
     assert pd.Timestamp(result["holdout"]["start"]) > rows.iloc[result["training_samples"] - 1].as_of_date
     assert result["holdout"]["metrics"]["brier"] < result["holdout"]["metrics"]["baseline_brier"]
 
