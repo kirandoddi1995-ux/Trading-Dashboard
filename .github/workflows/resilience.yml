@@ -1,0 +1,29 @@
+name: Production resilience gate
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      game_day:
+        description: Run credential-free resilience fault scenarios
+        required: false
+        default: false
+        type: boolean
+jobs:
+  resilience:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - run: pip install -r requirements.txt pytest
+      - run: python resilience_acceptance.py
+      - run: python -m pytest -q tests/test_resilience_control_plane.py
+      - name: Credential-free game day
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.game_day }}
+        run: python resilience_acceptance.py --game-day
