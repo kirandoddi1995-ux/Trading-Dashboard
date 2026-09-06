@@ -1,0 +1,47 @@
+name: Guarded Supabase recovery drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Plan or verify an operator-created isolated DR restore
+        required: true
+        default: plan
+        type: choice
+        options: [plan, verify]
+      recovery_time:
+        description: Timezone-aware restore point, for example 2026-09-01T09:00:00Z
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-recovery-drill
+  cancel-in-progress: false
+
+jobs:
+  recovery:
+    runs-on: ubuntu-latest
+    environment: production-recovery
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Plan only (no network mutation)
+        if: inputs.operation == 'plan'
+        env:
+          SUPABASE_SOURCE_PROJECT_REF: ${{ vars.SUPABASE_SOURCE_PROJECT_REF }}
+          SUPABASE_DR_PROJECT_REF: ${{ vars.SUPABASE_DR_PROJECT_REF }}
+          RECOVERY_TIME_INPUT: ${{ inputs.recovery_time }}
+        run: python recovery_drill.py --recovery-time "$RECOVERY_TIME_INPUT"
+      - name: Verify restored schema, runtime role, and ledger continuity
+        if: inputs.operation == 'verify'
+        env:
+          DR_DATABASE_URL: ${{ secrets.DR_DATABASE_URL }}
+          EVIDENCE_LEDGER_SIGNING_KEY: ${{ secrets.EVIDENCE_LEDGER_SIGNING_KEY }}
+        run: python recovery_drill.py --verify
