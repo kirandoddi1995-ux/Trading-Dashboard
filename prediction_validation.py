@@ -17,6 +17,21 @@ from scipy.stats import norm
 
 
 TARGET_VERSION = "net-excess-execution-v2"
+
+
+def canonical_target(values) -> tuple:
+    """Normalize one stored target row for immutable collision comparison."""
+    row = list(values or ())
+    if len(row) != 14:
+        return tuple(row)
+    for index in (0, 2, 3, 4, 5, 6):
+        row[index] = None if row[index] is None else str(row[index])
+    row[1] = int(row[1])
+    for index in (7, 12):
+        row[index] = None if row[index] is None else bool(row[index])
+    for index in (8, 9, 10, 11, 13):
+        row[index] = None if row[index] is None else float(row[index])
+    return tuple(row)
 FALLBACK_TARGET_VERSION = "net-excess-next-open-fallback-v1"
 STRATEGY_VERSION = "equity-scanner-v19.0"
 
@@ -738,6 +753,12 @@ class ValidationStore:
                         status TEXT NOT NULL,
                         status_reason TEXT NOT NULL
                     );
+                    CREATE TRIGGER IF NOT EXISTS prediction_targets_no_update
+                    BEFORE UPDATE ON prediction_targets
+                    BEGIN SELECT RAISE(ABORT, 'prediction targets are immutable'); END;
+                    CREATE TRIGGER IF NOT EXISTS prediction_targets_no_delete
+                    BEFORE DELETE ON prediction_targets
+                    BEGIN SELECT RAISE(ABORT, 'prediction targets are immutable'); END;
                 """)
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(validation_runs)")}
                 for name in ("result_json", "dataset_hash", "config_hash"):
@@ -748,17 +769,30 @@ class ValidationStore:
                 conn.close()
 
     def save_target(self, observation_id, target):
+        values = (
+            observation_id, target["horizon_sessions"], target["target_version"], target["entry_date"],
+            target["label_end_date"], target["outcome_date"], target["outcome"],
+            target["target_before_stop"], target["gross_return"], target["net_return"],
+            target["benchmark_return"], target["excess_return"], target["positive_excess"], target["cost_bps"],
+        )
         conn = self._connect()
         try:
-            conn.execute("""
-                INSERT OR REPLACE INTO prediction_targets(observation_id, horizon_sessions, target_version,
+            cursor = conn.execute("""
+                INSERT OR IGNORE INTO prediction_targets(observation_id, horizon_sessions, target_version,
                     entry_date, label_end_date, outcome_date, outcome, target_before_stop, gross_return,
                     net_return, benchmark_return, excess_return, positive_excess, cost_bps)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (observation_id, target["horizon_sessions"], target["target_version"], target["entry_date"],
-                  target["label_end_date"], target["outcome_date"], target["outcome"],
-                  target["target_before_stop"], target["gross_return"], target["net_return"],
-                  target["benchmark_return"], target["excess_return"], target["positive_excess"], target["cost_bps"]))
+            """, values)
+            if cursor.rowcount == 0:
+                existing = conn.execute("""
+                    SELECT observation_id,horizon_sessions,target_version,entry_date,label_end_date,
+                           outcome_date,outcome,target_before_stop,gross_return,net_return,
+                           benchmark_return,excess_return,positive_excess,cost_bps
+                    FROM prediction_targets
+                    WHERE observation_id=? AND horizon_sessions=? AND target_version=?
+                """, (observation_id, target["horizon_sessions"], target["target_version"])).fetchone()
+                if canonical_target(existing) != canonical_target(values):
+                    raise ValueError("Matured target is immutable and conflicts with existing evidence")
             conn.commit()
         finally:
             conn.close()
@@ -814,6 +848,11 @@ class ValidationStore:
             conn.close()
         if frame.empty:
             frame["market_regime"] = pd.Series(dtype="object")
+            frame.attrs.update({
+                "pit_verified": True, "costs_applied": True,
+                "strategy_version": STRATEGY_VERSION, "target_version": TARGET_VERSION,
+                "horizon_sessions": int(horizon_sessions),
+            })
             return frame
         def regime_from_features(value):
             try:
@@ -821,7 +860,43 @@ class ValidationStore:
             except (TypeError, ValueError, json.JSONDecodeError):
                 return None
         frame["market_regime"] = frame["feature_json"].map(regime_from_features)
-        return frame.drop(columns=["feature_json"])
+        frame = frame.drop(columns=["feature_json"])
+        frame.attrs.update({
+            "pit_verified": True, "costs_applied": True,
+            "strategy_version": STRATEGY_VERSION, "target_version": TARGET_VERSION,
+            "horizon_sessions": int(horizon_sessions),
+        })
+        return frame
+
+    def load_validation_run(self, run_id: str) -> dict | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT run_id,created_at,strategy_version,target_version,horizon_sessions,status,result_json "
+                "FROM validation_runs WHERE run_id=?", (str(run_id),),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        return {
+            "run_id": row[0], "created_at": row[1], "strategy_version": row[2],
+            "target_version": row[3], "horizon_sessions": int(row[4]),
+            "status": row[5], "result": json.loads(row[6] or "{}"),
+        }
+
+    def latest_validated_run(self, *, strategy_version: str, target_version: str,
+                             horizon_sessions: int) -> dict | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT run_id FROM validation_runs WHERE strategy_version=? AND target_version=? "
+                "AND horizon_sessions=? AND status='VALIDATED' ORDER BY created_at DESC LIMIT 1",
+                (str(strategy_version), str(target_version), int(horizon_sessions)),
+            ).fetchone()
+        finally:
+            conn.close()
+        return self.load_validation_run(row[0]) if row else None
 
     def save_validation_run(self, result, horizon_sessions, strategy_version=STRATEGY_VERSION,
                             dataset: pd.DataFrame | None = None) -> str:

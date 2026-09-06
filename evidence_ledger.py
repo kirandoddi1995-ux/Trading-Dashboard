@@ -36,6 +36,14 @@ ALLOWED_EVENT_TYPES = {
     "SIGNAL_INVALIDATED",
     "MODEL_DECISION",
     "RISK_DECISION",
+    "DECISION_EVALUATED",
+    "DECISION_BATCH_EVALUATED",
+    "OUTCOME_MATURED",
+    "FEATURE_DEFINITION_REGISTERED",
+    "FEATURE_QUALITY_OBSERVED",
+    "EXPERIMENT_REGISTERED",
+    "EXPERIMENT_RETRIED",
+    "EXPERIMENT_RESULT_RECORDED",
 }
 
 
@@ -292,6 +300,24 @@ class ImmutableEvidenceLedger:
         finally:
             conn.close()
         return [self._row(row) for row in rows]
+
+    def aggregate_ids(self, prefix: str | None = None) -> list[str]:
+        """List aggregate identifiers without exposing event payloads."""
+        conn = self._connect()
+        try:
+            if prefix is None:
+                rows = conn.execute(
+                    "SELECT DISTINCT aggregate_id FROM evidence_ledger_events ORDER BY aggregate_id"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT DISTINCT aggregate_id FROM evidence_ledger_events "
+                    "WHERE aggregate_id LIKE ? ORDER BY aggregate_id",
+                    (f"{str(prefix)}%",),
+                ).fetchall()
+        finally:
+            conn.close()
+        return [str(row[0]) for row in rows]
 
     def verify(self, aggregate_id: str | None = None) -> dict:
         conn = self._connect()

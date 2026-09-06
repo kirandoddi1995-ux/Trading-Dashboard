@@ -32,7 +32,7 @@ except ImportError:  # Local/offline tests may intentionally omit PostgreSQL.
 
 
 SCHEMA = "quant_app"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class RepositoryUnavailable(RuntimeError):
@@ -571,6 +571,10 @@ class ProductionRepository:
                     cur.execute(f"DROP TRIGGER IF EXISTS evidence_ledger_no_delete ON {SCHEMA}.evidence_ledger_events")
                     cur.execute(f"CREATE TRIGGER evidence_ledger_no_update BEFORE UPDATE ON {SCHEMA}.evidence_ledger_events FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.reject_evidence_ledger_mutation()")
                     cur.execute(f"CREATE TRIGGER evidence_ledger_no_delete BEFORE DELETE ON {SCHEMA}.evidence_ledger_events FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.reject_evidence_ledger_mutation()")
+                    cur.execute(f"DROP TRIGGER IF EXISTS prediction_targets_no_update ON {SCHEMA}.prediction_targets")
+                    cur.execute(f"DROP TRIGGER IF EXISTS prediction_targets_no_delete ON {SCHEMA}.prediction_targets")
+                    cur.execute(f"CREATE TRIGGER prediction_targets_no_update BEFORE UPDATE ON {SCHEMA}.prediction_targets FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.reject_evidence_ledger_mutation()")
+                    cur.execute(f"CREATE TRIGGER prediction_targets_no_delete BEFORE DELETE ON {SCHEMA}.prediction_targets FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.reject_evidence_ledger_mutation()")
                     cur.execute(f"DROP TRIGGER IF EXISTS resilience_state_no_update ON {SCHEMA}.resilience_state_events")
                     cur.execute(f"DROP TRIGGER IF EXISTS resilience_state_no_delete ON {SCHEMA}.resilience_state_events")
                     cur.execute(f"CREATE TRIGGER resilience_state_no_update BEFORE UPDATE ON {SCHEMA}.resilience_state_events FOR EACH ROW EXECUTE FUNCTION {SCHEMA}.reject_evidence_ledger_mutation()")
@@ -842,8 +846,12 @@ class ProductionRepository:
                       source, observed_at, _json(r["raw"])) for r in rows],
                 )
             conn.commit()
-        return {"date": str(snapshot_date), "count": len(rows), "complete": complete,
-                "payload_hash": payload_hash, "canonical_preserved": preserve_canonical}
+        return {
+            "date": str(snapshot_date), "count": len(rows), "complete": complete,
+            "payload_hash": payload_hash, "canonical_preserved": preserve_canonical,
+            "snapshot_id": snapshot_id, "observed_at": observed_at.isoformat(),
+            "source": source,
+        }
 
     def record_feature_observation(self, *, instrument_key: str, feature_name: str, value,
                                    effective_at, available_at, source: str) -> str:
@@ -868,6 +876,49 @@ class ProductionRepository:
             ))
             conn.commit()
         return feature_id
+
+    def prior_average_volumes(self, instrument_keys: Iterable[str], *, as_of_date,
+                              lookback=20) -> dict[str, float]:
+        """Average completed-session cumulative volume strictly before as_of_date."""
+        self.ensure_schema()
+        keys = list(dict.fromkeys(str(key) for key in instrument_keys if key))
+        if not keys:
+            return {}
+        with self.connect() as conn:
+            rows = conn.execute(f"""
+                WITH daily AS (
+                    SELECT instrument_key,trade_date,MAX(volume)::double precision AS day_volume
+                    FROM {SCHEMA}.market_quotes
+                    WHERE instrument_key=ANY(%s) AND trade_date < %s AND volume IS NOT NULL
+                    GROUP BY instrument_key,trade_date
+                ), ranked AS (
+                    SELECT instrument_key,day_volume,
+                           ROW_NUMBER() OVER (PARTITION BY instrument_key ORDER BY trade_date DESC) AS rn
+                    FROM daily
+                )
+                SELECT instrument_key,AVG(day_volume)
+                FROM ranked WHERE rn <= %s GROUP BY instrument_key
+            """, (keys, as_of_date, max(1, int(lookback)))).fetchall()
+        return {str(key): float(value) for key, value in rows if value is not None}
+
+    def enrichment_candidates(self, resource: str, *, limit=100, refresh_days=30) -> list[dict]:
+        """Return current PIT-universe identifiers not checked recently."""
+        self.ensure_schema()
+        with self.connect() as conn:
+            rows = conn.execute(f"""
+                SELECT DISTINCT u.instrument_key,u.isin,u.trading_symbol
+                FROM {SCHEMA}.universe_membership u
+                LEFT JOIN {SCHEMA}.instrument_enrichment_checks c
+                  ON c.isin=u.isin AND c.resource=%s
+                WHERE u.snapshot_date=(SELECT MAX(snapshot_date) FROM {SCHEMA}.universe_snapshots)
+                  AND u.isin IS NOT NULL AND u.isin<>''
+                  AND (c.checked_at IS NULL OR c.checked_at < NOW() - (%s * INTERVAL '1 day'))
+                ORDER BY u.instrument_key LIMIT %s
+            """, (str(resource), max(1, int(refresh_days)), max(1, int(limit)))).fetchall()
+        return [
+            {"instrument_key": str(key), "isin": str(isin), "trading_symbol": str(symbol)}
+            for key, isin, symbol in rows
+        ]
 
     def corporate_action_candidates(self, *, limit=100, refresh_days=30) -> list[str]:
         """Return dated-universe ISINs not checked recently."""
@@ -1001,28 +1052,57 @@ class ProductionRepository:
 
     def save_prediction_target(self, observation_id: str, target: Mapping) -> None:
         self.ensure_schema()
+        expected = {
+            "observation_id": str(observation_id),
+            "horizon_sessions": int(target["horizon_sessions"]),
+            "target_version": str(target["target_version"]),
+            "entry_date": str(target["entry_date"]),
+            "label_end_date": str(target["label_end_date"]),
+            "outcome_date": str(target["outcome_date"]),
+            "outcome": str(target["outcome"]),
+            "target_before_stop": bool(target["target_before_stop"]),
+            "gross_return": float(target["gross_return"]),
+            "net_return": float(target["net_return"]),
+            "benchmark_return": (None if target.get("benchmark_return") is None else float(target["benchmark_return"])),
+            "excess_return": (None if target.get("excess_return") is None else float(target["excess_return"])),
+            "positive_excess": (None if target.get("positive_excess") is None else bool(target["positive_excess"])),
+            "cost_bps": float(target["cost_bps"]),
+            "entry_quality": str(target.get("entry_quality", "daily_open_fallback")),
+        }
         with self.connect() as conn:
-            conn.execute(f"""
+            inserted = conn.execute(f"""
                 INSERT INTO {SCHEMA}.prediction_targets(
                     observation_id,horizon_sessions,target_version,entry_date,label_end_date,outcome_date,
                     outcome,target_before_stop,gross_return,net_return,benchmark_return,excess_return,
                     positive_excess,cost_bps,entry_quality)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT(observation_id,horizon_sessions,target_version) DO UPDATE SET
-                    entry_date=EXCLUDED.entry_date,label_end_date=EXCLUDED.label_end_date,
-                    outcome_date=EXCLUDED.outcome_date,outcome=EXCLUDED.outcome,
-                    target_before_stop=EXCLUDED.target_before_stop,gross_return=EXCLUDED.gross_return,
-                    net_return=EXCLUDED.net_return,benchmark_return=EXCLUDED.benchmark_return,
-                    excess_return=EXCLUDED.excess_return,positive_excess=EXCLUDED.positive_excess,
-                    cost_bps=EXCLUDED.cost_bps,entry_quality=EXCLUDED.entry_quality
-            """, (
-                observation_id, target["horizon_sessions"], target["target_version"], target["entry_date"],
-                target["label_end_date"], target["outcome_date"], target["outcome"],
-                bool(target["target_before_stop"]), target["gross_return"], target["net_return"],
-                target.get("benchmark_return"), target.get("excess_return"),
-                (None if target.get("positive_excess") is None else bool(target["positive_excess"])),
-                target["cost_bps"], target.get("entry_quality", "daily_open_fallback"),
-            ))
+                ON CONFLICT(observation_id,horizon_sessions,target_version) DO NOTHING
+                RETURNING observation_id
+            """, tuple(expected.values())).fetchone()
+            if inserted is None:
+                row = conn.execute(f"""
+                    SELECT observation_id,horizon_sessions,target_version,entry_date,label_end_date,
+                           outcome_date,outcome,target_before_stop,gross_return,net_return,
+                           benchmark_return,excess_return,positive_excess,cost_bps,entry_quality
+                    FROM {SCHEMA}.prediction_targets
+                    WHERE observation_id=%s AND horizon_sessions=%s AND target_version=%s
+                """, (observation_id, expected["horizon_sessions"], expected["target_version"])).fetchone()
+                names = tuple(expected)
+                actual = dict(zip(names, row or ()))
+                for name in ("observation_id", "target_version", "entry_date", "label_end_date",
+                             "outcome_date", "outcome", "entry_quality"):
+                    if name in actual and actual[name] is not None:
+                        actual[name] = str(actual[name])
+                if actual.get("horizon_sessions") is not None:
+                    actual["horizon_sessions"] = int(actual["horizon_sessions"])
+                for name in ("target_before_stop", "positive_excess"):
+                    if name in actual and actual[name] is not None:
+                        actual[name] = bool(actual[name])
+                for name in ("gross_return", "net_return", "benchmark_return", "excess_return", "cost_bps"):
+                    if name in actual and actual[name] is not None:
+                        actual[name] = float(actual[name])
+                if canonical_json(actual) != canonical_json(expected):
+                    raise ValueError("Matured target is immutable and conflicts with existing evidence")
             conn.commit()
 
     def save_validation_run(self, run_id: str, result: Mapping, *, horizon_sessions: int,
@@ -1219,6 +1299,31 @@ class ProductionRepository:
             conn.commit()
         return {"event_id": event_id, "aggregate_id": aggregate_id, "sequence_no": sequence_no,
                 "event_hash": event_hash, "duplicate": False}
+
+    def events(self, aggregate_id: str) -> list[dict]:
+        """Read one durable aggregate in sequence order for outcome reconciliation."""
+        self.ensure_schema()
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT event_id,aggregate_id,sequence_no,event_type,recorded_at,effective_at,"
+                f"source,actor_id,idempotency_key,payload,previous_hash,event_hash,hash_algorithm,"
+                f"schema_version,key_id FROM {SCHEMA}.evidence_ledger_events "
+                "WHERE aggregate_id=%s ORDER BY sequence_no",
+                (str(aggregate_id),),
+            ).fetchall()
+        names = (
+            "event_id", "aggregate_id", "sequence_no", "event_type", "recorded_at",
+            "effective_at", "source", "actor_id", "idempotency_key", "payload",
+            "previous_hash", "event_hash", "hash_algorithm", "schema_version", "key_id",
+        )
+        result = []
+        for row in rows:
+            item = dict(zip(names, row))
+            if not isinstance(item["payload"], Mapping):
+                item["payload"] = json.loads(str(item["payload"]))
+            item["duplicate"] = False
+            result.append(item)
+        return result
 
     def stats(self) -> dict:
         if not self.configured:

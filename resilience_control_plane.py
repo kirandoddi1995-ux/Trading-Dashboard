@@ -589,12 +589,12 @@ class OperationalGuard:
 
 
 class ModelPromotionGate:
-    """Pure promotion gate; deployment tooling must enforce its signed result."""
+    """Pure statistical gate; the registry separately verifies signatures and approvals."""
 
     def evaluate(self, package: Mapping):
         required_truthy = (
-            "artifact_signature_valid", "point_in_time_verified", "untouched_holdout",
-            "costs_applied", "rollback_model_available", "independent_approval",
+            "point_in_time_verified", "untouched_holdout", "costs_applied",
+            "rollback_model_available",
         )
         failures = [name for name in required_truthy if not package.get(name)]
         try:

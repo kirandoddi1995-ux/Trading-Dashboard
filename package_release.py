@@ -17,7 +17,12 @@ RUNTIME = ['app.py', 'app_runtime.py', 'scan_jobs.py', 'reliable_charts.py',
            'trade_contracts.py', 'evidence_ledger.py', 'quant_foundation.py',
            'deployment_security.py', 'environment_preflight.py',
            'resilience_control_plane.py', 'resilience_acceptance.py',
-           'continuous_evolution.py',
+           'continuous_evolution.py', 'live_evidence.py', 'live_governance.py',
+           'decision_evidence.py', 'scanner_funnel.py', 'prospective_collection.py',
+           'calibration_artifacts.py', 'artifact_security.py',
+           'runtime_evidence_store.py', 'equity_runtime_evidence.py',
+           'strategy_validation.py', 'evidence_tiers.py',
+           'production_readiness.py', 'verify_promotion_request.py',
            'resilience_policy.json', 'resilience_policy.sha256',
            'requirements.txt', 'constraints.txt']
 FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_GUIDE.md',
@@ -35,8 +40,14 @@ FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_
                    'tests/test_deployment_hardening.py',
                    'tests/test_resilience_control_plane.py',
                    'tests/test_continuous_evolution.py',
+                   'tests/test_live_evidence.py', 'tests/test_calibration_artifacts.py',
+                   'tests/test_artifact_security.py', 'tests/test_runtime_evidence_store.py',
+                   'tests/test_equity_runtime_evidence.py', 'tests/test_strategy_validation.py',
+                   'tests/test_evidence_tiers.py', 'tests/test_production_readiness.py',
+                   'tests/test_decision_evidence.py', 'tests/test_prospective_collection.py',
                    '.github/workflows/quality.yml', '.github/workflows/scheduled-collector.yml',
-                   '.github/workflows/resilience.yml']
+                   '.github/workflows/resilience.yml', '.github/workflows/production-promotion.yml',
+                   'PRODUCTION_EXTERNAL_ACTIONS.md']
 
 
 def package():

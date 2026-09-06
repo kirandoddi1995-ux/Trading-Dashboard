@@ -5,7 +5,10 @@ import app_runtime as runtime
 import trade_contracts
 import observability as observability
 import smc_analysis as smc
-from feature_store import TechnicalFeatureStore, compute_feature_frame
+from feature_store import (
+    FeatureDefinition, FeatureQualityMonitor, FeatureRegistry,
+    TechnicalFeatureStore, compute_feature_frame,
+)
 from point_in_time import PointInTimeStore
 from prediction_validation import (
     STRATEGY_VERSION, TARGET_VERSION, PRODUCTION_CALIBRATION_POLICY, TargetDefinition, ValidationStore,
@@ -43,6 +46,17 @@ from continuous_evolution import (
     unified_control_findings,
     validate_calibration_package,
 )
+from live_evidence import (
+    EvidenceTier, LiveEvidenceBundle, LiveEvidenceContext, feature_schema_digest,
+    quote_evidence_times, timestamped_feature_lineage,
+)
+from live_governance import GovernanceServices, evaluate_live_governance
+from calibration_artifacts import build_equity_calibration_artifact
+from artifact_security import ArtifactSigner
+from equity_runtime_evidence import build_equity_live_evidence
+from runtime_evidence_store import RuntimeEvidenceStore
+from decision_evidence import DecisionEvidenceSpine, ExperimentTracker
+from scanner_funnel import stage1_prefilter
 import pandas as pd
 import numpy as np
 import requests
@@ -81,7 +95,60 @@ APP_BUILD = "v22.1-CONTINUOUS-EVOLUTION"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
 
 
-def evaluate_live_governance_contract(
+def _runtime_code_hash():
+    """Hash the active decision-critical source, not a release label alone."""
+    root = Path(__file__).resolve().parent
+    names = (
+        "app.py", "live_governance.py", "decision_evidence.py", "evidence_ledger.py",
+        "point_in_time.py", "feature_store.py", "quant_foundation.py",
+        "prediction_validation.py",
+    )
+    material = []
+    for name in names:
+        path = root / name
+        if not path.is_file():
+            raise RuntimeError(f"Decision-critical source is missing: {name}")
+        material.append({"name": name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _live_lineage_from_quote(quote, values, *, definition_version, source=None):
+    """Build feature lineage only when the provider supplied exchange time."""
+    observed_at, received_at = quote_evidence_times(quote)
+    if observed_at is None:
+        return observed_at, received_at, {}
+    quote_source = str(source or (quote or {}).get("_source") or "").strip()
+    if not quote_source:
+        return observed_at, received_at, {}
+    try:
+        lineage = timestamped_feature_lineage(
+            values or {}, source=quote_source, available_at=observed_at,
+            definition_version=definition_version,
+            maximum_age_seconds=PRODUCTION_QUANT_CONFIG.evidence.maximum_feature_age_seconds,
+        )
+    except ValueError:
+        lineage = {}
+    return observed_at, received_at, lineage
+
+
+def _known_universe_lineage(instrument_key, decision_at):
+    """Look up real archived membership; return no lineage on any uncertainty."""
+    store = globals().get("PIT_STORE")
+    if store is None or not instrument_key:
+        return None
+    try:
+        as_of_date = decision_at.astimezone(IST).date()
+        return store.universe_lineage_as_known_at(
+            as_of_date, decision_at, instrument_key=instrument_key, require_complete=True,
+        )
+    except Exception as exc:
+        LOGGER.warning("PIT universe lineage unavailable for %s: %s", instrument_key, type(exc).__name__)
+        return None
+
+
+def _embedded_live_governance_contract_v22_1(
     *, instrument, entry, stop, target, direction="long", quantity=1, cost_bps=0.0,
     feature_values=None, feature_lineage=None, source="Upstox live", spread_bps=None, order_value=None,
     average_daily_value=None, quote_age_seconds=0.0, provider_available=True,
@@ -307,6 +374,111 @@ def evaluate_live_governance_contract(
     }
 
 
+def evaluate_live_governance_contract(
+    *, instrument, entry, stop, target, direction="long", quantity=1, cost_bps=0.0,
+    feature_values=None, feature_lineage=None, source="Upstox live", spread_bps=None,
+    order_value=None, average_daily_value=None, quote_age_seconds=None,
+    provider_available=True, exchange_open=True, calibration_evidence=None,
+    portfolio_returns=None, portfolio_weights=None, stress_scenarios=None,
+    model_predictions=None, model_weights=None, selected_regime="UNKNOWN",
+    feature_schema_hash="", conformal_evidence=None, fill_evidence=None,
+    correctness_evidence=None, ledger_status=None, universe_observed_at=None,
+    universe_effective_at=None, evidence_bundle=None, strategy_id="unclassified",
+    asset_class="unknown", target_version="unavailable", horizon_sessions=1,
+    quote_observed_at=None, quote_received_at=None, evidence_tier="OBSERVATION",
+    quote_bid=None, quote_ask=None, quote_last=None, quote_unavailable_reason=None,
+    cost_breakdown=None, universe_lineage=None,
+    decision_id=None,
+):
+    """Thin Streamlit adapter around the UI-independent governance service.
+
+    Legacy callers without a complete ``LiveEvidenceBundle`` are intentionally
+    converted to OBSERVATION evidence with missing timestamps.  The supplied
+    ``quote_age_seconds`` value is not trusted; age is derived from timestamps.
+    """
+    del quote_age_seconds, selected_regime
+    if evidence_bundle is None:
+        lineage = dict(feature_lineage or {})
+        for name, value in dict(feature_values or {}).items():
+            lineage.setdefault(str(name), {"value": value})
+        decision_at = datetime.datetime.now(datetime.timezone.utc)
+        context = LiveEvidenceContext(
+            strategy_id=strategy_id,
+            asset_class=asset_class,
+            target_version=target_version,
+            horizon_sessions=max(int(horizon_sessions), 1),
+            instrument=str(instrument),
+            decision_at=decision_at,
+            feature_schema_hash=str(feature_schema_hash or feature_schema_digest(lineage)),
+        )
+        evidence_bundle = LiveEvidenceBundle(
+            context=context,
+            tier=EvidenceTier(str(evidence_tier).upper()),
+            quote_observed_at=quote_observed_at,
+            quote_received_at=quote_received_at,
+            quote_source=str(source or ""),
+            feature_lineage=lineage,
+            universe_observed_at=universe_observed_at,
+            universe_effective_at=universe_effective_at,
+            model_predictions=tuple(model_predictions or ()),
+            model_weights=dict(model_weights or {}),
+            calibration_evidence=calibration_evidence,
+            conformal_evidence=conformal_evidence,
+            fill_evidence=fill_evidence,
+            portfolio_returns=portfolio_returns,
+            portfolio_weights=dict(portfolio_weights or {}),
+            stress_scenarios=dict(stress_scenarios or {}),
+            correctness_evidence=correctness_evidence,
+            ledger_status=ledger_status,
+        )
+    register_lineage = globals().get("_register_runtime_lineage")
+    if callable(register_lineage):
+        register_lineage(evidence_bundle.feature_lineage)
+    readiness_environment = dict(os.environ)
+    secret_reader = globals().get("_server_secret")
+    if callable(secret_reader):
+        for secret_name in (
+            "DATABASE_URL", "MODEL_ARTIFACT_SIGNING_KEY", "RUNTIME_EVIDENCE_SIGNING_KEY",
+            "MODEL_APPROVER_KEYS_JSON", "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "SECONDARY_QUOTE_PROVIDER_URL", "DEPLOYMENT_ROLLBACK_TARGET",
+            "SECRETS_MANAGER_URI", "NTP_MONITOR_ENDPOINT", "RECOVERY_DRILL_AT",
+            "RECOVERY_DRILL_RPO_MINUTES", "RECOVERY_DRILL_RTO_MINUTES",
+            "RECOVERY_DRILL_LEDGER_VERIFIED", "RECOVERY_DRILL_RUNTIME_ROLE_VERIFIED",
+            "PRODUCTION_ENVIRONMENT_PROTECTED",
+        ):
+            secret_value = secret_reader(secret_name)
+            if secret_value:
+                readiness_environment[secret_name] = secret_value
+    return evaluate_live_governance(
+        instrument=str(instrument), entry=entry, stop=stop, target=target,
+        direction=direction, quantity=quantity, cost_bps=cost_bps,
+        spread_bps=spread_bps, order_value=order_value,
+        average_daily_value=average_daily_value,
+        provider_available=provider_available, exchange_open=exchange_open,
+        quote_snapshot={
+            "source": str(source or ""), "bid": quote_bid, "ask": quote_ask,
+            "last": quote_last,
+            "unavailable_reason": quote_unavailable_reason,
+        },
+        cost_breakdown=cost_breakdown,
+        universe_lineage=universe_lineage,
+        decision_id=decision_id,
+        evidence=evidence_bundle,
+        services=GovernanceServices(
+            control_plane=RESILIENCE_CONTROL_PLANE,
+            evidence_ledger=EVIDENCE_LEDGER,
+            observability=OBSERVABILITY,
+            app_build=APP_BUILD,
+            evidence_recorder=globals().get("_record_trade_evidence"),
+            logger=LOGGER,
+            readiness_environment=readiness_environment,
+            decision_spine=globals().get("DECISION_EVIDENCE_SPINE"),
+            code_hash=globals().get("RUNTIME_CODE_HASH", ""),
+            config_hash=globals().get("RUNTIME_QUANT_CONFIG_HASH", ""),
+        ),
+    )
+
+
 def render_trade_transparency_panel(
     entry,
     stop,
@@ -369,6 +541,33 @@ def render_trade_transparency_panel(
                 "findings": resilient.get("findings", []),
                 "exits_remain_enabled": resilient.get("allow_exits", True),
             }, expanded=False)
+            presentation = dict(governance.get("presentation") or {})
+            contract = dict(governance.get("evidence_contract") or {})
+            st.markdown("**Evidence maturity and permitted use**")
+            st.json({
+                "display_action": presentation.get("action", "No Trade"),
+                "evidence_tier": presentation.get("tier", "OBSERVATION"),
+                "production_order_allowed": presentation.get("production_order_allowed", False),
+                "paper_only": presentation.get("paper_only", False),
+                "calibrated_probability": presentation.get("probability"),
+                "kelly_weight": presentation.get("kelly_weight", 0.0),
+                "predictive_correctness": presentation.get(
+                    "predictive_correctness_claim", "99% not established"
+                ),
+                "model_count": contract.get("model_count", 0),
+                "quote_age_seconds": contract.get("quote_age_seconds"),
+                "quote_source": contract.get("quote_source"),
+                "feature_count": contract.get("feature_count", 0),
+                "has_calibration": contract.get("has_calibration", False),
+                "has_conformal": contract.get("has_conformal", False),
+                "has_fill_model": contract.get("has_fill_model", False),
+                "has_portfolio_history": contract.get("has_portfolio_history", False),
+                "blocking_reasons": presentation.get("missing_or_blocking", []),
+            }, expanded=False)
+            st.caption(
+                "Observation = No Trade; Developing = Watch/paper-only; Validated permits an order only "
+                "when every safety gate passes. Rule scores and historical win rates are not probabilities."
+            )
 
 # ==========================================
 # EMBEDDED RISK ENGINE + ADVANCED MARGIN API
@@ -914,11 +1113,17 @@ def get_model_registry(db_path=DEFAULT_DB_PATH):
 
 
 @st.cache_resource(show_spinner=False)
+def get_runtime_evidence_store(db_path=DEFAULT_DB_PATH):
+    return RuntimeEvidenceStore(_cache_connect, db_path)
+
+
+@st.cache_resource(show_spinner=False)
 def get_mutual_fund_archive(db_path=DEFAULT_DB_PATH):
     return MutualFundArchive(_cache_connect, db_path)
 
 
 MODEL_REGISTRY = get_model_registry(DEFAULT_DB_PATH)
+RUNTIME_EVIDENCE_STORE = get_runtime_evidence_store(DEFAULT_DB_PATH)
 MF_ARCHIVE = get_mutual_fund_archive(DEFAULT_DB_PATH)
 
 st.markdown("""
@@ -966,6 +1171,26 @@ def get_production_repository(database_url="", signing_key="", schema_mode="vali
 
 
 _EVIDENCE_SIGNING_KEY = _server_secret("EVIDENCE_LEDGER_SIGNING_KEY") or os.environ.get("EVIDENCE_LEDGER_SIGNING_KEY", "")
+_MODEL_ARTIFACT_SIGNING_KEY = _server_secret("MODEL_ARTIFACT_SIGNING_KEY") or os.environ.get("MODEL_ARTIFACT_SIGNING_KEY", "")
+_RUNTIME_EVIDENCE_SIGNING_KEY = _server_secret("RUNTIME_EVIDENCE_SIGNING_KEY") or os.environ.get("RUNTIME_EVIDENCE_SIGNING_KEY", "")
+
+
+def _optional_artifact_signer(secret_value, label):
+    if not secret_value:
+        return None
+    try:
+        return ArtifactSigner(secret_value)
+    except ValueError as exc:
+        LOGGER.error("%s is unusable: %s", label, exc)
+        return None
+
+
+MODEL_ARTIFACT_SIGNER = _optional_artifact_signer(
+    _MODEL_ARTIFACT_SIGNING_KEY, "MODEL_ARTIFACT_SIGNING_KEY",
+)
+RUNTIME_EVIDENCE_SIGNER = _optional_artifact_signer(
+    _RUNTIME_EVIDENCE_SIGNING_KEY, "RUNTIME_EVIDENCE_SIGNING_KEY",
+)
 EVIDENCE_LEDGER = get_evidence_ledger(DEFAULT_DB_PATH, _EVIDENCE_SIGNING_KEY)
 DURABLE_REPOSITORY = get_production_repository(
     _server_secret("DATABASE_URL") or os.environ.get("DATABASE_URL", ""),
@@ -1024,6 +1249,63 @@ def _record_trade_evidence(*, aggregate_id, event_type, payload, effective_at,
             LOGGER.error("Durable evidence ledger append failed: %s", type(exc).__name__)
             EVIDENCE_LEDGER.queue_delivery(delivery, type(exc).__name__)
     return local_event
+
+
+RUNTIME_CODE_HASH = _runtime_code_hash()
+RUNTIME_QUANT_CONFIG_HASH = hashlib.sha256(
+    json.dumps(
+        PRODUCTION_QUANT_CONFIG.public_dict(), sort_keys=True,
+        separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")
+).hexdigest()
+FEATURE_REGISTRY = FeatureRegistry(_record_trade_evidence, EVIDENCE_LEDGER)
+FEATURE_QUALITY_MONITOR = FeatureQualityMonitor(
+    FEATURE_REGISTRY, _record_trade_evidence, metrics=OBSERVABILITY, logger=LOGGER,
+)
+EXPERIMENT_TRACKER = ExperimentTracker(_record_trade_evidence, EVIDENCE_LEDGER)
+DECISION_EVIDENCE_SPINE = DecisionEvidenceSpine(
+    _record_trade_evidence, EVIDENCE_LEDGER, feature_quality=FEATURE_QUALITY_MONITOR,
+)
+
+
+def _register_runtime_lineage(lineage):
+    """Register the exact version/source contract before quality evaluation."""
+    for name, raw in dict(lineage or {}).items():
+        row = dict(raw or {})
+        try:
+            FEATURE_REGISTRY.register(FeatureDefinition(
+                name=str(name),
+                version=str(row.get("definition_version") or ""),
+                dtype=str(row.get("dtype") or type(row.get("value")).__name__),
+                source=str(row.get("source") or ""),
+                computation_logic=(
+                    "Computed by the active decision path identified by definition_version; "
+                    f"exact implementation is bound to code_hash={RUNTIME_CODE_HASH}."
+                ),
+                availability_rule=(
+                    "available_at is the genuine provider/source availability timestamp and "
+                    "must not be after decision_at"
+                ),
+                maximum_age_seconds=float(row.get("maximum_age_seconds")),
+                nullable=False,
+            ))
+        except Exception as exc:
+            LOGGER.error(
+                "Feature registration failed feature=%s error=%s", name, type(exc).__name__,
+            )
+
+
+def _execution_cost_breakdown(estimate, *, assumptions):
+    return {
+        "round_trip_bps": float(estimate.round_trip_bps),
+        "spread_bps": float(estimate.spread_bps),
+        "slippage_bps": float(estimate.slippage_bps),
+        "impact_bps": float(estimate.impact_bps),
+        "statutory_bps": float(estimate.statutory_bps),
+        "brokerage_bps": float(estimate.brokerage_bps),
+        "breakdown_complete": True,
+        "assumptions": str(assumptions),
+    }
 
 
 try:
@@ -3598,8 +3880,8 @@ def _scale(value, low, high):
     return _clamp((float(value) - low) / (high - low) * 100.0)
 
 
-def stage1_multi_bucket_prefilter(tickers, instrument_dict, quotes, top_n,
-                                db_path=DEFAULT_DB_PATH):
+def _legacy_stage1_multi_bucket_prefilter(tickers, instrument_dict, quotes, top_n,
+                                         db_path=DEFAULT_DB_PATH):
     calculation_started = time.perf_counter()
     keys_list = [instrument_dict.get(t) for t in tickers if instrument_dict.get(t)]
     avg_vols_map = get_avg_volumes_batched(db_path, keys_list, lookback=20)
@@ -3774,6 +4056,27 @@ def stage1_multi_bucket_prefilter(tickers, instrument_dict, quotes, top_n,
     stats["_evidence"] = list(evidence_by_ticker.values())
     OBSERVABILITY.record(
         "calculation", "stage1_prefilter", time.perf_counter() - calculation_started,
+        count=len(tickers),
+    )
+    return selected, stats
+
+
+def stage1_multi_bucket_prefilter(tickers, instrument_dict, quotes, top_n,
+                                  db_path=DEFAULT_DB_PATH):
+    """Use the same pure Stage-1 implementation as the headless collector."""
+    started = time.perf_counter()
+    keys = [instrument_dict.get(ticker) for ticker in tickers if instrument_dict.get(ticker)]
+    average_volumes = get_avg_volumes_batched(db_path, keys, lookback=20)
+    selected, stats = stage1_prefilter(
+        tickers,
+        instrument_dict,
+        quotes,
+        top_n,
+        average_volumes=average_volumes,
+        elapsed_fraction=_session_elapsed_fraction(),
+    )
+    OBSERVABILITY.record(
+        "calculation", "stage1_prefilter", time.perf_counter() - started,
         count=len(tickers),
     )
     return selected, stats
@@ -5568,6 +5871,20 @@ if selected_tab == "Settings":
             validation_messages = []
             for horizon in (5, 10, 20):
                 dataset = VALIDATION_STORE.validation_dataset(horizon)
+                trial = EXPERIMENT_TRACKER.start(
+                    hypothesis="Current technical rule score has chronological predictive skill",
+                    data_window={
+                        "start": (str(dataset["as_of_date"].min()) if not dataset.empty else None),
+                        "end": (str(dataset["as_of_date"].max()) if not dataset.empty else None),
+                        "rows": int(len(dataset)), "horizon_sessions": int(horizon),
+                        "dataset_hash": hashlib.sha256(
+                            pd.util.hash_pandas_object(dataset, index=True).values.tobytes()
+                        ).hexdigest(),
+                    },
+                    config_hash=RUNTIME_QUANT_CONFIG_HASH,
+                    feature_versions={"scanner_composite_score": STRATEGY_VERSION},
+                    code_hash=RUNTIME_CODE_HASH,
+                )
                 result = run_advanced_chronological_validation(
                     dataset, folds=PRODUCTION_QUANT_CONFIG.validation.folds,
                     embargo_sessions=PRODUCTION_QUANT_CONFIG.validation.embargo_sessions,
@@ -5576,10 +5893,53 @@ if selected_tab == "Settings":
                     bootstrap_block_length=PRODUCTION_QUANT_CONFIG.validation.bootstrap_block_length,
                     policy=PRODUCTION_CALIBRATION_POLICY,
                 )
+                experiment_status = (
+                    "VALIDATED" if result["status"] == "VALIDATED" else
+                    "INCONCLUSIVE" if result["status"] == "INSUFFICIENT_EVIDENCE" else
+                    "NEGATIVE"
+                )
+                EXPERIMENT_TRACKER.finish(
+                    trial, status=experiment_status,
+                    metrics={
+                        "development": result.get("metrics") or {},
+                        "holdout": (result.get("holdout") or {}).get("metrics") or {},
+                        "oos_samples": int(result.get("oos_samples", 0)),
+                        "holdout_samples": int(result.get("holdout_samples", 0)),
+                    },
+                    result_summary=f"{result['status']}: {result['reason']}",
+                )
                 if result["status"] != "INSUFFICIENT_EVIDENCE":
                     validation_run_id = VALIDATION_STORE.save_validation_run(
                         result, horizon, strategy_version=STRATEGY_VERSION, dataset=dataset
                     )
+                    if result["status"] == "VALIDATED":
+                        try:
+                            equity_schema_hash = feature_schema_digest({
+                                "scanner_composite_score": {
+                                    "value": 0.0, "dtype": "float",
+                                    "definition_version": f"{STRATEGY_VERSION}:scanner-components-v1",
+                                }
+                            })
+                            candidate_artifact = build_equity_calibration_artifact(
+                                result, dataset, run_id=validation_run_id,
+                                strategy_id=STRATEGY_VERSION, target_version=TARGET_VERSION,
+                                horizon_sessions=horizon, feature_schema_hash=equity_schema_hash,
+                            )
+                            MODEL_REGISTRY.register(
+                                candidate_artifact["model_id"], candidate_artifact["model_type"],
+                                "GLOBAL", candidate_artifact["version"], "challenger",
+                                candidate_artifact, candidate_artifact["metrics"], status="SHADOW",
+                                trained_from=candidate_artifact["training_end"],
+                                trained_to=candidate_artifact["holdout_end"],
+                            )
+                        except Exception as artifact_exc:
+                            LOGGER.error(
+                                "Validated run could not create a model artifact: %s",
+                                type(artifact_exc).__name__,
+                            )
+                            validation_messages.append(
+                                f"{horizon} sessions: artifact unavailable — {artifact_exc}"
+                            )
                     try:
                         if DURABLE_REPOSITORY.configured:
                             DURABLE_REPOSITORY.save_validation_run(
@@ -6062,6 +6422,13 @@ elif selected_tab == "Options & Derivatives Chain":
 
     if using_live_chain:
         try:
+            surface_validation = {}
+            if not iv_surface_frame.empty:
+                for _, surface_row in iv_surface_frame.iterrows():
+                    surface_validation[(float(surface_row["strike"]), str(surface_row["option_type"]))] = {
+                        "valid": bool(surface_row["production_valid"]),
+                        "failures": list(surface_row["validation_failures"]),
+                    }
             sorted_chain = sorted(live_chain_data, key=lambda x: x.get('strike_price', 0))
             atm_idx = min(range(len(sorted_chain)), key=lambda i: abs(sorted_chain[i].get('strike_price', 0) - atm_reference_price))
             lo, hi = max(0, atm_idx - 5), min(len(sorted_chain), atm_idx + 6)
@@ -6093,6 +6460,12 @@ elif selected_tab == "Options & Derivatives Chain":
                     "_put_bid": p_md.get('bid_price'), "_put_ask": p_md.get('ask_price'),
                     "_put_bid_qty": p_md.get('bid_qty'), "_put_ask_qty": p_md.get('ask_qty'),
                     "_put_volume": p_md.get('volume'),
+                    "_call_validation": surface_validation.get((float(strike), "CE"), {
+                        "valid": False, "failures": ["Independent call valuation unavailable"],
+                    }),
+                    "_put_validation": surface_validation.get((float(strike), "PE"), {
+                        "valid": False, "failures": ["Independent put valuation unavailable"],
+                    }),
                 })
         except Exception as e:
             LOGGER.debug("Suppressed exception: %s", e)
@@ -6271,6 +6644,16 @@ elif selected_tab == "Options & Derivatives Chain":
                     if best_diff is None or diff < best_diff:
                         best_diff, best_row = diff, row
             if not best_row:
+                return None
+
+            validation_key = "_call_validation" if side == "CE" else "_put_validation"
+            independent_validation = best_row.get(validation_key) or {}
+            if independent_validation.get("valid") is not True:
+                option_rr_rejections.append({
+                    "strike": best_row.get("Strike"), "side": side,
+                    "reason": "Independent IV/Greeks/no-arbitrage validation failed",
+                    "validation_failures": independent_validation.get("failures") or ["Validation evidence unavailable"],
+                })
                 return None
 
             premium_str = best_row.get(side_key, "N/A")
@@ -6456,8 +6839,24 @@ elif selected_tab == "Options & Derivatives Chain":
                     spread_bps=(spread_rupees / premium * 10_000.0),
                     order_value=required_capital,
                     average_daily_value=traded_volume * premium,
-                    quote_age_seconds=0.0, provider_available=using_live_chain,
+                    provider_available=using_live_chain,
                     exchange_open=MARKET_OPEN,
+                    strategy_id="index-options-directional-v1", asset_class="options",
+                    target_version="options-premium-barrier-v1", horizon_sessions=1,
+                    quote_observed_at=None, quote_received_at=None,
+                    quote_bid=bid_px, quote_ask=ask_px, quote_last=ltp_premium,
+                    quote_unavailable_reason="Option-chain exchange and receive timestamps are not independently verified",
+                    cost_breakdown={
+                        "round_trip_bps": ESTIMATED_ROUND_TRIP_COST_PCT * 100,
+                        "spread_bps": spread_rupees / premium * 10_000.0,
+                        "slippage_bps": ESTIMATED_ROUND_TRIP_COST_PCT * 100,
+                        "impact_bps": 0.0, "statutory_bps": None, "brokerage_bps": None,
+                        "breakdown_complete": False,
+                        "assumptions": "Entry uses ask and barriers use bid; remaining 70 bps is an aggregate fee/slippage allowance.",
+                    },
+                    universe_lineage={
+                        "unavailable_reason": "A PIT derivative-contract universe snapshot is not available",
+                    },
                 )
                 if callable(governance_evaluator)
                 else {"status": "TEST_HARNESS", "allow_trade": True, "blocking_reasons": []}
@@ -6490,6 +6889,7 @@ elif selected_tab == "Options & Derivatives Chain":
                 "timing_qualification": timing["timing_qualification"],
                 "confidence": trade_contracts.rule_confidence(abs(float(market_bias_scores.get("net_score", 0)))),
                 "probability": "N/A — no calibrated option-outcome probability",
+                "option_validation": independent_validation,
                 "governance": governance,
             }
         except Exception as e:
@@ -7002,13 +7402,33 @@ elif selected_tab == "Futures & Derivatives":
                 lots = 1
                 futures_spread = (futures_cost.spread_bps if futures_market_data.get("bid_price")
                                   and futures_market_data.get("ask_price") else None)
+                fut_observed_at, fut_received_at, fut_lineage = _live_lineage_from_quote(
+                    futures_quote, fut_evidence.get("values", {}),
+                    definition_version="futures-indicators-v1",
+                )
+                futures_universe = _known_universe_lineage(
+                    fut_instrument_key, datetime.datetime.now(datetime.timezone.utc),
+                )
                 futures_governance = evaluate_live_governance_contract(
                     instrument=fut_symbol, entry=entry, stop=stop, target=target,
                     direction=engine_direction, quantity=lot_size, cost_bps=futures_cost.round_trip_bps,
-                    feature_values=fut_evidence.get("values", {}),
+                    feature_lineage=fut_lineage,
                     spread_bps=futures_spread, order_value=entry * lot_size,
-                    average_daily_value=futures_adv, quote_age_seconds=0.0,
+                    average_daily_value=futures_adv,
                     provider_available=bool(fut_ltp and spot_quote_available), exchange_open=MARKET_OPEN,
+                    strategy_id="index-futures-directional-v1", asset_class="futures",
+                    target_version="futures-atr-barrier-v1", horizon_sessions=1,
+                    quote_observed_at=fut_observed_at, quote_received_at=fut_received_at,
+                    quote_bid=futures_market_data.get("bid_price"),
+                    quote_ask=futures_market_data.get("ask_price"), quote_last=fut_ltp,
+                    quote_unavailable_reason="Executable futures bid/ask timestamps are incomplete",
+                    cost_breakdown=_execution_cost_breakdown(
+                        futures_cost,
+                        assumptions="Spread, slippage, participation impact, statutory charges and brokerage estimated at decision time.",
+                    ),
+                    universe_lineage=(futures_universe or {
+                        "unavailable_reason": "PIT futures-universe membership is unavailable",
+                    }),
                 )
                 if (not futures_math["passes_gate"] or not timing["entry_window_open"]
                         or not futures_governance["allow_trade"]):
@@ -7483,6 +7903,67 @@ elif selected_tab == "Equities Screener & Risk":
         except Exception as exc:
             LOGGER.error("PIT Stage-1 evidence archival failed: %s", exc)
         try:
+            batch_observed_at = datetime.datetime.now(datetime.timezone.utc)
+            batch_universe = PIT_STORE.universe_lineage_as_known_at(
+                _scan_as_of_date, batch_observed_at, require_complete=True,
+            )
+            batch_candidates = []
+            for item in stage1_evidence:
+                item_key = item.get("instrument_key")
+                item_symbol = item.get("trading_symbol")
+                item_quote = (live_quote_data or {}).get(item_key, {})
+                item_market = item_quote.get("market_data") or item_quote
+                item_observed, item_received = quote_evidence_times(item_quote)
+                item_bid, item_ask = item_market.get("bid_price"), item_market.get("ask_price")
+                quote_available = bool(
+                    item_observed and item_received and item_bid is not None and item_ask is not None
+                )
+                batch_candidates.append({
+                    "decision_id": PIT_STORE.scanner_observation_id(
+                        _scan_run_id, item_key, _scanner_strategy_version,
+                    ),
+                    "instrument_key": item_key,
+                    "instrument": item_symbol,
+                    "action": "Watch" if item.get("stage1_pass") else "No Trade",
+                    "stage1_pass": bool(item.get("stage1_pass")),
+                    "rejection_reason": item.get("rejection_reason"),
+                    "inputs_used": dict(item.get("features") or {}),
+                    "quote": {
+                        "status": "AVAILABLE" if quote_available else "UNAVAILABLE",
+                        "source": item_quote.get("_source"),
+                        "bid": item_bid, "ask": item_ask,
+                        "last": item_quote.get("last_price"),
+                        "observed_at": item_observed.isoformat() if item_observed else None,
+                        "received_at": item_received.isoformat() if item_received else None,
+                        "reason": None if quote_available else "Executable quote evidence is incomplete",
+                    },
+                    "costs": {
+                        "status": "NOT_EVALUATED",
+                        "reason": "Stage-1 is a quote/liquidity prefilter; costs are evaluated in Stage-2.",
+                    },
+                })
+            DECISION_EVIDENCE_SPINE.capture_candidate_batch(
+                scan_run_id=_scan_run_id, observed_at=batch_observed_at,
+                strategy_id=_scanner_strategy_version, target_version=TARGET_VERSION,
+                horizon_sessions=custom_days, candidates=batch_candidates,
+                universe=(batch_universe or {
+                    "status": "UNAVAILABLE",
+                    "reason": "A complete PIT universe version was not available at scan time",
+                }),
+                code_version=APP_BUILD, code_hash=RUNTIME_CODE_HASH,
+                config_hash=RUNTIME_QUANT_CONFIG_HASH,
+                policy_hash=RESILIENCE_CONTROL_PLANE.policy.digest,
+            )
+        except Exception as exc:
+            LOGGER.error("Immutable Stage-1 decision batch archival failed: %s", type(exc).__name__)
+            OBSERVABILITY.record(
+                "decision_evidence", "equity-stage1-batch", 0.0,
+                ok=False, status=type(exc).__name__,
+            )
+            stage1_shortlist = []
+            funnel_stats["shortlisted"] = 0
+            funnel_stats["data_quality_failed"] = True
+        try:
             _durable_sync_local_scanner(_scan_as_of_date, _scanner_strategy_version)
         except Exception as exc:
             LOGGER.error("Durable Stage-1 evidence sync failed: %s", type(exc).__name__)
@@ -7547,25 +8028,94 @@ elif selected_tab == "Equities Screener & Risk":
             # from before; this only makes the existing decision visible
             # instead of silent, per "do not change prediction logic yet."
             key = instrument_dict.get(ticker)
+            raw_quote = {}
+            evidence_identity_key = key or f"UNRESOLVED|{ticker}"
+            scanner_observation_id = PIT_STORE.scanner_observation_id(
+                _scan_run_id, evidence_identity_key, _scanner_strategy_version,
+            )
 
             def _archive_stage2(passed, *, category=None, reason=None, score=None,
                                 entry=None, stop=None, target=None, features=None):
-                if not key:
-                    return
+                evidence_features = dict(features or {})
+                evidence_features.setdefault("market_regime", market_regime)
+                evidence_features.setdefault("scan_mode", scan_mode)
                 try:
-                    evidence_features = dict(features or {})
-                    evidence_features.setdefault("market_regime", market_regime)
-                    evidence_features.setdefault("scan_mode", scan_mode)
-                    PIT_STORE.record_scanner_observation(
-                        as_of_date=_scan_as_of_date, instrument_key=key, trading_symbol=ticker,
-                        strategy_version=_scanner_strategy_version,
-                        universe_snapshot_date=_scan_as_of_date, stage1_pass=True,
-                        stage2_pass=passed, rejection_reason=(f"{category}: {reason}" if reason else None),
-                        score=score, entry=entry, stop=stop, target=target, features=evidence_features,
-                        scan_run_id=_scan_run_id,
-                    )
+                    if key:
+                        PIT_STORE.record_scanner_observation(
+                            as_of_date=_scan_as_of_date, instrument_key=key, trading_symbol=ticker,
+                            strategy_version=_scanner_strategy_version,
+                            universe_snapshot_date=_scan_as_of_date, stage1_pass=True,
+                            stage2_pass=passed, rejection_reason=(f"{category}: {reason}" if reason else None),
+                            score=score, entry=entry, stop=stop, target=target, features=evidence_features,
+                            scan_run_id=_scan_run_id,
+                        )
                 except Exception as archive_exc:
                     LOGGER.error("PIT Stage-2 evidence archival failed for %s: %s", ticker, archive_exc)
+                if passed or category == "Governance":
+                    return
+                decision_at = datetime.datetime.now(datetime.timezone.utc)
+                observed_at, received_at, lineage = _live_lineage_from_quote(
+                    raw_quote, evidence_features,
+                    definition_version=f"{STRATEGY_VERSION}:scanner-filter-v1",
+                )
+                _register_runtime_lineage(lineage)
+                universe = _known_universe_lineage(key, decision_at) if key else None
+                market_data = raw_quote.get("market_data") or raw_quote
+                evidence = LiveEvidenceBundle(
+                    context=LiveEvidenceContext(
+                        strategy_id=_scanner_strategy_version,
+                        asset_class="equity",
+                        target_version=TARGET_VERSION,
+                        horizon_sessions=max(int(custom_days), 1),
+                        instrument=str(ticker),
+                        decision_at=decision_at,
+                        feature_schema_hash=feature_schema_digest(lineage),
+                    ),
+                    tier=EvidenceTier.OBSERVATION,
+                    quote_observed_at=observed_at,
+                    quote_received_at=received_at,
+                    quote_source=str(raw_quote.get("_source") or ""),
+                    feature_lineage=lineage,
+                    universe_observed_at=(universe or {}).get("observed_at"),
+                    universe_effective_at=(universe or {}).get("effective_at"),
+                )
+                try:
+                    DECISION_EVIDENCE_SPINE.capture(
+                        evidence=evidence, action="No Trade", direction="long",
+                        entry=entry, stop=stop, target=target, quantity=0,
+                        governance={
+                            "status": "NO_TRADE", "evidence_tier": "OBSERVATION",
+                            "blocking_reasons": [f"{category}: {reason}"],
+                            "gate": "equity-stage2-filter",
+                        },
+                        quote={
+                            "source": raw_quote.get("_source"),
+                            "bid": market_data.get("bid_price"), "ask": market_data.get("ask_price"),
+                            "last": raw_quote.get("last_price"),
+                            "unavailable_reason": "Executable quote evidence was incomplete at rejection time",
+                        },
+                        universe=(universe or {
+                            "unavailable_reason": "PIT equity-universe membership is unavailable",
+                        }),
+                        costs={
+                            "round_trip_bps": 0.0, "spread_bps": None,
+                            "slippage_bps": None, "impact_bps": None,
+                            "statutory_bps": None, "brokerage_bps": None,
+                            "breakdown_complete": False,
+                            "assumptions": "Candidate rejected before executable-cost evaluation; no zero-cost claim is made.",
+                        },
+                        code_version=APP_BUILD, code_hash=RUNTIME_CODE_HASH,
+                        config_hash=RUNTIME_QUANT_CONFIG_HASH,
+                        policy_hash=RESILIENCE_CONTROL_PLANE.policy.digest,
+                        correlation_id=f"scan:{_scan_run_id}:{scanner_observation_id}",
+                        decision_id=scanner_observation_id,
+                        input_values=evidence_features,
+                    )
+                except Exception as evidence_exc:
+                    LOGGER.error(
+                        "Filtered decision evidence append failed for %s: %s",
+                        ticker, type(evidence_exc).__name__,
+                    )
 
             def _reject(category, reason):
                 _archive_stage2(False, category=category, reason=reason)
@@ -7847,15 +8397,54 @@ elif selected_tab == "Equities Screener & Risk":
                 timing = trade_contracts.build_trade_timing(
                     datetime.datetime.now(IST), horizon_sessions=custom_days, intraday=False,
                 )
+                equity_observed_at, equity_received_at, equity_lineage = _live_lineage_from_quote(
+                    raw_quote, {"scanner_composite_score": float(score)},
+                    definition_version=f"{STRATEGY_VERSION}:scanner-components-v1",
+                )
+                equity_decision_clock = datetime.datetime.now(datetime.timezone.utc)
+                equity_universe = _known_universe_lineage(key, equity_decision_clock)
+                equity_context = LiveEvidenceContext(
+                    strategy_id=STRATEGY_VERSION, asset_class="equity",
+                    target_version=TARGET_VERSION, horizon_sessions=custom_days,
+                    instrument=str(ticker), decision_at=equity_decision_clock,
+                    feature_schema_hash=feature_schema_digest(equity_lineage),
+                )
+                equity_evidence_bundle = build_equity_live_evidence(
+                    context=equity_context, score=float(score), feature_lineage=equity_lineage,
+                    quote_observed_at=equity_observed_at, quote_received_at=equity_received_at,
+                    quote_source=str(raw_quote.get("_source") or "Upstox live"),
+                    universe_observed_at=(equity_universe or {}).get("observed_at"),
+                    universe_effective_at=(equity_universe or {}).get("effective_at"),
+                    registry=MODEL_REGISTRY, runtime_store=RUNTIME_EVIDENCE_STORE,
+                    model_artifact_signer=MODEL_ARTIFACT_SIGNER,
+                    runtime_evidence_signer=RUNTIME_EVIDENCE_SIGNER,
+                )
                 equity_governance = evaluate_live_governance_contract(
                     instrument=ticker, entry=price, stop=sl, target=tgt, direction="long",
                     quantity=qty_to_buy, cost_bps=cost_estimate.round_trip_bps,
-                    feature_values=scanner_components,
+                    feature_lineage=equity_lineage,
                     spread_bps=(cost_estimate.spread_bps if market_data.get("bid_price")
                                 and market_data.get("ask_price") else None),
                     order_value=price * qty_to_buy, average_daily_value=average_daily_value,
-                    quote_age_seconds=0.0, provider_available=bool(raw_quote),
+                    provider_available=bool(raw_quote),
                     exchange_open=MARKET_OPEN,
+                    strategy_id=STRATEGY_VERSION, asset_class="equity",
+                    target_version=TARGET_VERSION, horizon_sessions=custom_days,
+                    quote_observed_at=equity_observed_at, quote_received_at=equity_received_at,
+                    universe_observed_at=(equity_universe or {}).get("observed_at"),
+                    universe_effective_at=(equity_universe or {}).get("effective_at"),
+                    evidence_bundle=equity_evidence_bundle,
+                    decision_id=scanner_observation_id,
+                    quote_bid=market_data.get("bid_price"), quote_ask=market_data.get("ask_price"),
+                    quote_last=price,
+                    quote_unavailable_reason="Executable equity bid/ask timestamps are incomplete",
+                    cost_breakdown=_execution_cost_breakdown(
+                        cost_estimate,
+                        assumptions="Spread, slippage, participation impact, statutory charges and brokerage estimated at decision time.",
+                    ),
+                    universe_lineage=(equity_universe or {
+                        "unavailable_reason": "PIT equity-universe membership is unavailable",
+                    }),
                 )
                 if not equity_governance["allow_trade"]:
                     return _reject("Governance", "; ".join(equity_governance["blocking_reasons"][:3]))
@@ -8617,20 +9206,46 @@ elif selected_tab == "Commodities (MCX)":
                     mcx_timing = trade_contracts.build_trade_timing(datetime.datetime.now(IST), intraday=True)
                     mcx_adv = (float(pd.to_numeric(hist_df.get("Volume"), errors="coerce").tail(20).mean()) * mcx_ltp
                                if "Volume" in hist_df else 0.0)
+                    mcx_feature_values = {
+                        "atr14": curr_atr, "rsi14": curr_rsi,
+                        "ema20": float(ema_20.dropna().iloc[-1]),
+                        "ema50": float(ema_50.dropna().iloc[-1]),
+                    }
+                    mcx_observed_at, mcx_received_at, mcx_lineage = _live_lineage_from_quote(
+                        mcx_quotes.get(mcx_key), mcx_feature_values,
+                        definition_version="mcx-indicators-v1",
+                    )
+                    mcx_market_data = (
+                        mcx_quotes.get(mcx_key, {}).get("market_data") or mcx_quotes.get(mcx_key, {})
+                    )
+                    mcx_universe = _known_universe_lineage(
+                        mcx_key, datetime.datetime.now(datetime.timezone.utc),
+                    )
                     mcx_governance = evaluate_live_governance_contract(
                         instrument=selected_commodity, entry=mcx_ltp, stop=c_stop, target=c_target,
                         direction="long" if bullish_setup else "short", quantity=c_lot_size or 1,
                         cost_bps=mcx_cost.round_trip_bps,
-                        feature_values={"atr14": curr_atr, "rsi14": curr_rsi,
-                                        "ema20": float(ema_20.dropna().iloc[-1]),
-                                        "ema50": float(ema_50.dropna().iloc[-1])},
+                        feature_lineage=mcx_lineage,
                         spread_bps=(mcx_cost.spread_bps if (mcx_quotes.get(mcx_key, {}).get("market_data")
                                     or mcx_quotes.get(mcx_key, {})).get("bid_price") and
                                     (mcx_quotes.get(mcx_key, {}).get("market_data")
                                     or mcx_quotes.get(mcx_key, {})).get("ask_price") else None),
                         order_value=mcx_ltp * (c_lot_size or 1), average_daily_value=mcx_adv,
-                        quote_age_seconds=0.0, provider_available=bool(mcx_quotes.get(mcx_key)),
+                        provider_available=bool(mcx_quotes.get(mcx_key)),
                         exchange_open=MARKET_OPEN,
+                        strategy_id="mcx-directional-v1", asset_class="commodity_futures",
+                        target_version="mcx-atr-barrier-v1", horizon_sessions=1,
+                        quote_observed_at=mcx_observed_at, quote_received_at=mcx_received_at,
+                        quote_bid=mcx_market_data.get("bid_price"),
+                        quote_ask=mcx_market_data.get("ask_price"), quote_last=mcx_ltp,
+                        quote_unavailable_reason="Executable MCX bid/ask timestamps are incomplete",
+                        cost_breakdown=_execution_cost_breakdown(
+                            mcx_cost,
+                            assumptions="Spread, slippage, participation impact, statutory charges and brokerage estimated at decision time.",
+                        ),
+                        universe_lineage=(mcx_universe or {
+                            "unavailable_reason": "PIT MCX-universe membership is unavailable",
+                        }),
                     )
                     if (not mcx_math["passes_gate"] or not mcx_timing["entry_window_open"]
                             or not mcx_governance["allow_trade"]):
@@ -9022,16 +9637,40 @@ elif selected_tab == "SMC & Technical Analysis":
                             smc_timing = trade_contracts.build_trade_timing(
                                 datetime.datetime.now(IST), horizon_sessions=lookup_days, intraday=False,
                             )
+                            smc_feature_values = {"atr14": s_atr, "relative_strength": rs_vs_nifty or 0.0}
+                            smc_quote = (s_quotes or {}).get(s_key, {})
+                            smc_observed_at, smc_received_at, smc_lineage = _live_lineage_from_quote(
+                                smc_quote, smc_feature_values,
+                                definition_version="smc-structure-v1",
+                            )
+                            smc_universe = _known_universe_lineage(
+                                s_key, datetime.datetime.now(datetime.timezone.utc),
+                            )
                             smc_governance = evaluate_live_governance_contract(
                                 instrument=search_ticker, entry=s_price, stop=s_sl, target=s_tgt,
                                 direction="long" if smc_bias == "Bullish" else "short",
                                 quantity=1, cost_bps=s_cost.round_trip_bps,
-                                feature_values={"atr14": s_atr, "relative_strength": rs_vs_nifty or 0.0},
+                                feature_lineage=smc_lineage,
                                 spread_bps=(s_cost.spread_bps if s_market_data.get("bid_price")
                                             and s_market_data.get("ask_price") else None),
-                                average_daily_value=s_avg_daily_value, quote_age_seconds=0.0,
+                                average_daily_value=s_avg_daily_value,
                                 provider_available=bool(s_quotes and s_quotes.get(s_key)),
                                 exchange_open=MARKET_OPEN,
+                                strategy_id="smc-structure-v1", asset_class="equity_smc",
+                                target_version="smc-atr-structure-v1", horizon_sessions=lookup_days,
+                                quote_observed_at=smc_observed_at, quote_received_at=smc_received_at,
+                                universe_observed_at=(smc_universe or {}).get("observed_at"),
+                                universe_effective_at=(smc_universe or {}).get("effective_at"),
+                                quote_bid=s_market_data.get("bid_price"),
+                                quote_ask=s_market_data.get("ask_price"), quote_last=s_price,
+                                quote_unavailable_reason="Executable SMC equity bid/ask timestamps are incomplete",
+                                cost_breakdown=_execution_cost_breakdown(
+                                    s_cost,
+                                    assumptions="Spread, slippage, participation impact, statutory charges and brokerage estimated at decision time.",
+                                ),
+                                universe_lineage=(smc_universe or {
+                                    "unavailable_reason": "PIT SMC universe membership is unavailable",
+                                }),
                             )
                             smc_actionable = bool(
                                 MARKET_OPEN and s_quotes and s_quotes.get(s_key)

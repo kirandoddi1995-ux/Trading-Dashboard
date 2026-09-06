@@ -58,6 +58,17 @@ class PointInTimeStore:
     def _connect(self):
         return self._connect_fn(self._db_path)
 
+    @staticmethod
+    def scanner_observation_id(scan_run_id, instrument_key, strategy_version) -> str:
+        run_id = _text(scan_run_id)
+        if not run_id:
+            raise ValueError("scan_run_id is required for an immutable observation identity")
+        key = _text(instrument_key)
+        strategy = _text(strategy_version)
+        if not key or not strategy:
+            raise ValueError("instrument_key and strategy_version are required")
+        return hashlib.sha256("|".join((run_id, key, strategy)).encode()).hexdigest()
+
     def _ensure_schema(self):
         with self._lock:
             conn = self._connect()
@@ -315,6 +326,44 @@ class PointInTimeStore:
         finally:
             conn.close()
 
+    def universe_lineage_as_known_at(self, as_of_date, known_at, *, instrument_key=None,
+                                     require_complete=True) -> dict | None:
+        """Return the exact archived universe version available at ``known_at``.
+
+        When an instrument key is supplied, membership in that version is
+        required. No current-universe or future-snapshot fallback is allowed.
+        """
+        known_text = _utc_text(known_at)
+        clause = "AND is_complete=1" if require_complete else ""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                f"SELECT snapshot_id,snapshot_date,observed_at,source,payload_hash,is_complete "
+                f"FROM pit_universe_snapshot_versions "
+                f"WHERE snapshot_date<=? AND observed_at<=? {clause} "
+                "ORDER BY snapshot_date DESC, observed_at DESC LIMIT 1",
+                (_date_text(as_of_date), known_text),
+            ).fetchone()
+            if not row:
+                return None
+            if instrument_key is not None:
+                member = conn.execute(
+                    "SELECT 1 FROM pit_universe_membership_versions WHERE snapshot_id=? AND instrument_key=?",
+                    (row[0], str(instrument_key)),
+                ).fetchone()
+                if not member:
+                    return None
+        finally:
+            conn.close()
+        effective = pd.Timestamp(row[1]).tz_localize("Asia/Kolkata").tz_convert("UTC")
+        return {
+            "snapshot_id": row[0], "snapshot_date": row[1],
+            "effective_at": effective.isoformat(), "observed_at": _utc_text(row[2]),
+            "source": row[3], "payload_hash": row[4], "complete": bool(row[5]),
+            "member": True if instrument_key is not None else None,
+            "instrument_key": str(instrument_key) if instrument_key is not None else None,
+        }
+
     def record_feature_observation(self, *, instrument_key, feature_name, value,
                                    effective_at, available_at, source) -> str:
         effective_text = _utc_text(effective_at)
@@ -497,8 +546,7 @@ class PointInTimeStore:
         run_id = _text(scan_run_id) or hashlib.sha256(
             f"legacy|{as_of_date}|{strategy_version}".encode()
         ).hexdigest()
-        stable = "|".join(map(str, (run_id, instrument_key, strategy_version)))
-        observation_id = hashlib.sha256(stable.encode()).hexdigest()
+        observation_id = self.scanner_observation_id(run_id, instrument_key, strategy_version)
         feature_json = json.dumps(features or {}, sort_keys=True, default=str, separators=(",", ":"))
         conn = self._connect()
         try:
@@ -547,8 +595,7 @@ class PointInTimeStore:
             symbol = _text(item.get("trading_symbol"))
             if not key or not symbol:
                 continue
-            stable = "|".join(map(str, (run_id, key, strategy_version)))
-            observation_id = hashlib.sha256(stable.encode()).hexdigest()
+            observation_id = self.scanner_observation_id(run_id, key, strategy_version)
             passed = bool(item.get("stage1_pass"))
             features = item.get("features") or {}
             rows.append((
