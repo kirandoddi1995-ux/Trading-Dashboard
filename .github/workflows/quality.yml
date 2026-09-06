@@ -15,6 +15,7 @@ jobs:
       - run: pip install -r requirements.txt pytest pip-audit
       - run: python -m pip check
       - run: python environment_preflight.py --strict
+      - run: python production_readiness.py --repository-only --strict
       # requirements.txt already loads constraints.txt via its first `-c` line.
       - run: python -m pip_audit -r requirements.txt
       - run: python -m pytest -q

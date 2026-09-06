@@ -3,6 +3,11 @@ name: Scheduled evidence collector
 on:
   schedule:
     # GitHub cron is UTC. India does not observe daylight saving time.
+    # Two standardized snapshots avoid correlated pseudo-samples and excessive DB growth.
+    # Both are offset from the top of the hour because GitHub documents higher queue delay there.
+    - cron: '37 4 * * 1-5'  # 10:07 IST, Monday-Friday
+    - cron: '7 9 * * 1-5'   # 14:37 IST, Monday-Friday
+    - cron: '45 21 * * 1-5' # 03:15 IST Tuesday-Saturday, safely after US cash close
     - cron: '55 3 * * 1-5'   # 09:25 IST, Monday-Friday
     - cron: '15 10 * * 1-5'  # 15:45 IST, Monday-Friday
     - cron: '30 12 * * 6'    # 18:00 IST, Saturday
@@ -13,7 +18,7 @@ on:
         required: true
         default: all
         type: choice
-        options: [open, close, weekly, all]
+        options: [scan, global, open, close, weekly, all]
       apply_migrations:
         description: Apply reviewed database migrations with the owner-only credential
         required: false
@@ -58,19 +63,40 @@ jobs:
           UPSTOX_ANALYTICS_TOKEN: ${{ secrets.UPSTOX_ANALYTICS_TOKEN }}
           EVIDENCE_LEDGER_SIGNING_KEY: ${{ secrets.EVIDENCE_LEDGER_SIGNING_KEY }}
         run: python scheduled_collector.py --mode open
+      - name: Run prospective Stage-1 equity scan
+        if: >-
+          github.event_name == 'schedule' &&
+          (github.event.schedule == '37 4 * * 1-5' || github.event.schedule == '7 9 * * 1-5')
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          UPSTOX_ANALYTICS_TOKEN: ${{ secrets.UPSTOX_ANALYTICS_TOKEN }}
+          EVIDENCE_LEDGER_SIGNING_KEY: ${{ secrets.EVIDENCE_LEDGER_SIGNING_KEY }}
+          PROSPECTIVE_DATA_LICENSE_ACK: ${{ vars.PROSPECTIVE_DATA_LICENSE_ACK }}
+          SCHEDULED_STAGE1_TOP_N: '150'
+        run: python scheduled_collector.py --mode scan
       - name: Collect closing evidence and mature targets
         if: github.event_name == 'schedule' && github.event.schedule == '15 10 * * 1-5'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           UPSTOX_ANALYTICS_TOKEN: ${{ secrets.UPSTOX_ANALYTICS_TOKEN }}
           EVIDENCE_LEDGER_SIGNING_KEY: ${{ secrets.EVIDENCE_LEDGER_SIGNING_KEY }}
+          PROSPECTIVE_DATA_LICENSE_ACK: ${{ vars.PROSPECTIVE_DATA_LICENSE_ACK }}
         run: python scheduled_collector.py --mode close
+      - name: Capture after-US-close global cues
+        if: github.event_name == 'schedule' && github.event.schedule == '45 21 * * 1-5'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          UPSTOX_ANALYTICS_TOKEN: ${{ secrets.UPSTOX_ANALYTICS_TOKEN }}
+          EVIDENCE_LEDGER_SIGNING_KEY: ${{ secrets.EVIDENCE_LEDGER_SIGNING_KEY }}
+          PROSPECTIVE_DATA_LICENSE_ACK: ${{ vars.PROSPECTIVE_DATA_LICENSE_ACK }}
+        run: python scheduled_collector.py --mode global
       - name: Collect weekly mutual-fund disclosures
         if: github.event_name == 'schedule' && github.event.schedule == '30 12 * * 6'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           UPSTOX_ANALYTICS_TOKEN: ${{ secrets.UPSTOX_ANALYTICS_TOKEN }}
           EVIDENCE_LEDGER_SIGNING_KEY: ${{ secrets.EVIDENCE_LEDGER_SIGNING_KEY }}
+          PROSPECTIVE_DATA_LICENSE_ACK: ${{ vars.PROSPECTIVE_DATA_LICENSE_ACK }}
         run: python scheduled_collector.py --mode weekly
       - name: Run requested collection
         if: github.event_name == 'workflow_dispatch'
@@ -78,4 +104,5 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           UPSTOX_ANALYTICS_TOKEN: ${{ secrets.UPSTOX_ANALYTICS_TOKEN }}
           EVIDENCE_LEDGER_SIGNING_KEY: ${{ secrets.EVIDENCE_LEDGER_SIGNING_KEY }}
+          PROSPECTIVE_DATA_LICENSE_ACK: ${{ vars.PROSPECTIVE_DATA_LICENSE_ACK }}
         run: python scheduled_collector.py --mode "${{ inputs.mode }}"

@@ -1,0 +1,57 @@
+name: Protected production model promotion
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_path:
+        description: Repository path to the signed promotion or rollback request
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-model-governance
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - run: python -m pip install -r requirements.txt pytest
+      - run: python -m pytest -q
+      - run: python resilience_acceptance.py --game-day
+      - name: Verify external production readiness
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MODEL_ARTIFACT_SIGNING_KEY: ${{ secrets.MODEL_ARTIFACT_SIGNING_KEY }}
+          MODEL_ARTIFACT_SIGNING_KEY_ID: ${{ vars.MODEL_ARTIFACT_SIGNING_KEY_ID }}
+          RUNTIME_EVIDENCE_SIGNING_KEY: ${{ secrets.RUNTIME_EVIDENCE_SIGNING_KEY }}
+          MODEL_APPROVER_KEYS_JSON: ${{ secrets.MODEL_APPROVER_KEYS_JSON }}
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
+          SECONDARY_QUOTE_PROVIDER_URL: ${{ secrets.SECONDARY_QUOTE_PROVIDER_URL }}
+          DEPLOYMENT_ROLLBACK_TARGET: ${{ vars.DEPLOYMENT_ROLLBACK_TARGET }}
+          SECRETS_MANAGER_URI: ${{ vars.SECRETS_MANAGER_URI }}
+          NTP_MONITOR_ENDPOINT: ${{ vars.NTP_MONITOR_ENDPOINT }}
+          RECOVERY_DRILL_AT: ${{ vars.RECOVERY_DRILL_AT }}
+          RECOVERY_DRILL_RPO_MINUTES: ${{ vars.RECOVERY_DRILL_RPO_MINUTES }}
+          RECOVERY_DRILL_RTO_MINUTES: ${{ vars.RECOVERY_DRILL_RTO_MINUTES }}
+          RECOVERY_DRILL_LEDGER_VERIFIED: ${{ vars.RECOVERY_DRILL_LEDGER_VERIFIED }}
+          RECOVERY_DRILL_RUNTIME_ROLE_VERIFIED: ${{ vars.RECOVERY_DRILL_RUNTIME_ROLE_VERIFIED }}
+          PRODUCTION_ENVIRONMENT_PROTECTED: 'true'
+        run: python production_readiness.py --strict
+      - name: Cryptographically authorize request
+        env:
+          MODEL_ARTIFACT_SIGNING_KEY: ${{ secrets.MODEL_ARTIFACT_SIGNING_KEY }}
+          MODEL_ARTIFACT_SIGNING_KEY_ID: ${{ vars.MODEL_ARTIFACT_SIGNING_KEY_ID }}
+          MODEL_APPROVER_KEYS_JSON: ${{ secrets.MODEL_APPROVER_KEYS_JSON }}
+        run: python verify_promotion_request.py "${{ inputs.request_path }}"
+      - name: Emit immutable release package
+        run: python package_release.py
