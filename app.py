@@ -98,7 +98,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("god_mode_quant")
-APP_BUILD = "v22.5-PREDICTION-RIGOR"
+APP_BUILD = "v22.5.1-REJECTION-TRANSPARENCY"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
 
 
@@ -6655,16 +6655,32 @@ elif selected_tab == "Options & Derivatives Chain":
 
     market_bias, market_bias_scores = determine_market_bias()
 
-    option_rr_rejections = []
+    option_rejections = []
+
+    def _reject_option(reason, detail=None, **context):
+        option_rejections.append(runtime.rejection_record(reason, detail, **context))
+        return None
 
     def build_option_recommendation(bias, best_row=None, strike_offset_steps=0):
+        def reject_candidate(reason, detail=None, **context):
+            # Normal application execution resolves the enclosing recorder.
+            # Some unit tests intentionally extract this function in isolation;
+            # in that context the safe behavior remains a plain NO TRADE return.
+            try:
+                return _reject_option(reason, detail, **context)
+            except NameError:
+                return None
+
         try:
             if bias in ("Bullish", "Mildly Bullish"):
                 side, side_key = "CE", "Call LTP"
             elif bias in ("Bearish", "Mildly Bearish"):
                 side, side_key = "PE", "Put LTP"
             else:
-                return None
+                return reject_candidate(
+                    "directional_bias_not_approved",
+                    "Directional evidence did not pass the options bias gate",
+                )
 
             if best_row is None:
                 # Default behaviour preserved: pick strike closest to spot (ATM),
@@ -6682,24 +6698,38 @@ elif selected_tab == "Options & Derivatives Chain":
                     if best_diff is None or diff < best_diff:
                         best_diff, best_row = diff, row
             if not best_row:
-                return None
+                return reject_candidate(
+                    "contract_unavailable",
+                    "No option contract was available at the requested strike offset",
+                    side=side,
+                )
 
             validation_key = "_call_validation" if side == "CE" else "_put_validation"
             independent_validation = best_row.get(validation_key) or {}
             if independent_validation.get("valid") is not True:
-                option_rr_rejections.append({
-                    "strike": best_row.get("Strike"), "side": side,
-                    "reason": "Independent IV/Greeks/no-arbitrage validation failed",
-                    "validation_failures": independent_validation.get("failures") or ["Validation evidence unavailable"],
-                })
-                return None
+                return reject_candidate(
+                    "independent_option_validation_failed",
+                    "Independent IV/Greeks/no-arbitrage validation failed",
+                    strike=best_row.get("Strike"), side=side,
+                    blocking_reasons=(
+                        independent_validation.get("failures") or ["Validation evidence unavailable"]
+                    ),
+                )
 
             premium_str = best_row.get(side_key, "N/A")
             if premium_str == "N/A":
-                return None
+                return reject_candidate(
+                    "option_premium_unavailable",
+                    "The selected contract has no usable last-traded premium",
+                    strike=best_row.get("Strike"), side=side,
+                )
             ltp_premium = float(str(premium_str).replace("₹", "").replace(",", ""))
             if ltp_premium <= 0:
-                return None
+                return reject_candidate(
+                    "option_premium_invalid",
+                    "The selected contract premium is not positive",
+                    strike=best_row.get("Strike"), side=side,
+                )
 
             bid_key, ask_key = ("_call_bid", "_call_ask") if side == "CE" else ("_put_bid", "_put_ask")
             bid_qty_key, ask_qty_key = ("_call_bid_qty", "_call_ask_qty") if side == "CE" else ("_put_bid_qty", "_put_ask_qty")
@@ -6712,17 +6742,29 @@ elif selected_tab == "Options & Derivatives Chain":
                 spread_pct = round(((ask_px - bid_px) / mid) * 100, 2) if mid else None
                 MAX_ALLOWED_SPREAD_PCT = 8.0
                 if spread_pct is not None and spread_pct > MAX_ALLOWED_SPREAD_PCT:
-                    return None
+                    return reject_candidate(
+                        "spread_too_wide",
+                        f"Bid/ask spread {spread_pct:.2f}% exceeds the 8.00% maximum",
+                        strike=best_row.get("Strike"), side=side, entry=ask_px,
+                    )
                 premium = float(ask_px)
             else:
                 # No executable ask/bid: retain the chain for research, but do
                 # not size a buy from a potentially old last-traded premium.
-                return None
+                return reject_candidate(
+                    "executable_quote_unavailable",
+                    "A valid executable bid and ask are required",
+                    strike=best_row.get("Strike"), side=side,
+                )
 
             actual_strike = float(str(best_row["Strike"]).replace("🎯 ", "").strip())
 
             if not lot_size or lot_size <= 0:
-                return None
+                return reject_candidate(
+                    "lot_size_unavailable",
+                    "A positive exchange lot size is required",
+                    strike=actual_strike, side=side, entry=premium,
+                )
 
             # The persisted intraday snapshots are sparse and selection-biased;
             # they are displayed as context but never drive targets/stops. Use
@@ -6750,7 +6792,11 @@ elif selected_tab == "Options & Derivatives Chain":
                 # A directional options BUY here is high-risk in a way a normal-
                 # looking trade card shouldn't paper over — NO TRADE by design,
                 # not a bug, not something to force just to populate the UI.
-                return None
+                return reject_candidate(
+                    "expiry_day_blocked",
+                    "Directional option buying is disabled at 0 DTE",
+                    strike=actual_strike, side=side, entry=premium,
+                )
             elif dte <= 2:
                 dte_tier = "Low DTE"
                 target_mult = 1.0 + (target_mult - 1.0) * 0.75  # reduced target — less time for a big move
@@ -6783,15 +6829,16 @@ elif selected_tab == "Options & Derivatives Chain":
             spread_rupees = (float(ask_px) - float(bid_px)) if bid_px and ask_px else 0.0
             minimum_noise_risk = max(premium * 0.08, spread_rupees * 3.0)
             if maximum_defensible_risk < minimum_noise_risk:
-                option_rr_rejections.append({
-                    "strike": actual_strike, "side": side, "entry": premium,
-                    "stop": stop_premium, "target": target_premium, "net_ratio": 0.0,
-                    "required_target": round(
+                return reject_candidate(
+                    "reward_risk_below_threshold",
+                    "The target cannot support 1:2 net reward/risk outside the noise buffer",
+                    strike=actual_strike, side=side, entry=premium,
+                    stop=stop_premium, target=target_premium, net_ratio=0.0,
+                    required_target=round(
                         premium + trade_contracts.MIN_NET_REWARD_RISK *
                         (minimum_noise_risk + cost_buffer_per_unit) + cost_buffer_per_unit, 2,
                     ),
-                })
-                return None
+                )
             corrected_stop = premium - min(premium - stop_premium, maximum_defensible_risk)
             stop_premium = round(max(corrected_stop, 0.01), 2)
             stop_was_tightened = stop_premium > original_stop_premium
@@ -6811,13 +6858,23 @@ elif selected_tab == "Options & Derivatives Chain":
                 visible_ask_qty = float(str(best_row.get(ask_qty_key, 0)).replace(",", ""))
                 lots = min(lots, math.floor(visible_ask_qty / lot_size))
             except (TypeError, ValueError):
-                return None
+                return reject_candidate(
+                    "visible_liquidity_unavailable",
+                    "Visible ask quantity could not be validated",
+                    strike=actual_strike, side=side, entry=premium,
+                    stop=stop_premium, target=target_premium,
+                )
             if lots <= 0:
                 # Not enough risk/capital budget to take even 1 lot at current
                 # settings — skip rather than show a meaningless "buy 0 lots" idea.
                 # (This is the fix for "position size can become zero too easily":
                 # instead of silently showing qty=0, we filter it out entirely.)
-                return None
+                return reject_candidate(
+                    "position_size_unavailable",
+                    "Capital, risk, or visible-liquidity limits do not permit one lot",
+                    strike=actual_strike, side=side, entry=premium,
+                    stop=stop_premium, target=target_premium,
+                )
 
             total_risk = round(risk_per_lot * lots, 2)
             required_capital = round(position_value_per_lot * lots, 2)
@@ -6850,18 +6907,24 @@ elif selected_tab == "Options & Derivatives Chain":
                 required_target = premium + (
                     trade_contracts.MIN_NET_REWARD_RISK * trade_math["net_risk"]
                 ) + trade_math["cost_per_unit"]
-                option_rr_rejections.append({
-                    "strike": actual_strike, "side": side, "entry": premium,
-                    "stop": stop_premium, "target": target_premium,
-                    "net_ratio": reward_risk, "required_target": round(required_target, 2),
-                })
-                return None
+                return reject_candidate(
+                    "reward_risk_below_threshold",
+                    "Net reward/risk is below the 1:2 production minimum after costs",
+                    strike=actual_strike, side=side, entry=premium,
+                    stop=stop_premium, target=target_premium,
+                    net_ratio=reward_risk, required_target=round(required_target, 2),
+                )
 
             timing = trade_contracts.build_trade_timing(
                 datetime.datetime.now(IST), intraday=True,
             )
             if not timing["entry_window_open"]:
-                return None
+                return reject_candidate(
+                    "entry_window_closed",
+                    "The verified intraday entry window is closed",
+                    strike=actual_strike, side=side, entry=premium,
+                    stop=stop_premium, target=target_premium, net_ratio=reward_risk,
+                )
 
             try:
                 traded_volume = float(str(best_row.get(vol_key, 0)).replace(",", ""))
@@ -6900,7 +6963,15 @@ elif selected_tab == "Options & Derivatives Chain":
                 else {"status": "TEST_HARNESS", "allow_trade": True, "blocking_reasons": []}
             )
             if not governance["allow_trade"]:
-                return None
+                return reject_candidate(
+                    "governance_blocked",
+                    "Production governance blocked the option candidate",
+                    strike=actual_strike, side=side, entry=premium,
+                    stop=stop_premium, target=target_premium, net_ratio=reward_risk,
+                    blocking_reasons=governance.get("blocking_reasons") or [
+                        "Governance returned NO_TRADE without a detailed reason"
+                    ],
+                )
 
             return {
                 "side": side, "strike": actual_strike, "premium": premium, "lots": lots,
@@ -6932,7 +7003,10 @@ elif selected_tab == "Options & Derivatives Chain":
             }
         except Exception as e:
             LOGGER.warning("Option recommendation rejected after internal error: %s", type(e).__name__)
-            return None
+            return reject_candidate(
+                "internal_evaluation_error",
+                f"Option candidate evaluation failed with {type(e).__name__}",
+            )
 
     def generate_ranked_recommendations(bias, max_ideas=3):
         """Scan ATM + nearby OTM strikes on the biased side and rank multiple
@@ -6948,6 +7022,20 @@ elif selected_tab == "Options & Derivatives Chain":
             ideas.append(candidate)
         ideas.sort(key=lambda r: r["reward_risk"], reverse=True)
         return ideas[:max_ideas]
+
+    # Record precondition refusals in the same structure as contract-level
+    # refusals so the final NO TRADE message always explains the real blocker.
+    if not using_live_chain:
+        _reject_option("live_option_chain_unavailable", "A live option chain is required")
+    if not MARKET_OPEN:
+        _reject_option("exchange_session_closed", "The verified options session is closed")
+    if using_stale_price:
+        _reject_option("underlying_quote_stale", "The current underlying quote is stale")
+    if using_live_chain and not chain_snapshot_consistent:
+        _reject_option(
+            "option_chain_snapshot_mismatch",
+            "The option-chain snapshot is not aligned with the current underlying quote",
+        )
 
     recommendations = (
         generate_ranked_recommendations(market_bias)
@@ -7016,12 +7104,20 @@ elif selected_tab == "Options & Derivatives Chain":
                     mtf_status, mtf_detail = "Unavailable", {}
             if mtf_status == "Unavailable":
                 st.warning("Multi-timeframe data is unavailable, so strict confirmation blocks this directional trade.")
+                _reject_option(
+                    "mtf_confirmation_unavailable",
+                    "Strict multi-timeframe confirmation is enabled but unavailable",
+                )
                 recommendations = []
             else:
                 badge = "✅" if mtf_status.startswith("Aligned") else "⚠️"
                 st.caption(f"{badge} **MTF Confirmation: {mtf_status}** · 15m: {mtf_detail.get('15m','N/A')} · 1H: {mtf_detail.get('1H','N/A')} · Daily: {mtf_detail.get('Daily','N/A')}")
                 if mtf_status == "Mixed":
                     st.warning("Recommendations below are NOT confirmed across timeframes (15m/1H disagree with the daily bias) — filtered out since Multi-Timeframe Confirmation is enabled.")
+                    _reject_option(
+                        "mtf_confirmation_conflict",
+                        "The 15-minute or 1-hour trend conflicts with the directional bias",
+                    )
                     recommendations = []
 
         strike_labels = {0: "ATM", 1: "1-OTM", 2: "2-OTM", 3: "3-OTM"}
@@ -7210,30 +7306,30 @@ elif selected_tab == "Options & Derivatives Chain":
                     "Not investment advice — check liquidity before sizing up."
                 )
         if not recommendations:
-            # recommendations may have been reset to [] by the MTF-mixed
-            # filter above even though we're inside this branch — these
-            # NO TRADE messages are unchanged from before, just no longer
-            # preceded by a duplicate caption (that reasoning now lives in
-            # the "Why this trade?" expander above, shown once, not twice).
-            if require_mtf_confirmation and mtf_status in ("Mixed", "Unavailable"):
-                pass  # warning already shown above
-            elif dte is not None and dte <= 0:
-                st.info("⚪ **NO TRADE — Expiry day.** Theta decay is near-total and spreads widen sharply on expiry day; this app doesn't recommend directional options buys with 0 DTE.")
-            elif lifecycle_status == "NO_TRADE" and lifecycle_signal is None:
-                st.info("⚪ **NO TRADE.** Previous signal is no longer valid under current market conditions." if
-                         had_previous_signal else
-                         "⚪ **NO TRADE.** Current conditions don't provide a sufficiently strong risk-adjusted setup.")
-            else:
-                if option_rr_rejections:
-                    rejected = max(option_rr_rejections, key=lambda item: item["net_ratio"])
-                    st.info(
-                        f"⚪ **NO TRADE — risk/reward gate.** Best candidate was {int(rejected['strike'])} "
-                        f"{rejected['side']} with net R:R 1:{rejected['net_ratio']:.2f}. The current target was "
-                        f"₹{rejected['target']:.2f}; it would need approximately ₹{rejected['required_target']:.2f} "
-                        "to clear 1:2 without moving the structural stop. The app will not invent that target."
-                    )
-                else:
-                    st.info("⚪ **NO TRADE.** Current setups don't clear the minimum 1:2 net reward:risk gate after DTE adjustment and costs.")
+            selected_rejection = runtime.select_rejection(option_rejections)
+            option_reasons = runtime.rejection_messages(option_rejections, limit=10)
+            option_context = None
+            if selected_rejection and selected_rejection.get("net_ratio") is not None:
+                option_context = (
+                    f"Best measured candidate net reward/risk was "
+                    f"1:{selected_rejection['net_ratio']:.2f}; at least 1:2 is required"
+                )
+            option_score = (market_bias_scores or {}).get("net_score")
+            option_threshold = (market_bias_scores or {}).get("threshold", options_no_trade_threshold)
+            option_bias_passed = bool(
+                market_bias not in ("Neutral", None)
+                and option_score is not None
+                and abs(float(option_score)) >= float(option_threshold)
+            )
+            st.info(runtime.no_trade_message(
+                "options contract",
+                bias=market_bias,
+                bias_passed=option_bias_passed,
+                net_score=option_score,
+                threshold=option_threshold,
+                blocking_reasons=option_reasons,
+                context=option_context,
+            ))
 
         with st.expander("📜 Signal History", expanded=False):
             history = get_signal_history(selected_opt_asset, selected_expiry, CURRENT_USER_ID) if using_live_chain else []
@@ -7242,27 +7338,30 @@ elif selected_tab == "Options & Derivatives Chain":
             else:
                 st.caption("No signal history yet for this underlying/expiry.")
     else:
-        score_suffix = (
-            f" (Bull {market_bias_scores['bull_score']}/100 vs Bear {market_bias_scores['bear_score']}/100 — "
-            f"needed ±{market_bias_scores.get('threshold', options_no_trade_threshold):g} minimum)"
-            if market_bias_scores else ""
+        selected_rejection = runtime.select_rejection(option_rejections)
+        option_reasons = runtime.rejection_messages(option_rejections, limit=10)
+        option_context = None
+        if selected_rejection and selected_rejection.get("net_ratio") is not None:
+            option_context = (
+                f"Best measured candidate net reward/risk was "
+                f"1:{selected_rejection['net_ratio']:.2f}; at least 1:2 is required"
+            )
+        option_score = (market_bias_scores or {}).get("net_score")
+        option_threshold = (market_bias_scores or {}).get("threshold", options_no_trade_threshold)
+        option_bias_passed = bool(
+            market_bias not in ("Neutral", None)
+            and option_score is not None
+            and abs(float(option_score)) >= float(option_threshold)
         )
-        decision_reason = market_bias_scores.get("decision_reason") if market_bias_scores else None
-        reason_suffix = f" Reason: {decision_reason}." if decision_reason else ""
-        if option_rr_rejections:
-            rejected = max(option_rr_rejections, key=lambda item: item["net_ratio"])
-            st.info(
-                f"⚪ **NO TRADE — 1:2 gate.** Bias is **{market_bias}**{score_suffix}, but the best "
-                f"candidate ({int(rejected['strike'])} {rejected['side']}) produced only "
-                f"1:{rejected['net_ratio']:.2f} net reward:risk. Its target is ₹{rejected['target']:.2f}; "
-                f"approximately ₹{rejected['required_target']:.2f} would be required with the same stop. "
-                "The application will not widen the target merely to manufacture an acceptable ratio."
-            )
-        else:
-            st.info(
-                f"Market bias is currently **{market_bias}**{score_suffix} — no high-conviction directional options trade "
-                f"to recommend right now.{reason_suffix}"
-            )
+        st.info(runtime.no_trade_message(
+            "options contract",
+            bias=market_bias,
+            bias_passed=option_bias_passed,
+            net_score=option_score,
+            threshold=option_threshold,
+            blocking_reasons=option_reasons,
+            context=option_context,
+        ))
 
     with st.expander("📊 Detailed Options Analytics (Advanced / Optional)"):
         col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
@@ -7410,7 +7509,25 @@ elif selected_tab == "Futures & Derivatives":
 
             st.markdown("### 🎯 Recommended Futures Trade")
             if fut_bias == "Neutral" or atr_series.empty or not spot_quote_available or not lot_size or not fut_ltp or not MARKET_OPEN:
-                st.info("No actionable futures proposal: a verified open session, current spot and futures quotes, lot size, and sufficient directional evidence are all required.")
+                futures_reasons = []
+                if fut_bias == "Neutral":
+                    futures_reasons.append(fut_evidence.get("reason") or "Directional evidence is neutral")
+                if atr_series.empty:
+                    futures_reasons.append("ATR evidence is unavailable")
+                if not spot_quote_available:
+                    futures_reasons.append("Current spot quote is unavailable")
+                if not fut_ltp:
+                    futures_reasons.append("Current futures quote is unavailable")
+                if not lot_size:
+                    futures_reasons.append("Exchange lot size is unavailable")
+                if not MARKET_OPEN:
+                    futures_reasons.append("The verified futures session is closed")
+                st.info(runtime.no_trade_message(
+                    "futures contract",
+                    bias=fut_bias,
+                    bias_passed=fut_bias != "Neutral",
+                    blocking_reasons=futures_reasons,
+                ))
             else:
                 atr_val = atr_series.iloc[-1]
                 direction = "LONG (Buy)" if fut_bias == "Bullish" else "SHORT (Sell)"
@@ -7470,11 +7587,21 @@ elif selected_tab == "Futures & Derivatives":
                 )
                 if (not futures_math["passes_gate"] or not timing["entry_window_open"]
                         or not futures_governance["allow_trade"]):
-                    st.info(
-                        f"⚪ **NO TRADE — governance, risk/reward, or timing gate.** Candidate net R:R was "
-                        f"1:{futures_math['net_ratio']:.2f}; at least 1:2 is required. "
-                        f"{'; '.join(futures_governance['blocking_reasons'][:2])}"
-                    )
+                    futures_reasons = list(futures_governance.get("blocking_reasons") or ())
+                    if not futures_math["passes_gate"]:
+                        futures_reasons.append("Net reward/risk is below the 1:2 production minimum")
+                    if not timing["entry_window_open"]:
+                        futures_reasons.append("The verified intraday entry window is closed")
+                    st.info(runtime.no_trade_message(
+                        "futures contract",
+                        bias=fut_bias,
+                        bias_passed=True,
+                        blocking_reasons=futures_reasons,
+                        context=(
+                            f"Candidate net reward/risk was 1:{futures_math['net_ratio']:.2f}; "
+                            "at least 1:2 is required"
+                        ),
+                    ))
                 else:
                     factors = fut_evidence.get("bull_factors" if fut_bias == "Bullish" else "bear_factors", [])
                     confidence = trade_contracts.rule_confidence(fut_evidence.get("score", 0))
@@ -9173,13 +9300,28 @@ elif selected_tab == "Equities Screener & Risk":
             # State A: quote retrieval worked, stage-1 produced candidates,
             # analysis genuinely ran to completion, and rejection_counts
             # below explain exactly why every candidate was excluded.
-            st.warning(
-                f"✅ **{_scan_label} scan completed successfully. No candidates passed the technical criteria.**\n\n"
-                f"Universe: {_universe} · Quotes: {_quoted} · Stage-1 shortlist: {_shortlisted} · "
-                f"Analyzed: {_completed} · This can genuinely happen on days without many clean setups — see the "
-                f"Diagnostics panel above for the exact rejection breakdown proving this. If it happens often, "
-                f"open '⚙️ Filters' and check Max Stock Price Filter and Require Weekly Uptrend Confirmation."
-            )
+            equity_reasons = [
+                f"{row.get('Category', 'Rejected')}: {row.get('Reason', 'Reason unavailable')}"
+                for row in rejection_examples[:5]
+                if isinstance(row, dict)
+            ]
+            if not equity_reasons:
+                equity_reasons = [
+                    f"{category}: {count} candidate(s) rejected"
+                    for category, count in sorted(
+                        rejection_counts.items(), key=lambda item: -item[1]
+                    )[:5]
+                ]
+            if not equity_reasons:
+                equity_reasons = ["No equity candidate passed the recorded technical criteria"]
+            st.warning(runtime.no_trade_message(
+                "equity candidate",
+                blocking_reasons=equity_reasons,
+                context=(
+                    f"{_scan_label} scan completed successfully. Universe: {_universe}; "
+                    f"quotes: {_quoted}; Stage-1 shortlist: {_shortlisted}; analyzed: {_completed}"
+                ),
+            ))
         st.session_state["last_screener_results"] = []
 
 
@@ -9422,10 +9564,23 @@ elif selected_tab == "Commodities (MCX)":
                     )
                     if (not mcx_math["passes_gate"] or not mcx_timing["entry_window_open"]
                             or not mcx_governance["allow_trade"]):
-                        st.info(
-                            f"⚪ **NO TRADE — risk/reward or timing gate.** Candidate net R:R was "
-                            f"1:{mcx_math['net_ratio']:.2f}; at least 1:2 is required."
-                        )
+                        mcx_reasons = list(mcx_governance.get("blocking_reasons") or ())
+                        if not mcx_math["passes_gate"]:
+                            mcx_reasons.append("Net reward/risk is below the 1:2 production minimum")
+                        if not mcx_timing["entry_window_open"]:
+                            mcx_reasons.append("The verified intraday entry window is closed")
+                        if not mcx_reasons:
+                            mcx_reasons.append("Production governance did not approve the MCX candidate")
+                        st.info(runtime.no_trade_message(
+                            "MCX contract",
+                            bias=("Bullish" if bullish_setup else "Bearish"),
+                            bias_passed=True,
+                            blocking_reasons=mcx_reasons,
+                            context=(
+                                f"Candidate net reward/risk was 1:{mcx_math['net_ratio']:.2f}; "
+                                "at least 1:2 is required"
+                            ),
+                        ))
                     else:
                         st.success(
                             f"**Rule-based setup for {selected_commodity}** → {direction} @ ~₹{mcx_ltp:,.2f} "
@@ -9474,11 +9629,27 @@ elif selected_tab == "Commodities (MCX)":
                         )
                         st.caption("Setup only — no position sizing or margin figures shown; actual fills and costs can reduce R:R.")
                 elif not MARKET_OPEN or not mcx_quotes.get(mcx_key):
-                    st.info("Research snapshot only: a verified open MCX session and a current quote are required for a directional setup.")
+                    mcx_reasons = []
+                    if not MARKET_OPEN:
+                        mcx_reasons.append("The verified MCX session is closed")
+                    if not mcx_quotes.get(mcx_key):
+                        mcx_reasons.append("A current MCX quote is unavailable")
+                    st.info(runtime.no_trade_message(
+                        "MCX contract", blocking_reasons=mcx_reasons,
+                        context="Research snapshot only",
+                    ))
                 elif mcx_ltp > 0 and curr_atr > 0:
-                    st.info("No directional setup: price, EMA20/EMA50 alignment, and RSI do not agree. No trade is generated.")
+                    st.info(runtime.no_trade_message(
+                        "MCX contract",
+                        bias="Neutral",
+                        bias_passed=False,
+                        blocking_reasons=["Price, EMA20/EMA50 alignment, and RSI do not agree"],
+                    ))
                 else:
-                    st.info("Insufficient price action data to derive setup for this commodity.")
+                    st.info(runtime.no_trade_message(
+                        "MCX contract",
+                        blocking_reasons=["Insufficient price-action data to derive a setup"],
+                    ))
 
                 fig = go.Figure(data=[go.Candlestick(
                     x=hist_df.index, open=hist_df['Open'], high=hist_df['High'],
@@ -9857,13 +10028,41 @@ elif selected_tab == "SMC & Technical Analysis":
                         )
                         st.markdown(f"### Technical Setup for {search_ticker} — {bias_label}")
                         if smc_bias == "Neutral":
-                            st.info("Market structure is neutral or conflicting. Target and stop are intentionally withheld until a directional structure is confirmed.")
+                            st.info(runtime.no_trade_message(
+                                "SMC setup",
+                                bias="Neutral",
+                                bias_passed=False,
+                                blocking_reasons=[
+                                    "Market structure is neutral or conflicting; target and stop are withheld"
+                                ],
+                            ))
                         elif not smc_actionable:
-                            ratio_text = f" Net R:R is 1:{smc_math['net_ratio']:.2f}." if smc_math else ""
-                            st.info(
-                                "Research levels only—not actionable. A verified open session, fresh quote, and minimum 1:2 "
-                                f"net reward:risk are required.{ratio_text}"
+                            smc_reasons = []
+                            if not MARKET_OPEN:
+                                smc_reasons.append("The verified NSE session is closed")
+                            if not s_quotes or not s_quotes.get(s_key):
+                                smc_reasons.append("A current executable quote is unavailable")
+                            if smc_math is None:
+                                smc_reasons.append("Trade levels or reward/risk could not be calculated")
+                            elif not smc_math["passes_gate"]:
+                                smc_reasons.append("Net reward/risk is below the 1:2 production minimum")
+                            if smc_timing is not None and not smc_timing["entry_window_open"]:
+                                smc_reasons.append("The verified entry window is closed")
+                            if smc_governance is not None:
+                                smc_reasons.extend(smc_governance.get("blocking_reasons") or ())
+                            if not smc_reasons:
+                                smc_reasons.append("Production governance did not approve the SMC candidate")
+                            ratio_context = (
+                                f"Research levels only; net reward/risk is 1:{smc_math['net_ratio']:.2f}"
+                                if smc_math else "Research levels only"
                             )
+                            st.info(runtime.no_trade_message(
+                                "SMC setup",
+                                bias=smc_bias,
+                                bias_passed=True,
+                                blocking_reasons=smc_reasons,
+                                context=ratio_context,
+                            ))
                         else:
                             smc_factors = ["Market structure", "BOS/CHoCH", "Weekly trend", "Relative strength", "Volume profile"]
                             st.dataframe(pd.DataFrame([{

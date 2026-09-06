@@ -125,6 +125,113 @@ def option_oi_change_bias(chain_data, spot_price, strikes_each_side=5):
         return {"bias": None, "call_add": 0.0, "put_add": 0.0, "ratio": None, "contracts": 0}
 
 
+def rejection_record(reason, detail=None, **values):
+    """Return one stable, display-safe candidate rejection contract.
+
+    Rejection records are diagnostic only. They never modify a gate result and
+    deliberately use ``None`` for unavailable numeric evidence rather than a
+    fabricated zero.
+    """
+    code = re.sub(r"[^a-z0-9]+", "_", str(reason or "unspecified_rejection").strip().lower()).strip("_")
+    blocking = values.pop("blocking_reasons", ()) or ()
+    if isinstance(blocking, str):
+        blocking = [blocking]
+    record = {
+        "reason": code or "unspecified_rejection",
+        "detail": str(detail).strip() if detail else None,
+        "strike": None,
+        "side": None,
+        "entry": None,
+        "stop": None,
+        "target": None,
+        "net_ratio": None,
+        "required_target": None,
+        "blocking_reasons": [str(item).strip() for item in blocking if str(item).strip()],
+    }
+    for key in tuple(record):
+        if key in values:
+            record[key] = values.pop(key)
+    record.update(values)
+    try:
+        ratio = float(record["net_ratio"])
+        record["net_ratio"] = ratio if math.isfinite(ratio) else None
+    except (TypeError, ValueError, OverflowError):
+        record["net_ratio"] = None
+    return record
+
+
+def select_rejection(records):
+    """Select a representative rejection without assuming ``net_ratio`` exists."""
+    normalized = [
+        rejection_record(
+            (item or {}).get("reason"),
+            (item or {}).get("detail"),
+            **{key: value for key, value in dict(item or {}).items() if key not in {"reason", "detail"}},
+        )
+        for item in (records or ())
+        if isinstance(item, dict)
+    ]
+    if not normalized:
+        return None
+    measured = [item for item in normalized if item["net_ratio"] is not None]
+    return max(measured, key=lambda item: item["net_ratio"]) if measured else normalized[0]
+
+
+def rejection_messages(records, limit=5):
+    """Extract de-duplicated concrete reasons from stable rejection records."""
+    messages = []
+    for item in records or ():
+        if not isinstance(item, dict):
+            continue
+        normalized = rejection_record(
+            item.get("reason"), item.get("detail"),
+            **{key: value for key, value in item.items() if key not in {"reason", "detail"}},
+        )
+        candidates = normalized["blocking_reasons"] or [
+            normalized["detail"] or normalized["reason"].replace("_", " ")
+        ]
+        for message in candidates:
+            if message and message not in messages:
+                messages.append(message)
+            if len(messages) >= max(int(limit), 1):
+                return messages
+    return messages
+
+
+def no_trade_message(
+    candidate_label, *, bias=None, bias_passed=None, net_score=None,
+    threshold=None, blocking_reasons=(), context=None,
+):
+    """Separate directional evidence from the final fail-closed decision."""
+    lines = []
+    if bias:
+        if bias_passed:
+            if net_score is not None and threshold is not None:
+                required = abs(float(threshold)) * (-1.0 if str(bias).lower().startswith("bear") else 1.0)
+                lines.append(
+                    f"**{bias} directional bias passed:** net {float(net_score):+.1f} "
+                    f"versus required {required:+g}."
+                )
+            else:
+                lines.append(f"**{bias} directional evidence passed.**")
+        else:
+            lines.append(f"**{bias} directional evidence did not pass.**")
+    lines.append(
+        f"**NO TRADE:** no {str(candidate_label).strip()} passed all execution and "
+        "production-evidence gates."
+    )
+    reasons = [str(reason).strip() for reason in blocking_reasons if str(reason).strip()]
+    if context:
+        reasons.append(str(context).strip())
+    reasons = list(dict.fromkeys(reasons))
+    lines.append(
+        "**Blocking reasons:** " + (
+            "; ".join(reasons) if reasons else "No structured rejection reason was recorded."
+        )
+    )
+    return "\n\n".join(lines)
+
+
 def score_option_direction(
     *, price, previous_close, ema20, vwap=None, rsi=None, macd_hist=None,
     pcr=None, oi_change_bias=None, trend_15m=None, trend_1h=None,
