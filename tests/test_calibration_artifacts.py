@@ -27,7 +27,11 @@ def _validated_result(frame):
     _, holdout = chronological_holdout_split(
         frame, holdout_fraction=0.15, minimum_holdout_dates=20, embargo_sessions=20,
     )
-    metrics = {"brier": 0.20, "baseline_brier": 0.25, "ece": 0.04, "log_loss": 0.60}
+    metrics = {
+        "brier": 0.20, "baseline_brier": 0.25, "ece": 0.04,
+        "log_loss": 0.60, "baseline_log_loss": 0.69,
+        "log_loss_skill": 0.13, "log_loss_improvement_ci_low": 0.01,
+    }
     return {
         "status": "VALIDATED", "model": {"intercept": -0.2, "slope": 1.1},
         "holdout_fraction": 0.15, "embargo_sessions": 20,

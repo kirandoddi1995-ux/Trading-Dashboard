@@ -39,7 +39,9 @@ def calibration(ensemble_hash="ensemble"):
         "probability_interval_low": .66, "probability_interval_high": .77,
         "oos_samples": 1200, "positive_samples": 600, "negative_samples": 600,
         "observation_days": 300, "ece": .03, "brier": .17, "baseline_brier": .25,
-        "log_loss": .52, "model_version": "m1", "ensemble_hash": ensemble_hash,
+        "log_loss": .52, "baseline_log_loss": .69, "log_loss_skill": .246,
+        "log_loss_improvement_ci_low": .03,
+        "model_version": "m1", "ensemble_hash": ensemble_hash,
         "validated_at": (NOW - dt.timedelta(days=1)).isoformat(),
         "valid_until": (NOW + dt.timedelta(days=20)).isoformat(),
         "feature_psi": .05, "calibration_decay": .01,
@@ -95,6 +97,19 @@ def test_calibration_requires_nested_holdout_reliability_and_ensemble_lineage():
     bad = dict(good, nested_chronological=False, ensemble_hash="wrong", log_loss=float("nan"))
     result = validate_calibration_package(bad, expected_ensemble_hash="correct")
     assert result["status"] == "ABSTAIN" and len(result["failures"]) >= 3
+
+
+def test_near_coin_flip_log_loss_cannot_pass_on_a_tiny_improvement():
+    weak = dict(
+        calibration("correct"),
+        log_loss=.688,
+        baseline_log_loss=.690,
+        log_loss_skill=(.690 - .688) / .690,
+        log_loss_improvement_ci_low=-.004,
+    )
+    result = validate_calibration_package(weak, expected_ensemble_hash="correct")
+    assert result["status"] == "ABSTAIN"
+    assert any("log-loss" in failure.casefold() for failure in result["failures"])
 
 
 def test_adaptive_conformal_interval_requires_disjoint_chronology_and_coverage():

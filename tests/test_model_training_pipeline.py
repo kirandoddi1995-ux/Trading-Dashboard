@@ -52,12 +52,15 @@ POLICY = ModelTrainingPolicy(
     minimum_oof_samples=60, minimum_holdout_samples=50, minimum_holdout_dates=50,
     holdout_fraction=.15, folds=4, minimum_fold_training_samples=50,
     embargo_sessions=5, maximum_missing_fraction=.10, maximum_ece=.30,
-    maximum_log_loss=1.0, minimum_regimes=1,
+    minimum_log_loss_skill=.001, log_loss_bootstrap_samples=200,
+    log_loss_block_length=5, minimum_regimes=1,
 )
 
 
 def test_pipeline_trains_nested_candidates_on_separated_synthetic_fixture_but_cannot_promote():
-    frame = synthetic_fixture(missing=True)
+    # A larger untouched holdout is intentional: the strengthened acceptance
+    # gate requires a positive one-sided block-bootstrap improvement bound.
+    frame = synthetic_fixture(800, missing=True)
     result = train_step3_candidates(
         frame, features=["f1", "f2"], monotonic_constraints={"f1": 1, "f2": -1},
         policy=POLICY,
@@ -96,7 +99,7 @@ def test_regime_shift_is_evaluated_only_on_untouched_holdout():
 
 
 def test_synthetic_fixture_cannot_be_relabelled_for_production_artifact(tmp_path):
-    frame = synthetic_fixture()
+    frame = synthetic_fixture(800)
     result = train_step3_candidates(frame, features=["f1", "f2"], policy=POLICY)
     with pytest.raises(ValueError, match="genuine immutable production evidence"):
         create_signed_shadow_artifact(
@@ -111,7 +114,7 @@ def test_synthetic_fixture_cannot_be_relabelled_for_production_artifact(tmp_path
 
 
 def test_signed_test_bundle_is_verified_before_deserialization_but_cannot_register(tmp_path):
-    frame = synthetic_fixture()
+    frame = synthetic_fixture(800)
     result = train_step3_candidates(frame, features=["f1", "f2"], policy=POLICY)
     signer = ArtifactSigner(b"s" * 32)
     artifact = create_signed_test_artifact(result, frame, signer=signer)

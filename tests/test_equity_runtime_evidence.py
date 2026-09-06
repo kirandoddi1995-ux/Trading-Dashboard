@@ -32,7 +32,11 @@ def test_equity_runtime_loads_real_signed_model_but_keeps_missing_controls_unava
     _, holdout = chronological_holdout_split(
         frame, holdout_fraction=0.15, minimum_holdout_dates=20, embargo_sessions=20,
     )
-    metrics = {"brier": 0.20, "baseline_brier": 0.25, "ece": 0.03, "log_loss": 0.60}
+    metrics = {
+        "brier": 0.20, "baseline_brier": 0.25, "ece": 0.03,
+        "log_loss": 0.60, "baseline_log_loss": 0.69,
+        "log_loss_skill": 0.13, "log_loss_improvement_ci_low": 0.01,
+    }
     result = {
         "status": "VALIDATED", "model": {"intercept": 0.2, "slope": 1.0},
         "holdout_fraction": 0.15, "embargo_sessions": 20,
