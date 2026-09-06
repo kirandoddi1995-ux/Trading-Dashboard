@@ -6,7 +6,6 @@ import datetime as dt
 import hashlib
 import json
 import math
-import sqlite3
 import threading
 from dataclasses import asdict, dataclass
 
@@ -248,7 +247,7 @@ def purged_walk_forward_splits(rows: pd.DataFrame, *, folds=5, min_train=200, em
     for fold_dates in validation_dates:
         if len(fold_dates) == 0:
             continue
-        val_start, val_end = pd.Timestamp(fold_dates[0]), pd.Timestamp(fold_dates[-1])
+        val_start = pd.Timestamp(fold_dates[0])
         # Leave an explicit business-session embargo between training labels
         # and validation observations, in addition to purging labels that
         # overlap the validation boundary.

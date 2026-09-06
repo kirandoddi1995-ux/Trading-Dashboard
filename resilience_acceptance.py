@@ -9,7 +9,6 @@ import json
 from resilience_control_plane import (
     ModelPromotionGate,
     OperationalGuard,
-    QuoteObservation,
     ReleaseDecision,
     ResilienceControlPlane,
     ResiliencePolicy,

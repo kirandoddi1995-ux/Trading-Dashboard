@@ -600,7 +600,7 @@ class ProductionRepository:
     def _validate_runtime_schema(self) -> None:
         """Verify migrations and least privilege without executing any DDL."""
         with self.connect() as conn:
-            role_row = conn.execute(f"""
+            role_row = conn.execute("""
                 SELECT current_user,r.rolsuper,r.rolcreatedb,r.rolcreaterole,
                        r.rolreplication,r.rolbypassrls,
                        has_schema_privilege(current_user,%s,'CREATE'),

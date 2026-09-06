@@ -7,7 +7,6 @@ supplied calibration evidence passes the configured production policy.
 
 from __future__ import annotations
 
-import datetime as dt
 import math
 from dataclasses import asdict, dataclass, field
 from typing import Mapping, Sequence

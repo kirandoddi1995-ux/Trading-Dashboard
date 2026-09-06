@@ -253,6 +253,19 @@ def safe_exception_label(exc):
     return label
 
 
+def governance_system_error_result(asset_label, exc):
+    """Build a fail-closed result for an unexpected governance exception."""
+    label = str(asset_label or "Trading").strip() or "Trading"
+    message = f"{label} governance system error — treated as NO TRADE."
+    return {
+        "status": "SYSTEM_ERROR_NO_TRADE",
+        "allow_trade": False,
+        "blocking_reasons": [message],
+        "system_error": safe_exception_label(exc),
+        "user_message": message,
+    }
+
+
 def score_option_direction(
     *, price, previous_close, ema20, vwap=None, rsi=None, macd_hist=None,
     pcr=None, oi_change_bias=None, trend_15m=None, trend_1h=None,

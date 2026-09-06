@@ -11,14 +11,14 @@ from feature_store import (
 )
 from point_in_time import PointInTimeStore
 from prediction_validation import (
-    STRATEGY_VERSION, TARGET_VERSION, PRODUCTION_CALIBRATION_POLICY, TargetDefinition, ValidationStore,
-    compute_forward_target, run_advanced_chronological_validation, scanner_composite_score,
+    STRATEGY_VERSION, TARGET_VERSION, PRODUCTION_CALIBRATION_POLICY, ValidationStore,
+    run_advanced_chronological_validation, scanner_composite_score,
 )
 from market_data_gateway import get_market_data_gateway
 from reliable_charts import render_chart
 from scan_jobs import ScanJobs, ScanBusy
 from provider_contracts import OptionGreeks, OptionMarketData, ProviderContractError, ProviderErrorKind
-from quantitative_services import estimate_execution_cost, cross_sectional_scores, optimize_portfolio
+from quantitative_services import estimate_execution_cost, cross_sectional_scores
 from iv_surface import normalize_iv_surface
 from model_registry import ModelRegistry
 from mf_archive import MutualFundArchive
@@ -31,25 +31,9 @@ from volatility_models import fit_student_t_garch11
 from evidence_ledger import ImmutableEvidenceLedger
 from quant_foundation import (
     PRODUCTION_QUANT_CONFIG,
-    executable_expected_value,
-    execution_quality_gate,
-    fractional_kelly_weight,
-    portfolio_risk_report,
-    system_kill_switch,
-    validate_point_in_time_features,
 )
 from deployment_security import require_streamlit_auth
 from resilience_control_plane import get_resilience_control_plane
-from continuous_evolution import (
-    ContinuousEvolutionPolicy,
-    adaptive_conformal_interval,
-    decision_evidence_bundle,
-    evaluate_model_ensemble,
-    executable_fill_adjusted_ev,
-    predictive_correctness_claim,
-    unified_control_findings,
-    validate_calibration_package,
-)
 from live_evidence import (
     EvidenceTier, LiveEvidenceBundle, LiveEvidenceContext, feature_schema_digest,
     quote_evidence_times, timestamped_feature_lineage,
@@ -81,7 +65,6 @@ import openpyxl
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 import warnings
-import scipy.stats as si
 import math
 import logging
 import hashlib
@@ -98,7 +81,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("god_mode_quant")
-APP_BUILD = "v22.5.3-DECISION-CONTEXT-SEPARATION"
+APP_BUILD = "v22.5.4-STATIC-GOVERNANCE-HARDENING"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
 
 
@@ -154,231 +137,6 @@ def _known_universe_lineage(instrument_key, decision_at):
         LOGGER.warning("PIT universe lineage unavailable for %s: %s", instrument_key, type(exc).__name__)
         return None
 
-
-def _embedded_live_governance_contract_v22_1(
-    *, instrument, entry, stop, target, direction="long", quantity=1, cost_bps=0.0,
-    feature_values=None, feature_lineage=None, source="Upstox live", spread_bps=None, order_value=None,
-    average_daily_value=None, quote_age_seconds=0.0, provider_available=True,
-    exchange_open=True, calibration_evidence=None, portfolio_returns=None,
-    portfolio_weights=None, stress_scenarios=None, model_predictions=None,
-    model_weights=None, selected_regime="UNKNOWN", feature_schema_hash="",
-    conformal_evidence=None, fill_evidence=None, correctness_evidence=None,
-    ledger_status=None, universe_observed_at=None, universe_effective_at=None,
-):
-    """One fail-closed contract shared by every live recommendation path."""
-    decision_at = datetime.datetime.now(datetime.timezone.utc)
-    evolution_policy = ContinuousEvolutionPolicy(
-        **dict(RESILIENCE_CONTROL_PLANE.policy.section("continuous_evolution"))
-    )
-    # A value alone is not PIT evidence.  Keep it visible to the validator but
-    # never invent a source or timestamp equal to the current decision time.
-    lineage = dict(feature_lineage or {})
-    for name, value in dict(feature_values or {}).items():
-        lineage.setdefault(str(name), {"value": value})
-    pit = validate_point_in_time_features(
-        decision_at, lineage, universe_observed_at=universe_observed_at,
-        universe_effective_at=universe_effective_at,
-        pit_coverage=(1.0 if feature_lineage else 0.0),
-        policy=PRODUCTION_QUANT_CONFIG.evidence,
-    )
-    execution = execution_quality_gate(
-        spread_bps=spread_bps, order_value=order_value,
-        average_daily_value=average_daily_value, quote_age_seconds=quote_age_seconds,
-        policy=PRODUCTION_QUANT_CONFIG.execution,
-    )
-    kill = system_kill_switch(
-        feed_age_seconds=quote_age_seconds, provider_available=provider_available,
-        exchange_open=exchange_open, policy=PRODUCTION_QUANT_CONFIG.portfolio,
-        maximum_feed_age_seconds=PRODUCTION_QUANT_CONFIG.execution.maximum_quote_age_seconds,
-    )
-    expected_value = executable_expected_value(
-        entry=entry, stop=stop, target=target, direction=direction, quantity=quantity,
-        round_trip_cost_bps=cost_bps, calibration_evidence=calibration_evidence,
-        config=PRODUCTION_QUANT_CONFIG,
-    )
-    if expected_value.get("trade_math") and calibration_evidence:
-        allocation = fractional_kelly_weight(
-            (calibration_evidence or {}).get("probability"),
-            expected_value["trade_math"].get("net_ratio"),
-            calibration_evidence=calibration_evidence,
-            policy=PRODUCTION_QUANT_CONFIG.portfolio,
-            evidence_policy=PRODUCTION_QUANT_CONFIG.evidence,
-        )
-    else:
-        allocation = {"status": "UNAVAILABLE", "weight": 0.0,
-                      "reason": "Validated probability and payoff evidence are required"}
-    schema_hash = str(feature_schema_hash or hashlib.sha256(
-        json.dumps(sorted(lineage), separators=(",", ":")).encode("utf-8")
-    ).hexdigest())
-    model = evaluate_model_ensemble(
-        model_predictions, weights=model_weights, selected_regime=selected_regime,
-        expected_feature_schema_hash=schema_hash, decision_at=decision_at,
-        policy=evolution_policy,
-    )
-    calibration = validate_calibration_package(
-        calibration_evidence,
-        expected_ensemble_hash=model.get("ensemble_hash"), policy=evolution_policy,
-    )
-    if conformal_evidence:
-        conformal = adaptive_conformal_interval(
-            conformal_evidence.get("point_estimate"),
-            conformal_evidence.get("calibration_residuals", ()),
-            training_end=conformal_evidence.get("training_end"),
-            calibration_start=conformal_evidence.get("calibration_start"),
-            calibration_end=conformal_evidence.get("calibration_end"),
-            observed_coverage=conformal_evidence.get("observed_coverage"),
-            alpha=conformal_evidence.get("alpha"),
-            policy=evolution_policy,
-        )
-    else:
-        conformal = {"status": "ABSTAIN", "failures": ["Conformal uncertainty evidence is unavailable"]}
-    if fill_evidence and calibration.get("usable"):
-        target_probability = float(calibration["conservative_probability"])
-        time_exit_probability = fill_evidence.get("time_exit_probability")
-        try:
-            stop_probability = 1.0 - target_probability - float(time_exit_probability)
-        except (TypeError, ValueError):
-            stop_probability = None
-        fill_adjusted_ev = executable_fill_adjusted_ev(
-            entry=entry, stop=stop, target=target, direction=direction, quantity=quantity,
-            round_trip_cost_bps=cost_bps, target_probability=target_probability,
-            stop_probability=stop_probability, time_exit_probability=time_exit_probability,
-            time_exit_return_per_unit=fill_evidence.get("time_exit_return_per_unit"),
-            fill_evidence=fill_evidence,
-            adverse_selection_bps=fill_evidence.get("adverse_selection_bps", 0),
-            policy=evolution_policy,
-        )
-    else:
-        fill_adjusted_ev = {"status": "ABSTAIN", "failures": [
-            "Validated calibration and fill-model evidence are required"
-        ]}
-    portfolio = {"status": "UNAVAILABLE", "reason": "Current portfolio histories were not supplied"}
-    if isinstance(portfolio_returns, pd.DataFrame) and portfolio_weights:
-        portfolio = portfolio_risk_report(
-            portfolio_returns, portfolio_weights, stress_scenarios=stress_scenarios,
-            policy=PRODUCTION_QUANT_CONFIG.portfolio,
-        )
-    blocking = []
-    if pit["status"] != "PASS":
-        blocking.extend(item.get("detail", item.get("code")) for item in pit["failures"])
-    if execution["status"] != "PASS":
-        blocking.extend(execution["failures"])
-    if kill["status"] != "PASS":
-        blocking.extend(kill["reasons"])
-    if expected_value["status"] != "PASS":
-        blocking.append(expected_value["reason"])
-    if portfolio["status"] != "PASS":
-        blocking.extend(portfolio.get("failures", [portfolio.get("reason", "Portfolio gate failed")]))
-    outbox_stats = None
-    try:
-        outbox_stats = EVIDENCE_LEDGER.outbox_stats()
-    except Exception as exc:
-        blocking.append(f"Evidence outbox telemetry failed: {type(exc).__name__}")
-    advanced_findings = unified_control_findings(
-        pit=pit, model=model, calibration=calibration, conformal=conformal,
-        execution=execution, expected_value=fill_adjusted_ev, portfolio=portfolio,
-        allocation=allocation, kill_switch=kill, ledger_status=ledger_status,
-    )
-    resilience = RESILIENCE_CONTROL_PLANE.evaluate_recommendation(
-        price=entry,
-        quote_at=decision_at,
-        received_at=decision_at,
-        quote_age_seconds=quote_age_seconds,
-        provider_available=provider_available,
-        exchange_open=exchange_open,
-        calibration_evidence=calibration_evidence,
-        outbox_stats=outbox_stats,
-        runtime_expected={
-            "build": os.environ.get("EXPECTED_APP_BUILD", APP_BUILD),
-            "policy_hash": os.environ.get(
-                "RESILIENCE_POLICY_SHA256", RESILIENCE_CONTROL_PLANE.policy.digest
-            ),
-        },
-        runtime_actual={
-            "build": APP_BUILD,
-            "policy_hash": RESILIENCE_CONTROL_PLANE.policy.digest,
-        },
-        control_findings=advanced_findings,
-    )
-    resilience_public = resilience.public_dict()
-    for control_name, control_result in {
-        "pit": pit, "model": model, "calibration": calibration,
-        "conformal": conformal, "execution": execution,
-        "expected_value": fill_adjusted_ev, "portfolio": portfolio,
-        "allocation": allocation, "kill_switch": kill,
-    }.items():
-        control_status = str(control_result.get("status") or "UNAVAILABLE").upper()
-        OBSERVABILITY.record(
-            "quant_control", control_name, 0.0, ok=control_status == "PASS",
-            status=control_status, correlation_id=resilience_public["correlation_id"],
-        )
-    OBSERVABILITY.record(
-        "safety_state", resilience_public["state"], 0.0,
-        ok=resilience.allow_new_trades, status=resilience_public["state"],
-        correlation_id=resilience_public["correlation_id"],
-    )
-    LOGGER.info(
-        "resilience_decision %s",
-        json.dumps({
-            "correlation_id": resilience_public["correlation_id"],
-            "state": resilience_public["state"], "instrument": str(instrument),
-            "codes": [item["code"] for item in resilience_public["findings"]],
-            "build": APP_BUILD, "policy_hash": resilience_public["policy_hash"],
-        }, sort_keys=True),
-    )
-    evidence_recorder = globals().get("_record_trade_evidence")
-    if callable(evidence_recorder):
-        try:
-            resilience_event = evidence_recorder(
-                aggregate_id=f"safety:{resilience_public['correlation_id']}",
-                event_type="RISK_DECISION", payload=resilience_public,
-                effective_at=decision_at,
-                idempotency_key=f"{APP_BUILD}:safety:{resilience_public['correlation_id']}",
-                source="resilience-control-plane",
-            )
-            if resilience_event is None:
-                blocking.append("Local resilience evidence append failed")
-        except Exception as exc:
-            blocking.append(f"Resilience evidence append failed: {type(exc).__name__}")
-    if not resilience.allow_new_trades:
-        blocking.extend(item.detail for item in resilience.findings if item.state.value >= 2)
-    correctness = predictive_correctness_claim(correctness_evidence, evolution_policy)
-    OBSERVABILITY.record(
-        "predictive_claim", correctness["claim"], 0.0,
-        ok=correctness["established"], status=correctness["claim"],
-        correlation_id=resilience_public["correlation_id"],
-    )
-    evidence_bundle = decision_evidence_bundle(
-        instrument=instrument, decision_at=decision_at, model=model, pit=pit,
-        calibration=calibration, conformal=conformal, execution=execution,
-        expected_value=fill_adjusted_ev, portfolio=portfolio, allocation=allocation,
-        kill_switch=kill,
-        safety=resilience_public, claim=correctness,
-    )
-    if callable(evidence_recorder):
-        try:
-            decision_event = evidence_recorder(
-                aggregate_id=f"decision:{evidence_bundle['decision_hash']}",
-                event_type="CONTINUOUS_DECISION", payload=evidence_bundle,
-                effective_at=decision_at,
-                idempotency_key=f"{APP_BUILD}:decision:{evidence_bundle['decision_hash']}",
-                source="continuous-evolution",
-            )
-            if decision_event is None:
-                blocking.append("Continuous decision evidence append failed")
-        except Exception as exc:
-            blocking.append(f"Continuous decision evidence append failed: {type(exc).__name__}")
-    return {
-        "status": "PASS" if not blocking else "NO_TRADE", "allow_trade": not blocking,
-        "instrument": str(instrument), "decision_at": decision_at.isoformat(),
-        "blocking_reasons": blocking, "pit": pit, "execution": execution,
-        "kill_switch": kill, "expected_value": expected_value, "portfolio": portfolio,
-        "model": model, "calibration": calibration, "conformal": conformal,
-        "fill_adjusted_expected_value": fill_adjusted_ev,
-        "allocation": allocation,
-        "predictive_correctness": correctness, "evidence_bundle": evidence_bundle,
-        "resilience": resilience_public,
-    }
 
 
 def evaluate_live_governance_contract(
@@ -514,6 +272,22 @@ def evaluate_live_governance_contract(
             config_hash=globals().get("RUNTIME_QUANT_CONFIG_HASH", ""),
         ),
     )
+
+
+def _evaluate_governance_fail_closed(asset_label, **kwargs):
+    """Convert an unexpected governance failure into an observable NO TRADE."""
+    try:
+        return evaluate_live_governance_contract(**kwargs)
+    except Exception as exc:
+        error_label = runtime.safe_exception_label(exc)
+        LOGGER.error("%s governance evaluation failed: %s", asset_label, error_label)
+        observer = globals().get("OBSERVABILITY")
+        if observer is not None:
+            observer.record(
+                "governance", f"{str(asset_label).lower()}_evaluation", 0.0,
+                ok=False, status=error_label,
+            )
+        return runtime.governance_system_error_result(asset_label, exc)
 
 
 def render_trade_transparency_panel(
@@ -5466,15 +5240,6 @@ def render_mf_research_results(saved):
         f"NAV as of {top['latest_date']}. Data confidence: {top['confidence_label']} (not predictive accuracy). "
         f"Official TER matched for {sum(pd.notna(r.get('ter')) for r in ranked)}/{len(ranked)}."
     )
-    if governance:
-        state = governance.get("status", "UNAVAILABLE")
-        ev = governance.get("expected_value", {})
-        st.caption(
-            f"Governance: **{state}** · PIT {governance.get('pit', {}).get('status', 'N/A')} · "
-            f"Execution {governance.get('execution', {}).get('status', 'N/A')} · "
-            f"Kill switch {governance.get('kill_switch', {}).get('status', 'N/A')} · "
-            f"Executable EV {ev.get('status', 'N/A')}"
-        )
     with st.expander("Official benchmark comparisons & Riskometer", expanded=True):
         top_disclosure = records.get(str(top["scheme_code"]), {})
         st.write(
@@ -6557,8 +6322,6 @@ elif selected_tab == "Options & Derivatives Chain":
             if ema20_series.empty:
                 return "Neutral", {}
             ema20_last = ema20_series.iloc[-1]
-            price_above, price_below = underlying_ltp > ema20_last, underlying_ltp < ema20_last
-
             rsi_last = None
             try:
                 rsi_series = ta.rsi(idx_hist_short['Close'], length=14).dropna()
@@ -7564,7 +7327,8 @@ elif selected_tab == "Futures & Derivatives":
                 futures_universe = _known_universe_lineage(
                     fut_instrument_key, datetime.datetime.now(datetime.timezone.utc),
                 )
-                futures_governance = evaluate_live_governance_contract(
+                futures_governance = _evaluate_governance_fail_closed(
+                    "Futures",
                     instrument=fut_symbol, entry=entry, stop=stop, target=target,
                     direction=engine_direction, quantity=lot_size, cost_bps=futures_cost.round_trip_bps,
                     feature_lineage=fut_lineage,
@@ -8584,7 +8348,8 @@ elif selected_tab == "Equities Screener & Risk":
                     model_artifact_signer=MODEL_ARTIFACT_SIGNER,
                     runtime_evidence_signer=RUNTIME_EVIDENCE_SIGNER,
                 )
-                equity_governance = evaluate_live_governance_contract(
+                equity_governance = _evaluate_governance_fail_closed(
+                    "Equity",
                     instrument=ticker, entry=price, stop=sl, target=tgt, direction="long",
                     quantity=qty_to_buy, cost_bps=cost_estimate.round_trip_bps,
                     feature_lineage=equity_lineage,
@@ -9537,7 +9302,8 @@ elif selected_tab == "Commodities (MCX)":
                     mcx_universe = _known_universe_lineage(
                         mcx_key, datetime.datetime.now(datetime.timezone.utc),
                     )
-                    mcx_governance = evaluate_live_governance_contract(
+                    mcx_governance = _evaluate_governance_fail_closed(
+                        "MCX",
                         instrument=selected_commodity, entry=mcx_ltp, stop=c_stop, target=c_target,
                         direction="long" if bullish_setup else "short", quantity=c_lot_size or 1,
                         cost_bps=mcx_cost.round_trip_bps,
@@ -9991,7 +9757,8 @@ elif selected_tab == "SMC & Technical Analysis":
                             smc_universe = _known_universe_lineage(
                                 s_key, datetime.datetime.now(datetime.timezone.utc),
                             )
-                            smc_governance = evaluate_live_governance_contract(
+                            smc_governance = _evaluate_governance_fail_closed(
+                                "SMC",
                                 instrument=search_ticker, entry=s_price, stop=s_sl, target=s_tgt,
                                 direction="long" if smc_bias == "Bullish" else "short",
                                 quantity=1, cost_bps=s_cost.round_trip_bps,

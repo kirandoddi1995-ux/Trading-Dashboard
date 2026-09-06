@@ -6,7 +6,6 @@ complete event/transaction record.  It does not claim exchange queue fidelity.
 """
 from __future__ import annotations
 
-import datetime as dt
 import math
 from dataclasses import asdict, dataclass
 from typing import Callable, Mapping

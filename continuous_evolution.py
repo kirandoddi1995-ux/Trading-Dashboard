@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 import numpy as np

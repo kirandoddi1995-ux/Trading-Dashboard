@@ -62,7 +62,7 @@ def main():
     print("CONFIRMED DEFECT: target exits counted as wins although 0.10% gross reward is below 0.30% costs.")
     print({key: probability[key] for key in ("samples", "wins", "win_probability")})
 
-    entry, target, stop, lot, lots = 38.85, 46.13, 34.97, 65, 74
+    entry, stop, lot, lots = 38.85, 34.97, 65, 74
     fee_only = (entry - stop + entry * .007) * lot * lots
     fee_and_spread = (entry - stop + entry * .0096) * lot * lots
     print("OBSERVED OPTION SAMPLE:", {"quantity": lot * lots, "capital": round(entry * lot * lots, 2),

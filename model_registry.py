@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import sqlite3
 import threading
 import uuid
 from typing import Callable, Mapping, Sequence

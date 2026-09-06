@@ -277,7 +277,7 @@ def load_production_progress(database_url=None, *, now=None) -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", action="store_true")
-    args = parser.parse_args(argv)
+    parser.parse_args(argv)
     result = load_production_progress()
     print(json.dumps(result, indent=2, default=str))
     return 0 if result.get("status") == "PASS" else 2

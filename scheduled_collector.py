@@ -13,7 +13,6 @@ import gzip
 import hashlib
 import json
 import os
-import sys
 import socket
 import threading
 import time

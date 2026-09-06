@@ -12,7 +12,6 @@ import hashlib
 import json
 import sqlite3
 import threading
-import time
 from typing import Iterable, Mapping
 
 import pandas as pd

@@ -32,6 +32,8 @@ def run_canaries(root):
                                           and "EVIDENCE_LEDGER_SIGNING_KEY" in example
                                           and "AUTH_ALLOWED_EMAILS" in example and "[auth]" in example)
     app_source=app.read_text(encoding="utf-8")
+    live_governance_source=(root/"live_governance.py").read_text(encoding="utf-8")
+    continuous_source=(root/"continuous_evolution.py").read_text(encoding="utf-8")
     checks["auth_precedes_services"]=(app_source.index("require_streamlit_auth(st)")
                                        < app_source.index("OBSERVABILITY = observability.get_registry()")
                                        < app_source.index("\n_ensure_cache_schema()\n")
@@ -68,12 +70,15 @@ def run_canaries(root):
         and "--expect-no-artifact" in training_workflow
         and "secrets.DATABASE_URL" in training_workflow
     )
-    checks["live_resilience_gate_wired"] = ("RESILIENCE_CONTROL_PLANE.evaluate_recommendation" in app_source
-                                             and '"resilience": resilience_public' in app_source
-                                             and 'not resilience.allow_new_trades' in app_source
-                                             and "unified_control_findings" in app_source
-                                             and 'expected_value["status"] != "PASS"' in app_source
-                                             and 'portfolio["status"] != "PASS"' in app_source)
+    checks["live_resilience_gate_wired"] = (
+        "return evaluate_live_governance(" in app_source
+        and "_evaluate_governance_fail_closed" in app_source
+        and "services.control_plane.evaluate_recommendation" in live_governance_source
+        and '"resilience": resilience_public' in live_governance_source
+        and "unified_control_findings" in live_governance_source
+        and "allow_trade = not blocking and resilience.allow_new_trades" in live_governance_source
+        and "if status != expected:" in continuous_source
+    )
     return {"ok":all(checks.values()),"checks":checks}
 
 

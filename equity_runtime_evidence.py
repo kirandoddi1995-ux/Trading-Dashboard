@@ -1,7 +1,6 @@
 """Assemble exact equity live evidence from signed production artifacts."""
 from __future__ import annotations
 
-import datetime as dt
 from typing import Mapping
 
 from calibration_artifacts import infer_equity_probability

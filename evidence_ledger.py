@@ -12,7 +12,6 @@ import datetime as dt
 import hashlib
 import hmac
 import json
-import sqlite3
 import threading
 import uuid
 from dataclasses import asdict, is_dataclass

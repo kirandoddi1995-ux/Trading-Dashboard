@@ -5,7 +5,6 @@ import datetime as dt
 import hashlib
 import hmac
 import json
-import math
 import secrets
 from typing import Any, Mapping
 
