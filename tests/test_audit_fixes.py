@@ -40,6 +40,59 @@ def app_functions(*names, **context):
     return namespace
 
 
+def test_equity_worker_can_record_data_rejection_without_undefined_market_regime():
+    class PitStore:
+        @staticmethod
+        def scanner_observation_id(*_args):
+            return "observation-1"
+
+        @staticmethod
+        def record_scanner_observation(**_kwargs):
+            return None
+
+    context = app_functions(
+        "evaluate_stock",
+        instrument_dict={"TEST": "NSE_EQ|TEST"},
+        PIT_STORE=PitStore(),
+        _scan_run_id="scan-1",
+        _scanner_strategy_version="strategy:quick",
+        _scan_as_of_date="2026-09-07",
+        live_quote_data={"NSE_EQ|TEST": {"last_price": 100.0}},
+        analysis_timing_log=[],
+        get_cached_history=lambda *_args, **_kwargs: pd.DataFrame(),
+        fetch_upstox_history=lambda *_args, **_kwargs: pd.DataFrame(),
+        access_token="test-token",
+        regime={"regime": "SIDEWAYS"},
+        scan_mode="Quick Scan",
+        custom_days=5,
+        STRATEGY_VERSION="strategy",
+        TARGET_VERSION="target",
+        APP_BUILD="build",
+        RUNTIME_CODE_HASH="code-hash",
+        RUNTIME_QUANT_CONFIG_HASH="config-hash",
+        RESILIENCE_CONTROL_PLANE=SimpleNamespace(policy=SimpleNamespace(digest="policy-hash")),
+        _live_lineage_from_quote=lambda *_args, **_kwargs: (
+            datetime.datetime.now(datetime.timezone.utc),
+            datetime.datetime.now(datetime.timezone.utc),
+            {"price": {"source": "test"}},
+        ),
+        _register_runtime_lineage=lambda *_args, **_kwargs: None,
+        _known_universe_lineage=lambda *_args, **_kwargs: None,
+        LiveEvidenceContext=lambda **kwargs: SimpleNamespace(**kwargs),
+        LiveEvidenceBundle=lambda **kwargs: SimpleNamespace(**kwargs),
+        EvidenceTier=SimpleNamespace(OBSERVATION="OBSERVATION"),
+        feature_schema_digest=lambda *_args, **_kwargs: "schema-hash",
+        DECISION_EVIDENCE_SPINE=SimpleNamespace(capture=lambda **_kwargs: None),
+    )
+
+    result, rejection = context["evaluate_stock"]("TEST")
+    assert result is None
+    assert rejection == {
+        "category": "Data",
+        "reason": "Insufficient price history (need 210+ trading days)",
+    }
+
+
 def test_settings_survive_real_widget_cleanup():
     app = AppTest.from_string('''
 import streamlit as st

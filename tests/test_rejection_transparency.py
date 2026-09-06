@@ -55,3 +55,16 @@ def test_all_five_asset_displays_use_the_shared_message_contract():
     ):
         assert f"runtime.no_trade_message(\n" in source
         assert label in source
+
+
+def test_safe_exception_label_names_only_the_missing_identifier():
+    try:
+        raise NameError("name 'market_regime' is not defined", name="market_regime")
+    except NameError as exc:
+        assert runtime.safe_exception_label(exc) == "NameError (market_regime)"
+
+
+def test_market_regime_code_is_explicit_and_fail_closed():
+    assert runtime.market_regime_code({"regime": "SIDEWAYS"}) == "SIDEWAYS"
+    assert runtime.market_regime_code(None) is None
+    assert runtime.market_regime_code("SIDEWAYS") is None
