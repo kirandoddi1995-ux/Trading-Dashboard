@@ -232,6 +232,24 @@ def no_trade_message(
     return "\n\n".join(lines)
 
 
+def market_regime_code(regime):
+    """Return the recorded regime code without inventing unavailable state."""
+    if isinstance(regime, dict):
+        value = regime.get("regime")
+        return str(value).strip() if value not in (None, "") else None
+    return None
+
+
+def safe_exception_label(exc):
+    """Expose a safe programming-error identifier without leaking data."""
+    label = type(exc).__name__
+    if isinstance(exc, (NameError, UnboundLocalError)):
+        missing_name = getattr(exc, "name", None)
+        if missing_name and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(missing_name)):
+            return f"{label} ({missing_name})"
+    return label
+
+
 def score_option_direction(
     *, price, previous_close, ema20, vwap=None, rsi=None, macd_hist=None,
     pcr=None, oi_change_bias=None, trend_15m=None, trend_1h=None,

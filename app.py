@@ -98,7 +98,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("god_mode_quant")
-APP_BUILD = "v22.5.1-REJECTION-TRANSPARENCY"
+APP_BUILD = "v22.5.2-EQUITY-SCAN-REJECTION-FIX"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
 
 
@@ -8202,7 +8202,7 @@ elif selected_tab == "Equities Screener & Risk":
             def _archive_stage2(passed, *, category=None, reason=None, score=None,
                                 entry=None, stop=None, target=None, features=None):
                 evidence_features = dict(features or {})
-                evidence_features.setdefault("market_regime", market_regime)
+                evidence_features.setdefault("market_regime", runtime.market_regime_code(regime))
                 evidence_features.setdefault("scan_mode", scan_mode)
                 try:
                     if key:
@@ -8699,8 +8699,9 @@ elif selected_tab == "Equities Screener & Risk":
                     "score": float(score),
                 }, None
             except Exception as exc:
-                LOGGER.warning("Equity analysis failed for %s: %s", ticker, type(exc).__name__)
-                return _reject("Error", f"Analysis error: {type(exc).__name__}")
+                error_label = runtime.safe_exception_label(exc)
+                LOGGER.warning("Equity analysis failed for %s: %s", ticker, error_label)
+                return _reject("Error", f"Analysis error: {error_label}")
 
         funnel_stats["live_quote_data_count"] = len(live_quote_data)
         try:
