@@ -252,8 +252,12 @@ def test_order_book_quality_rejects_crossed_depth_before_storage():
         writer, {"NSE_EQ|AAA": valid, "NSE_EQ|BBB": crossed},
         ["NSE_EQ|AAA", "NSE_EQ|BBB"],
     )
-    assert result == {"stored": 1, "rejected": 1, "missing_depth": 0}
-    assert len(repo.features) == 1
+    assert result == {
+        "stored": 1, "rejected": 1, "missing_depth": 0,
+        "derived_stored": 2, "derived_rejected": 0,
+        "consumed_by_scoring": False,
+    }
+    assert len(repo.features) == 3
     assert any(args[2] == "DEPTH_SCHEMA_OR_RANGE_INVALID" for args, _ in repo.quality_events)
 
 

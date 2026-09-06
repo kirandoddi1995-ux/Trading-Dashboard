@@ -4,6 +4,7 @@ import json
 import pytest
 
 from artifact_security import ApprovalAuthority, ArtifactSigner
+from managed_secrets import InMemorySecretProvider
 from production_readiness import readiness_report, runtime_controls, runtime_readiness_findings
 from resilience_control_plane import SafetyState
 from verify_promotion_request import verify_request
@@ -76,3 +77,32 @@ def test_protected_promotion_request_requires_real_artifact_and_two_approval_sig
                                 "approvals": approvals}), encoding="utf-8")
     with pytest.raises(ValueError, match="signature"):
         verify_request(path, env)
+
+
+def test_protected_request_can_load_distinct_keys_from_managed_secret_references(tmp_path):
+    provider = InMemorySecretProvider({
+        "artifact-signing": b"m" * 32, "risk-approval": b"a" * 32,
+        "deploy-approval": b"b" * 32,
+    })
+    signer = ArtifactSigner(b"m" * 32, key_id="production")
+    artifact = signer.sign({"model_id": "managed-m1", "version": "1"})
+    authority = ApprovalAuthority({"risk": b"a" * 32, "deploy": b"b" * 32})
+    approvals = [
+        authority.issue(approver="risk", role="model-risk",
+                        artifact_hash=artifact["artifact_hash"], action="PROMOTE"),
+        authority.issue(approver="deploy", role="deployment",
+                        artifact_hash=artifact["artifact_hash"], action="PROMOTE"),
+    ]
+    path = tmp_path / "managed-request.json"
+    path.write_text(json.dumps({"action": "PROMOTE", "artifact": artifact,
+                                "approvals": approvals}), encoding="utf-8")
+    env = {
+        "GCP_SECRET_MANAGER_PROJECT": "quant-production",
+        "MODEL_ARTIFACT_SIGNING_SECRET_REF": "artifact-signing",
+        "MODEL_APPROVER_SECRET_REFS_JSON": json.dumps({
+            "risk": "risk-approval", "deploy": "deploy-approval",
+        }),
+        "REQUIRE_MANAGED_PROMOTION_KEYS": "true",
+        "MODEL_ARTIFACT_SIGNING_KEY_ID": "production",
+    }
+    assert verify_request(path, env, secret_provider=provider)["authorized"]

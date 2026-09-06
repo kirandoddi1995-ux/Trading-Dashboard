@@ -69,6 +69,13 @@ def test_iv_and_greeks_are_recomputed_from_executable_mid():
     assert bool(surface.iloc[0].production_valid)
 
 
+def test_iv_and_greeks_fail_closed_for_expired_nonfinite_or_zero_spot_inputs():
+    assert implied_volatility(5, 100, 100, 0, option_type="CE") is None
+    assert implied_volatility(float("nan"), 100, 100, 0.25, option_type="CE") is None
+    with pytest.raises(ValueError, match="positive"):
+        black_scholes_greeks(0, 100, 0.25, 0.2, option_type="CE")
+
+
 def test_option_price_bound_and_put_call_parity_violations_fail_closed():
     now = pd.Timestamp("2026-09-01 10:00", tz="Asia/Kolkata")
     expiry = pd.Timestamp("2026-12-31 15:30", tz="Asia/Kolkata")
