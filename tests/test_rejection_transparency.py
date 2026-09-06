@@ -1,5 +1,6 @@
+import ast
+import logging
 import pathlib
-
 import pytest
 
 import app_runtime as runtime
@@ -65,7 +66,7 @@ def test_all_five_asset_displays_use_the_shared_message_contract():
         '"options contract"', '"futures contract"', '"equity candidate"',
         '"MCX contract"', '"SMC setup"',
     ):
-        assert f"runtime.no_trade_message(\n" in source
+        assert "runtime.no_trade_message(\n" in source
         assert label in source
 
 
@@ -80,3 +81,49 @@ def test_market_regime_code_is_explicit_and_fail_closed():
     assert runtime.market_regime_code({"regime": "SIDEWAYS"}) == "SIDEWAYS"
     assert runtime.market_regime_code(None) is None
     assert runtime.market_regime_code("SIDEWAYS") is None
+
+
+def test_unexpected_governance_exception_is_observable_and_fail_closed():
+    source = (ROOT / "app.py").read_text(encoding="utf-8")
+    node = next(
+        item for item in ast.parse(source).body
+        if isinstance(item, ast.FunctionDef) and item.name == "_evaluate_governance_fail_closed"
+    )
+
+    class Observer:
+        def __init__(self):
+            self.events = []
+
+        def record(self, *args, **kwargs):
+            self.events.append((args, kwargs))
+
+    observer = Observer()
+
+    def broken_governance(**_kwargs):
+        raise NameError("name 'gate_state' is not defined", name="gate_state")
+
+    namespace = {
+        "runtime": runtime,
+        "LOGGER": logging.getLogger("governance-fallback-test"),
+        "OBSERVABILITY": observer,
+        "evaluate_live_governance_contract": broken_governance,
+    }
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "app.py", "exec"), namespace)
+    result = namespace["_evaluate_governance_fail_closed"]("Equity", instrument="TEST")
+
+    assert result["allow_trade"] is False
+    assert result["status"] == "SYSTEM_ERROR_NO_TRADE"
+    assert result["system_error"] == "NameError (gate_state)"
+    assert result["blocking_reasons"] == [
+        "Equity governance system error — treated as NO TRADE."
+    ]
+    assert observer.events[0][1]["ok"] is False
+
+
+def test_all_four_interactive_governance_paths_use_exception_boundary():
+    source = (ROOT / "app.py").read_text(encoding="utf-8")
+    for label in ('"Futures"', '"Equity"', '"MCX"', '"SMC"'):
+        assert "_evaluate_governance_fail_closed(\n" in source
+        assert label in source
+    assert source.count("_evaluate_governance_fail_closed(") == 5  # definition + four calls
+    assert "_embedded_live_governance_contract_v22_1" not in source

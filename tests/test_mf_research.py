@@ -1,4 +1,5 @@
 import ast
+from contextlib import nullcontext
 import datetime
 import hashlib
 import json
@@ -6,8 +7,7 @@ import logging
 from pathlib import Path
 import re
 import unittest
-from unittest.mock import patch
-
+from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
@@ -25,6 +25,56 @@ def app_functions():
                  "re": re, "LOGGER": logging.getLogger("mf-tests")}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(APP), "exec"), namespace)
     return namespace["compute_mf_returns"], namespace["rank_mf_results"]
+
+
+def mf_renderer(stub):
+    wanted = {"render_mf_research_results", "mf_scoring_weights"}
+    nodes = [n for n in ast.parse(APP.read_text(encoding="utf-8")).body
+             if isinstance(n, ast.FunctionDef) and n.name in wanted]
+    namespace = {
+        "pd": pd, "np": np, "mfr": mfr, "st": stub,
+        "runtime": SimpleNamespace(csv_bytes=lambda frame: frame.to_csv(index=False).encode()),
+    }
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(APP), "exec"), namespace)
+    return namespace["render_mf_research_results"]
+
+
+class RenderStub:
+    def __init__(self):
+        self.session_state = {}
+        self.frames = []
+        self.messages = []
+        self.column_config = SimpleNamespace(LinkColumn=lambda label: label)
+
+    def columns(self, count):
+        return [SimpleNamespace(metric=lambda *_args, **_kwargs: None) for _ in range(count)]
+
+    def expander(self, *_args, **_kwargs):
+        return nullcontext()
+
+    def dataframe(self, frame, **_kwargs):
+        self.frames.append(frame)
+
+    def success(self, message):
+        self.messages.append(message)
+
+    def info(self, message):
+        self.messages.append(message)
+
+    def warning(self, message):
+        self.messages.append(message)
+
+    def caption(self, message):
+        self.messages.append(message)
+
+    def markdown(self, message):
+        self.messages.append(message)
+
+    def write(self, message):
+        self.messages.append(message)
+
+    def download_button(self, *_args, **_kwargs):
+        return False
 
 
 def history(name="Example Direct Growth", end="2026-01-31", phase=0):
@@ -180,6 +230,32 @@ class PredictiveValidationTests(unittest.TestCase):
                                           "Large Cap", as_of="2016-01-01")
         self.assertFalse(report["fold_rows"])
         self.assertEqual(report["by_scheme"]["123456"]["folds"], 0)
+
+    def test_realistic_saved_mutual_fund_result_renders_without_governance_name(self):
+        ui = RenderStub()
+        saved = {
+            "ranked": [{
+                "rank": 1, "scheme_code": "123456", "scheme_name": "Example Direct Growth",
+                "score": 72.0, "why_ranked": "Strong category-relative risk-adjusted evidence",
+                "cagr_3y": 12.4, "cagr_5y": 11.1, "max_drawdown": -16.2,
+                "sortino": 1.2, "ter": 0.45, "latest_date": "2026-09-04",
+                "confidence_label": "Complete historical inputs",
+            }],
+            "category": "Large Cap",
+            "disclosures": {"records": {}, "errors": []},
+            "validation": {
+                "model_version": "mf-scenario-v1", "cost_pct": 0.5,
+                "by_scheme": {}, "fold_rows": [], "limitations": "Historical evidence only.",
+            },
+            "candidate_count": 1,
+            "elapsed": 0.4,
+        }
+
+        mf_renderer(ui)(saved)
+
+        self.assertEqual(ui.session_state["last_mf_top_picks"]["category"], "Large Cap")
+        self.assertGreaterEqual(len(ui.frames), 3)
+        self.assertTrue(any("Highest category score" in message for message in ui.messages))
 
 
 if __name__ == "__main__":

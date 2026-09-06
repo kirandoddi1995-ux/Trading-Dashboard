@@ -1,8 +1,6 @@
 import datetime as dt
 import json
 import sqlite3
-import threading
-
 import pytest
 
 from evidence_ledger import ImmutableEvidenceLedger

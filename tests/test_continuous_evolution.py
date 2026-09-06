@@ -210,7 +210,12 @@ def test_decision_bundle_is_stable_and_excludes_raw_features():
 
 
 def test_live_source_blocks_unavailable_ev_and_portfolio():
-    source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
-    assert 'expected_value["status"] != "PASS"' in source
-    assert 'portfolio["status"] != "PASS"' in source
-    assert '"available_at": decision_at' not in source
+    root = Path(__file__).resolve().parents[1]
+    governance_source = (root / "live_governance.py").read_text(encoding="utf-8")
+    controls_source = (root / "continuous_evolution.py").read_text(encoding="utf-8")
+    assert 'portfolio = {"status": "UNAVAILABLE"' in governance_source
+    assert '"Validated calibration and fill-model evidence are required"' in governance_source
+    assert '("execution", execution, "PASS"), ("expected_value", expected_value, "PASS")' in controls_source
+    assert '("portfolio", portfolio, "PASS"), ("allocation", allocation, "PASS")' in controls_source
+    assert "if status != expected:" in controls_source
+    assert '"available_at": decision_at' not in governance_source

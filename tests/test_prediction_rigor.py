@@ -52,8 +52,8 @@ def test_canonical_kelly_matches_standard_derivation_and_is_the_only_definition(
                 if any("kelly" in name.casefold() for name in names) and isinstance(value, ast.BinOp):
                     violations.append(f"{path.name}:{node.lineno}: inline Kelly arithmetic")
     assert violations == []
-    for consumer in ("app.py", "live_governance.py"):
-        assert "fractional_kelly_weight(" in (ROOT / consumer).read_text(encoding="utf-8")
+    assert "fractional_kelly_weight(" in (ROOT / "live_governance.py").read_text(encoding="utf-8")
+    assert "fractional_kelly_weight(" not in (ROOT / "app.py").read_text(encoding="utf-8")
 
 
 def test_event_backtest_never_fills_on_signal_event_and_uses_stop_first():
