@@ -69,7 +69,7 @@ def package():
     if not canaries['ok']:
         raise RuntimeError(f"Release canaries failed: {canaries['checks']}")
     manifest = {}
-    archive = ROOT / 'release-v22.5.2-equity-scan-rejection-fix.zip'
+    archive = ROOT / 'release-v22.5.3-decision-context-separation.zip'
     for name in FILES:
         path = (ROOT / name).resolve()
         if not path.is_relative_to(ROOT) or not path.is_file():

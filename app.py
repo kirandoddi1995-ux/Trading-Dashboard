@@ -98,7 +98,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("god_mode_quant")
-APP_BUILD = "v22.5.2-EQUITY-SCAN-REJECTION-FIX"
+APP_BUILD = "v22.5.3-DECISION-CONTEXT-SEPARATION"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
 
 

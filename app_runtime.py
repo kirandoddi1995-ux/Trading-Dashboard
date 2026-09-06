@@ -220,15 +220,18 @@ def no_trade_message(
         f"**NO TRADE:** no {str(candidate_label).strip()} passed all execution and "
         "production-evidence gates."
     )
-    reasons = [str(reason).strip() for reason in blocking_reasons if str(reason).strip()]
-    if context:
-        reasons.append(str(context).strip())
+    reason_values = [blocking_reasons] if isinstance(blocking_reasons, str) else blocking_reasons
+    reasons = [str(reason).strip() for reason in (reason_values or ()) if str(reason).strip()]
     reasons = list(dict.fromkeys(reasons))
     lines.append(
         "**Blocking reasons:** " + (
             "; ".join(reasons) if reasons else "No structured rejection reason was recorded."
         )
     )
+    context_text = str(context).strip() if context else ""
+    if context_text:
+        suffix = "" if context_text.endswith((".", "!", "?")) else "."
+        lines.append(f"**Decision context:** {context_text}{suffix}")
     return "\n\n".join(lines)
 
 
