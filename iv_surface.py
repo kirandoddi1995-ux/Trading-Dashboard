@@ -206,8 +206,16 @@ def normalize_iv_surface(chain, spot, expiry, now=None, *, risk_free_rate=0.06,
     frame = pd.DataFrame(rows)
     if frame.empty:
         return frame
+    def _robust_zscore(values):
+        finite_values = values.dropna()
+        if finite_values.empty:
+            return pd.Series(np.nan, index=values.index, dtype=float)
+        median = float(finite_values.median())
+        mad = float((finite_values - median).abs().median())
+        return (values - median) / max(mad * 1.4826, 1e-9)
+
     frame["iv_zscore"] = frame.groupby(["dte", "option_type"])["iv"].transform(
-        lambda x: (x - x.median()) / max(float((x - x.median()).abs().median()) * 1.4826, 1e-9)
+        _robust_zscore
     )
     frame["surface_outlier"] = frame["iv_zscore"].abs() > 4
     frame["no_arbitrage_valid"] = True

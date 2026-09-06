@@ -57,6 +57,9 @@ from equity_runtime_evidence import build_equity_live_evidence
 from runtime_evidence_store import RuntimeEvidenceStore
 from decision_evidence import DecisionEvidenceSpine, ExperimentTracker
 from scanner_funnel import stage1_prefilter
+from secondary_quote_provider import (
+    KiteSecondaryQuoteProvider, SecondaryQuoteUnavailable, reconciliation_payload,
+)
 import pandas as pd
 import numpy as np
 import requests
@@ -91,7 +94,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("god_mode_quant")
-APP_BUILD = "v22.1-CONTINUOUS-EVOLUTION"
+APP_BUILD = "v22.2-EVIDENCE-GATED-MODEL-PIPELINE"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
 
 
@@ -389,6 +392,7 @@ def evaluate_live_governance_contract(
     quote_bid=None, quote_ask=None, quote_last=None, quote_unavailable_reason=None,
     cost_breakdown=None, universe_lineage=None,
     decision_id=None,
+    secondary_quote=None, tick_size=None,
 ):
     """Thin Streamlit adapter around the UI-independent governance service.
 
@@ -444,11 +448,38 @@ def evaluate_live_governance_contract(
             "SECRETS_MANAGER_URI", "NTP_MONITOR_ENDPOINT", "RECOVERY_DRILL_AT",
             "RECOVERY_DRILL_RPO_MINUTES", "RECOVERY_DRILL_RTO_MINUTES",
             "RECOVERY_DRILL_LEDGER_VERIFIED", "RECOVERY_DRILL_RUNTIME_ROLE_VERIFIED",
-            "PRODUCTION_ENVIRONMENT_PROTECTED",
+            "PRODUCTION_ENVIRONMENT_PROTECTED", "SECONDARY_QUOTE_PROVIDER",
+            "KITE_API_KEY", "KITE_ACCESS_TOKEN", "SECONDARY_QUOTE_SYMBOL_MAP_JSON",
         ):
             secret_value = secret_reader(secret_name)
             if secret_value:
                 readiness_environment[secret_name] = secret_value
+    if secondary_quote is None and str(
+        readiness_environment.get("SECONDARY_QUOTE_PROVIDER") or ""
+    ).upper() == "KITE":
+        try:
+            provider_environment = dict(readiness_environment)
+            if callable(secret_reader):
+                for secret_name in (
+                    "KITE_API_KEY", "KITE_ACCESS_TOKEN", "SECONDARY_QUOTE_SYMBOL_MAP_JSON",
+                ):
+                    secret_value = secret_reader(secret_name)
+                    if secret_value:
+                        provider_environment[secret_name] = secret_value
+            provider = KiteSecondaryQuoteProvider.from_environment(
+                requests.Session(), provider_environment,
+            )
+            fetched = provider.fetch([str(instrument)])
+            secondary_quote = reconciliation_payload(fetched[str(instrument)])
+            OBSERVABILITY.record(
+                "quote_reconciliation", "kite", 0.0, ok=True, status="AVAILABLE",
+            )
+        except (SecondaryQuoteUnavailable, requests.RequestException) as exc:
+            OBSERVABILITY.record(
+                "quote_reconciliation", "kite", 0.0, ok=False,
+                status=type(exc).__name__,
+            )
+            LOGGER.warning("Independent quote unavailable: %s", type(exc).__name__)
     return evaluate_live_governance(
         instrument=str(instrument), entry=entry, stop=stop, target=target,
         direction=direction, quantity=quantity, cost_bps=cost_bps,
@@ -463,6 +494,8 @@ def evaluate_live_governance_contract(
         cost_breakdown=cost_breakdown,
         universe_lineage=universe_lineage,
         decision_id=decision_id,
+        secondary_quote=secondary_quote,
+        tick_size=tick_size,
         evidence=evidence_bundle,
         services=GovernanceServices(
             control_plane=RESILIENCE_CONTROL_PLANE,
@@ -1068,6 +1101,7 @@ except ImportError:
 # --- PAGE CONFIG & RESPONSIVE CSS ---
 st.set_page_config(layout="wide", page_title="Quant Terminal")
 AUTHENTICATED_USER = require_streamlit_auth(st)
+observability.configure_runtime_observability()
 OBSERVABILITY = observability.get_registry()
 _ensure_cache_schema()
 RESILIENCE_CONTROL_PLANE = get_resilience_control_plane()

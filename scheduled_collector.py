@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 import mf_research as mfr
+from observability import configure_runtime_observability, get_registry
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -906,8 +907,15 @@ def run(mode: str, *, nav_file=None) -> dict:
             ) else "SUCCESS"
             result["status"] = run_status
             repo.finish_run(run_id, status=run_status, record_count=record_count, metadata=result)
+            get_registry().record(
+                "collector", mode, 0.0, ok=run_status == "SUCCESS",
+                status=run_status, count=max(record_count, 1),
+            )
             return result
         except Exception as exc:
+            get_registry().record(
+                "collector", mode, 0.0, ok=False, status=type(exc).__name__,
+            )
             repo.finish_run(
                 run_id, status="FAILED", record_count=record_count,
                 error_kind=type(exc).__name__, error_message=str(exc), metadata=result,
@@ -916,6 +924,7 @@ def run(mode: str, *, nav_file=None) -> dict:
 
 
 def main(argv=None) -> int:
+    configure_runtime_observability()
     parser = argparse.ArgumentParser(description="Collect durable market research evidence")
     parser.add_argument(
         "--mode", choices=("auto", "scan", "global", "open", "close", "weekly", "all"),

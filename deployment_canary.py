@@ -15,7 +15,9 @@ def run_canaries(root):
                    "runtime_evidence_store.py","equity_runtime_evidence.py","strategy_validation.py",
                    "evidence_tiers.py","production_readiness.py","verify_promotion_request.py",
                    "decision_evidence.py","feature_store.py","scanner_funnel.py",
-                   "prospective_collection.py"):
+                   "prospective_collection.py","managed_secrets.py",
+                   "secondary_quote_provider.py","recovery_drill.py",
+                   "research_features.py","model_training_pipeline.py"):
         ast.parse((root/module).read_text(encoding="utf-8")); checks[f"parses:{module}"]=True
     ast.parse((root/"continuous_evolution.py").read_text(encoding="utf-8"))
     checks["parses:continuous_evolution.py"] = True
@@ -60,6 +62,12 @@ def run_canaries(root):
                                                and "verify_promotion_request.py" in promotion_workflow
                                                and "production_readiness.py --strict" in promotion_workflow)
     checks["production_readiness_gate_present"] = "production_readiness.py --repository-only --strict" in quality
+    training_workflow = (root/".github"/"workflows"/"model-training-smoke.yml").read_text(encoding="utf-8")
+    checks["real_evidence_training_smoke_present"] = (
+        "model_training_pipeline.py --smoke" in training_workflow
+        and "--expect-no-artifact" in training_workflow
+        and "secrets.DATABASE_URL" in training_workflow
+    )
     checks["live_resilience_gate_wired"] = ("RESILIENCE_CONTROL_PLANE.evaluate_recommendation" in app_source
                                              and '"resilience": resilience_public' in app_source
                                              and 'not resilience.allow_new_trades' in app_source

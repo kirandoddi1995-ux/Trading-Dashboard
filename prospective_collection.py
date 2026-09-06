@@ -17,6 +17,8 @@ import urllib.parse
 from collections.abc import Iterable, Mapping
 
 from decision_evidence import FeatureDefinition, FeatureQualityMonitor, FeatureRegistry
+from observability import get_registry
+from research_features import order_book_features, publish_research_features
 
 
 UTC = dt.timezone.utc
@@ -174,7 +176,7 @@ class ProspectiveFeatureWriter:
         self.repository = repository
         self.registry = FeatureRegistry(repository.append_evidence_event, repository)
         self.quality = FeatureQualityMonitor(
-            self.registry, repository.append_evidence_event,
+            self.registry, repository.append_evidence_event, metrics=get_registry(),
         )
 
     def record(self, *, instrument_key: str, definition: FeatureDefinition, value,
@@ -266,7 +268,7 @@ CORPORATE_ACTIONS = FeatureDefinition(
 
 def store_order_books(writer: ProspectiveFeatureWriter, quotes: Mapping[str, Mapping],
                       keys: Iterable[str]) -> dict:
-    stored = rejected = missing = 0
+    stored = rejected = missing = derived_stored = derived_rejected = 0
     for key in keys:
         quote = dict(quotes.get(key) or {})
         depth = quote.get("market_depth") or quote.get("depth")
@@ -313,13 +315,36 @@ def store_order_books(writer: ProspectiveFeatureWriter, quotes: Mapping[str, Map
         )
         stored += int(result["stored"])
         rejected += int(not result["stored"])
+        if result["stored"]:
+            try:
+                derived = order_book_features(list(buys), list(sells))
+                published = publish_research_features(
+                    writer, instrument_key=key,
+                    values={name: derived[name] for name in (
+                        "order_book_imbalance_d5", "microprice_d5",
+                    )},
+                    effective_at=effective, available_at=received,
+                )
+                derived_stored += int(published["stored"])
+                derived_rejected += int(published["rejected"])
+            except Exception as exc:
+                derived_rejected += 2
+                writer.repository.record_quality_event(
+                    "prospective_order_book", "ERROR", "DEPTH_DERIVATION_FAILED",
+                    "Raw D5 snapshot stored but research-only derivation failed",
+                    {"instrument_key": key, "error_kind": type(exc).__name__},
+                )
     if missing:
         writer.repository.record_quality_event(
             "prospective_order_book", "WARNING", "DEPTH_MISSING",
             f"{missing} shortlisted quote snapshots had no D5 depth",
             {"missing": missing},
         )
-    return {"stored": stored, "rejected": rejected, "missing_depth": missing}
+    return {
+        "stored": stored, "rejected": rejected, "missing_depth": missing,
+        "derived_stored": derived_stored, "derived_rejected": derived_rejected,
+        "consumed_by_scoring": False,
+    }
 
 
 def store_institutional_flows(writer: ProspectiveFeatureWriter, rows: Iterable[Mapping]) -> dict:

@@ -23,6 +23,8 @@ RUNTIME = ['app.py', 'app_runtime.py', 'scan_jobs.py', 'reliable_charts.py',
            'runtime_evidence_store.py', 'equity_runtime_evidence.py',
            'strategy_validation.py', 'evidence_tiers.py',
            'production_readiness.py', 'verify_promotion_request.py',
+           'managed_secrets.py', 'secondary_quote_provider.py', 'recovery_drill.py',
+           'research_features.py', 'model_training_pipeline.py',
            'resilience_policy.json', 'resilience_policy.sha256',
            'requirements.txt', 'constraints.txt']
 FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_GUIDE.md',
@@ -45,8 +47,13 @@ FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_
                    'tests/test_equity_runtime_evidence.py', 'tests/test_strategy_validation.py',
                    'tests/test_evidence_tiers.py', 'tests/test_production_readiness.py',
                    'tests/test_decision_evidence.py', 'tests/test_prospective_collection.py',
+                   'tests/test_phase3_reliability.py', 'tests/test_research_features.py',
+                   'tests/test_model_training_pipeline.py',
                    '.github/workflows/quality.yml', '.github/workflows/scheduled-collector.yml',
                    '.github/workflows/resilience.yml', '.github/workflows/production-promotion.yml',
+                   '.github/workflows/production-rollback.yml',
+                   '.github/workflows/recovery-drill.yml',
+                   '.github/workflows/model-training-smoke.yml',
                    'PRODUCTION_EXTERNAL_ACTIONS.md']
 
 
@@ -55,16 +62,18 @@ def package():
     if not canaries['ok']:
         raise RuntimeError(f"Release canaries failed: {canaries['checks']}")
     manifest = {}
-    archive = ROOT / 'release-v22.1-continuous-evolution.zip'
+    archive = ROOT / 'release-v22.2-evidence-gated-model-pipeline.zip'
     for name in FILES:
         path = (ROOT / name).resolve()
         if not path.is_relative_to(ROOT) or not path.is_file():
             raise ValueError(f'Missing or unsafe release member: {name}')
         manifest[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest_text = json.dumps(manifest, indent=2) + '\n'
+    (ROOT / 'SHA256_MANIFEST.json').write_bytes(manifest_text.encode('utf-8'))
     with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED) as bundle:
         for name in FILES:
             bundle.write(ROOT / name, name)
-        bundle.writestr('SHA256_MANIFEST.json', json.dumps(manifest, indent=2))
+        bundle.writestr('SHA256_MANIFEST.json', manifest_text)
     with zipfile.ZipFile(archive) as bundle:
         assert bundle.testzip() is None
         assert set(bundle.namelist()) == set(FILES) | {'SHA256_MANIFEST.json'}

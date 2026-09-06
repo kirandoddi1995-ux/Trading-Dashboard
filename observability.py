@@ -12,6 +12,10 @@ from collections import defaultdict, deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import math
+import os
+import json
+import hmac
+import hashlib
 import threading
 import time
 from urllib.parse import urlsplit
@@ -48,6 +52,14 @@ class MetricsRegistry:
         self._lock = threading.RLock()
         self._finished_runs = deque(maxlen=2_000)
         self._finished_run_ids: set[str] = set()
+        self._sinks = []
+
+    def add_sink(self, sink) -> None:
+        if not callable(getattr(sink, "emit", None)):
+            raise ValueError("Metric sink must provide emit(event)")
+        with self._lock:
+            if sink not in self._sinks:
+                self._sinks.append(sink)
 
     def record(
         self,
@@ -75,6 +87,20 @@ class MetricsRegistry:
         )
         with self._lock:
             self._events.append(event)
+            sinks = tuple(self._sinks)
+        for sink in sinks:
+            try:
+                sink.emit(event)
+            except Exception:
+                # Telemetry must not crash the operation it observes. Export
+                # failure is retained as a local metric without re-entering sinks.
+                with self._lock:
+                    self._events.append(MetricEvent(
+                        timestamp=time.time(), category="telemetry",
+                        name="export_failure", duration_ms=0.0, ok=False,
+                        status=type(sink).__name__, count=1,
+                        correlation_id=event.correlation_id,
+                    ))
 
     @contextmanager
     def span(self, category: str, name: str, *, cache_hit: bool | None = None):
@@ -145,6 +171,105 @@ class MetricsRegistry:
 
 
 _REGISTRY = MetricsRegistry()
+_AUTO_CONFIGURED = False
+_AUTO_CONFIG_LOCK = threading.Lock()
+
+
+class AlertRouter:
+    """Credential-safe webhook routing for actionable failures only."""
+
+    def __init__(self, url: str, *, session, signing_key: str = "", timeout=5):
+        parsed = urlsplit(str(url))
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ValueError("Alert webhook must be an HTTPS URL")
+        self.url, self.session, self.timeout = str(url), session, float(timeout)
+        self._key = str(signing_key or "").encode("utf-8")
+
+    def emit(self, event: MetricEvent) -> None:
+        if event.ok:
+            return
+        payload = {
+            "schema": "quant-runtime-alert-v1", "timestamp": event.timestamp,
+            "category": event.category, "operation": event.name,
+            "status": str(event.status or "ERROR"), "count": event.count,
+            "correlation_id": event.correlation_id,
+        }
+        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self._key:
+            headers["X-Quant-Signature"] = hmac.new(self._key, body, hashlib.sha256).hexdigest()
+        response = self.session.post(self.url, data=body, headers=headers, timeout=self.timeout)
+        if int(getattr(response, "status_code", 0)) < 200 or int(response.status_code) >= 300:
+            raise RuntimeError(f"Alert route returned HTTP {getattr(response, 'status_code', 0)}")
+
+
+class OpenTelemetryMetricSink:
+    """OTLP/HTTP metric export using the official OpenTelemetry SDK."""
+
+    def __init__(self, endpoint: str, *, service_name="quant-terminal"):
+        if not str(endpoint).strip():
+            raise ValueError("OTLP endpoint is required")
+        try:
+            from opentelemetry import metrics
+            from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+            from opentelemetry.sdk.metrics import MeterProvider
+            from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+            from opentelemetry.sdk.resources import Resource
+        except ImportError as exc:
+            raise RuntimeError("OpenTelemetry OTLP dependencies are not installed") from exc
+        exporter = OTLPMetricExporter(endpoint=str(endpoint).rstrip("/") + "/v1/metrics")
+        reader = PeriodicExportingMetricReader(exporter, export_interval_millis=30_000)
+        provider = MeterProvider(
+            metric_readers=[reader], resource=Resource.create({"service.name": str(service_name)})
+        )
+        # Keep this provider local to the sink. This avoids mutating a host
+        # process that may already have installed a global provider.
+        self._provider = provider
+        meter = provider.get_meter("quant-terminal-runtime")
+        self._calls = meter.create_counter("quant.runtime.calls")
+        self._errors = meter.create_counter("quant.runtime.errors")
+        self._duration = meter.create_histogram("quant.runtime.duration", unit="ms")
+
+    def emit(self, event: MetricEvent) -> None:
+        attrs = {
+            "category": event.category, "operation": event.name,
+            "status": str(event.status or ""),
+        }
+        self._calls.add(event.count, attrs)
+        self._duration.record(event.duration_ms, attrs)
+        if not event.ok:
+            self._errors.add(event.count, attrs)
+
+    def shutdown(self) -> None:
+        self._provider.shutdown()
+
+
+def configure_runtime_observability(environ=None, *, session=None) -> dict:
+    """Attach OTLP and alert sinks once; secrets/headers are never exported."""
+    global _AUTO_CONFIGURED
+    environ = environ or os.environ
+    with _AUTO_CONFIG_LOCK:
+        if _AUTO_CONFIGURED:
+            return {"configured": True, "already_configured": True}
+        configured = []
+        endpoint = str(environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or "").strip()
+        if endpoint:
+            _REGISTRY.add_sink(OpenTelemetryMetricSink(
+                endpoint, service_name=environ.get("OTEL_SERVICE_NAME", "quant-terminal"),
+            ))
+            configured.append("otlp")
+        alert_url = str(environ.get("ALERT_WEBHOOK_URL") or "").strip()
+        if alert_url:
+            if session is None:
+                import requests
+                session = requests.Session()
+            _REGISTRY.add_sink(AlertRouter(
+                alert_url, session=session,
+                signing_key=environ.get("ALERT_WEBHOOK_SIGNING_KEY", ""),
+            ))
+            configured.append("alerts")
+        _AUTO_CONFIGURED = True
+        return {"configured": bool(configured), "sinks": configured}
 
 
 def get_registry() -> MetricsRegistry:

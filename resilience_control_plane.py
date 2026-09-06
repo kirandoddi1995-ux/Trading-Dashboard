@@ -679,7 +679,19 @@ class ResilienceControlPlane:
             item.state >= SafetyState.NO_TRADE for item in findings
         ), at=now)
         findings.extend(self.slo.evaluate(now=now))
-        return self.state_machine.evaluate(findings, authorized_recovery=authorized_recovery)
+        decision = self.state_machine.evaluate(findings, authorized_recovery=authorized_recovery)
+        try:
+            from observability import get_registry
+            get_registry().record(
+                "governance", "recommendation_gate",
+                time.perf_counter() - started,
+                ok=decision.state in {SafetyState.NORMAL, SafetyState.DEGRADED},
+                status=decision.state.name, correlation_id=_CORRELATION_ID.get(),
+                count=max(len(findings), 1),
+            )
+        except Exception:
+            pass
+        return decision
 
     def evaluate_operations(self, *, runtime_expected=None, runtime_actual=None,
                             signature_valid=True, secret_records=None, outbox_stats=None,

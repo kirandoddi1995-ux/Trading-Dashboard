@@ -53,6 +53,29 @@ def _approver_keys_ok(value):
         return False
 
 
+def _managed_promotion_refs_ok(environ):
+    try:
+        refs = json.loads(str(environ.get("MODEL_APPROVER_SECRET_REFS_JSON") or "{}"))
+        return (
+            bool(str(environ.get("GCP_SECRET_MANAGER_PROJECT") or "").strip())
+            and bool(str(environ.get("MODEL_ARTIFACT_SIGNING_SECRET_REF") or "").strip())
+            and isinstance(refs, dict) and len(refs) >= 2
+            and len(set(str(value).strip() for value in refs.values())) == len(refs)
+            and all(str(key).strip() and str(value).strip() for key, value in refs.items())
+        )
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _secondary_quote_configured(environ):
+    provider = str(environ.get("SECONDARY_QUOTE_PROVIDER") or "").strip().upper()
+    if provider == "KITE":
+        return all(str(environ.get(name) or "").strip() for name in (
+            "KITE_API_KEY", "KITE_ACCESS_TOKEN", "SECONDARY_QUOTE_SYMBOL_MAP_JSON",
+        ))
+    return bool(str(environ.get("SECONDARY_QUOTE_PROVIDER_URL") or "").strip())
+
+
 def _recovery_drill_ok(environ: Mapping[str, str], now: dt.datetime):
     try:
         performed = dt.datetime.fromisoformat(str(environ.get("RECOVERY_DRILL_AT", "")).replace("Z", "+00:00"))
@@ -73,18 +96,24 @@ def _recovery_drill_ok(environ: Mapping[str, str], now: dt.datetime):
 def runtime_controls(environ=None, *, now=None) -> list[ReadinessControl]:
     environ = environ or os.environ
     now = now or dt.datetime.now(UTC)
+    managed_keys = _managed_promotion_refs_ok(environ)
+    require_managed = str(environ.get("REQUIRE_MANAGED_PROMOTION_KEYS") or "").casefold() == "true"
     checks = [
         ("restricted_database_role", _runtime_role_url_ok(environ.get("DATABASE_URL")),
          "Set DATABASE_URL to the non-owner quant_app_runtime connection", "NO_TRADE"),
-        ("model_artifact_signing", _secret_length_ok(environ.get("MODEL_ARTIFACT_SIGNING_KEY")),
+        ("model_artifact_signing", managed_keys or (
+             not require_managed and _secret_length_ok(environ.get("MODEL_ARTIFACT_SIGNING_KEY"))
+         ),
          "Provision a >=32-byte model-artifact key in the managed secret store", "NO_TRADE"),
         ("runtime_evidence_signing", _secret_length_ok(environ.get("RUNTIME_EVIDENCE_SIGNING_KEY")),
          "Provision a separate >=32-byte runtime-evidence key", "NO_TRADE"),
-        ("independent_model_approvers", _approver_keys_ok(environ.get("MODEL_APPROVER_KEYS_JSON")),
+        ("independent_model_approvers", managed_keys or (
+             not require_managed and _approver_keys_ok(environ.get("MODEL_APPROVER_KEYS_JSON"))
+         ),
          "Configure two or more independent approver identities and keys", "NO_TRADE"),
         ("telemetry_export", bool(str(environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")).strip()),
          "Connect the bounded telemetry exporter and alert routing", "DEGRADED"),
-        ("independent_quote_source", bool(str(environ.get("SECONDARY_QUOTE_PROVIDER_URL", "")).strip()),
+        ("independent_quote_source", _secondary_quote_configured(environ),
          "Configure a licensed independent NSE quote source", "NO_TRADE"),
         ("automated_rollback", bool(str(environ.get("DEPLOYMENT_ROLLBACK_TARGET", "")).strip()),
          "Connect rollback decisions to an immutable previous deployment", "DEGRADED"),

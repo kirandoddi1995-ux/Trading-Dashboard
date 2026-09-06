@@ -12,6 +12,7 @@ import datetime as dt
 import hashlib
 import hmac
 import json
+import math
 import os
 import threading
 import urllib.parse
@@ -1246,59 +1247,76 @@ class ProductionRepository:
         effective_at = _utc_datetime(effective_at or recorded_at)
         payload_text = canonical_json(payload)
         algorithm = "HMAC-SHA256" if self._evidence_signing_key else "SHA256 hash chain"
-        with self.connect() as conn:
-            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (aggregate_id,))
-            existing = conn.execute(
-                f"SELECT event_id,aggregate_id,sequence_no,event_type,recorded_at,effective_at,source,actor_id,idempotency_key,payload,previous_hash,event_hash,hash_algorithm,schema_version,key_id FROM {SCHEMA}.evidence_ledger_events WHERE idempotency_key=%s",
-                (idempotency_key,),
-            ).fetchone()
-            if existing:
-                existing_payload = existing[9]
-                if not isinstance(existing_payload, Mapping):
-                    existing_payload = json.loads(str(existing_payload))
-                same_request = (
-                    str(existing[1]) == aggregate_id
-                    and str(existing[3]) == event_type
-                    and str(existing[6]) == str(source)
-                    and str(existing[7]) == str(actor_id)
-                    and canonical_json(existing_payload) == payload_text
-                )
-                if not same_request:
-                    raise ValueError("Idempotency key is already bound to different durable evidence")
-                conn.commit()
-                return {"event_id": str(existing[0]), "aggregate_id": existing[1],
-                        "sequence_no": int(existing[2]), "event_hash": existing[11], "duplicate": True}
-            previous = conn.execute(
-                f"SELECT sequence_no,event_hash FROM {SCHEMA}.evidence_ledger_events WHERE aggregate_id=%s ORDER BY sequence_no DESC LIMIT 1",
-                (aggregate_id,),
-            ).fetchone()
-            sequence_no = int(previous[0]) + 1 if previous else 1
-            previous_hash = str(previous[1]) if previous else GENESIS_HASH
-            material = canonical_json({
-                "event_id": event_id, "aggregate_id": aggregate_id, "sequence_no": sequence_no,
-                "event_type": event_type, "recorded_at": recorded_at.isoformat(),
-                "effective_at": effective_at.isoformat(), "source": source, "actor_id": actor_id,
-                "idempotency_key": idempotency_key, "payload_json": payload_text,
-                "previous_hash": previous_hash, "hash_algorithm": algorithm,
-                "schema_version": LEDGER_SCHEMA_VERSION, "key_id": self._evidence_key_id,
-            })
-            if self._evidence_signing_key:
-                event_hash = hmac.new(self._evidence_signing_key, material.encode(), hashlib.sha256).hexdigest()
-            else:
-                event_hash = hashlib.sha256(material.encode()).hexdigest()
-            conn.execute(f"""
-                INSERT INTO {SCHEMA}.evidence_ledger_events(
-                    event_id,aggregate_id,sequence_no,event_type,recorded_at,effective_at,source,
-                    actor_id,idempotency_key,payload,previous_hash,event_hash,hash_algorithm,schema_version,key_id
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """, (
-                event_id, aggregate_id, sequence_no, event_type, recorded_at, effective_at,
-                str(source), str(actor_id), idempotency_key, _json(json.loads(payload_text)),
-                previous_hash, event_hash, algorithm, LEDGER_SCHEMA_VERSION, self._evidence_key_id,
-            ))
-            conn.commit()
-        return {"event_id": event_id, "aggregate_id": aggregate_id, "sequence_no": sequence_no,
-                "event_hash": event_hash, "duplicate": False}
+        try:
+            with self.connect() as conn:
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (aggregate_id,))
+                existing = conn.execute(
+                    f"SELECT event_id,aggregate_id,sequence_no,event_type,recorded_at,effective_at,source,actor_id,idempotency_key,payload,previous_hash,event_hash,hash_algorithm,schema_version,key_id FROM {SCHEMA}.evidence_ledger_events WHERE idempotency_key=%s",
+                    (idempotency_key,),
+                ).fetchone()
+                if existing:
+                    existing_payload = existing[9]
+                    if not isinstance(existing_payload, Mapping):
+                        existing_payload = json.loads(str(existing_payload))
+                    same_request = (
+                        str(existing[1]) == aggregate_id
+                        and str(existing[3]) == event_type
+                        and str(existing[6]) == str(source)
+                        and str(existing[7]) == str(actor_id)
+                        and canonical_json(existing_payload) == payload_text
+                    )
+                    if not same_request:
+                        raise ValueError("Idempotency key is already bound to different durable evidence")
+                    conn.commit()
+                    result = {"event_id": str(existing[0]), "aggregate_id": existing[1],
+                              "sequence_no": int(existing[2]), "event_hash": existing[11],
+                              "duplicate": True}
+                else:
+                    previous = conn.execute(
+                        f"SELECT sequence_no,event_hash FROM {SCHEMA}.evidence_ledger_events WHERE aggregate_id=%s ORDER BY sequence_no DESC LIMIT 1",
+                        (aggregate_id,),
+                    ).fetchone()
+                    sequence_no = int(previous[0]) + 1 if previous else 1
+                    previous_hash = str(previous[1]) if previous else GENESIS_HASH
+                    material = canonical_json({
+                        "event_id": event_id, "aggregate_id": aggregate_id,
+                        "sequence_no": sequence_no, "event_type": event_type,
+                        "recorded_at": recorded_at.isoformat(),
+                        "effective_at": effective_at.isoformat(), "source": source,
+                        "actor_id": actor_id, "idempotency_key": idempotency_key,
+                        "payload_json": payload_text, "previous_hash": previous_hash,
+                        "hash_algorithm": algorithm, "schema_version": LEDGER_SCHEMA_VERSION,
+                        "key_id": self._evidence_key_id,
+                    })
+                    if self._evidence_signing_key:
+                        event_hash = hmac.new(
+                            self._evidence_signing_key, material.encode(), hashlib.sha256,
+                        ).hexdigest()
+                    else:
+                        event_hash = hashlib.sha256(material.encode()).hexdigest()
+                    conn.execute(f"""
+                        INSERT INTO {SCHEMA}.evidence_ledger_events(
+                            event_id,aggregate_id,sequence_no,event_type,recorded_at,effective_at,source,
+                            actor_id,idempotency_key,payload,previous_hash,event_hash,hash_algorithm,schema_version,key_id
+                        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """, (
+                        event_id, aggregate_id, sequence_no, event_type, recorded_at, effective_at,
+                        str(source), str(actor_id), idempotency_key, _json(json.loads(payload_text)),
+                        previous_hash, event_hash, algorithm, LEDGER_SCHEMA_VERSION,
+                        self._evidence_key_id,
+                    ))
+                    conn.commit()
+                    result = {"event_id": event_id, "aggregate_id": aggregate_id,
+                              "sequence_no": sequence_no, "event_hash": event_hash,
+                              "duplicate": False}
+            return result
+        except Exception as exc:
+            from observability import get_registry
+            get_registry().record(
+                "evidence_write", event_type, 0.0, ok=False,
+                status=type(exc).__name__, correlation_id=aggregate_id[:64],
+            )
+            raise
 
     def events(self, aggregate_id: str) -> list[dict]:
         """Read one durable aggregate in sequence order for outcome reconciliation."""
@@ -1324,6 +1342,128 @@ class ProductionRepository:
             item["duplicate"] = False
             result.append(item)
         return result
+
+    def verify_evidence_ledger_continuity(self) -> dict:
+        """Read-only global sequence/previous-hash continuity audit."""
+        self.ensure_schema()
+        with self.connect() as conn:
+            row = conn.execute(f"""
+                WITH ordered AS (
+                  SELECT aggregate_id,sequence_no,previous_hash,event_hash,
+                         lag(event_hash) OVER (
+                           PARTITION BY aggregate_id ORDER BY sequence_no
+                         ) AS prior_hash
+                  FROM {SCHEMA}.evidence_ledger_events
+                ), duplicates AS (
+                  SELECT COUNT(*) AS count FROM (
+                    SELECT aggregate_id,sequence_no FROM {SCHEMA}.evidence_ledger_events
+                    GROUP BY aggregate_id,sequence_no HAVING COUNT(*)>1
+                  ) AS repeated
+                )
+                SELECT
+                  (SELECT COUNT(*) FROM ordered
+                   WHERE (sequence_no=1 AND previous_hash<>%s)
+                      OR (sequence_no>1 AND previous_hash IS DISTINCT FROM prior_hash)),
+                  (SELECT count FROM duplicates),
+                  (SELECT COUNT(*) FROM ordered)
+            """, (GENESIS_HASH,)).fetchone()
+        broken, duplicates, events = (int(value or 0) for value in row)
+        return {
+            "verified": broken == 0 and duplicates == 0,
+            "broken_links": broken, "duplicate_sequences": duplicates,
+            "events": events,
+        }
+
+    def matured_decision_dataset(self, *, strategy_id: str, target_version: str,
+                                 horizon_sessions: int):
+        """Load immutable DECISION_EVALUATED/OUTCOME_MATURED pairs for training.
+
+        No current feature computation or universe reconstruction occurs here;
+        only values frozen inside the original decision event are returned.
+        """
+        import pandas as pd
+
+        self.ensure_schema()
+        with self.connect() as conn:
+            pairs = conn.execute(f"""
+                SELECT d.payload,o.payload,d.event_hash,o.event_hash
+                FROM {SCHEMA}.evidence_ledger_events d
+                JOIN {SCHEMA}.evidence_ledger_events o
+                  ON o.aggregate_id=d.aggregate_id
+                 AND o.event_type='OUTCOME_MATURED'
+                WHERE d.event_type='DECISION_EVALUATED'
+                ORDER BY d.effective_at,d.aggregate_id
+            """).fetchall()
+        rows, pit_ok, costs_ok, quotes_ok = [], True, True, True
+        for decision_payload, outcome_payload, decision_hash, outcome_hash in pairs:
+            decision = dict(decision_payload or {})
+            outcome = dict(outcome_payload or {})
+            identifiers = dict(decision.get("identifiers") or {})
+            if (
+                str(identifiers.get("strategy_id")) != str(strategy_id)
+                or str(identifiers.get("target_version")) != str(target_version)
+                or int(identifiers.get("horizon_sessions") or -1) != int(horizon_sessions)
+            ):
+                continue
+            features = dict((decision.get("features") or {}).get("values") or {})
+            raw_regime = features.get("market_regime")
+            if isinstance(raw_regime, Mapping):
+                raw_regime = raw_regime.get("value")
+            flattened = {}
+            for name, value in features.items():
+                candidate = value.get("value") if isinstance(value, Mapping) else value
+                try:
+                    numeric = float(candidate)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(numeric):
+                    flattened[str(name)] = numeric
+            universe = dict(decision.get("universe") or {})
+            quote = dict(decision.get("quote") or {})
+            costs = dict(decision.get("costs") or {})
+            quality = dict(decision.get("feature_quality") or {})
+            row_pit = (
+                (decision.get("features") or {}).get("status") == "AVAILABLE"
+                and universe.get("status") == "VERIFIED"
+                and quality.get("status", "PASS") == "PASS"
+            )
+            row_costs = costs.get("breakdown_complete") is True
+            row_quote = (
+                quote.get("status") == "AVAILABLE"
+                and all(quote.get(name) is not None for name in ("bid", "ask"))
+            )
+            pit_ok = pit_ok and row_pit
+            costs_ok = costs_ok and row_costs
+            quotes_ok = quotes_ok and row_quote
+            rows.append({
+                "decision_id": decision.get("decision_id"),
+                "as_of_date": decision.get("decision_at"),
+                "label_end_date": outcome.get("outcome_at"),
+                "target_before_stop": int(str(outcome.get("outcome")).upper() == "TARGET"),
+                "excess_return": outcome.get("actual_forward_return"),
+                "market_regime": None if raw_regime is None else str(raw_regime),
+                "action": decision.get("action"),
+                "quote_available": row_quote,
+                "decision_event_hash": str(decision_hash),
+                "outcome_event_hash": str(outcome_hash),
+                **flattened,
+            })
+        frame = pd.DataFrame(rows)
+        continuity = self.verify_evidence_ledger_continuity()
+        frame.attrs.update({
+            "evidence_source": "immutable-decision-spine",
+            "pit_verified": bool(rows) and pit_ok,
+            "costs_applied": bool(rows) and costs_ok,
+            "executable_quotes_verified": bool(rows) and quotes_ok,
+            "ledger_verified": continuity["verified"],
+            "production_evidence": True,
+            "synthetic_fixture": False,
+            "strategy_version": str(strategy_id),
+            "target_version": str(target_version),
+            "horizon_sessions": int(horizon_sessions),
+            "ledger_audit": continuity,
+        })
+        return frame
 
     def stats(self) -> dict:
         if not self.configured:

@@ -77,6 +77,8 @@ def evaluate_live_governance(
     cost_breakdown: Mapping[str, Any] | None = None,
     universe_lineage: Mapping[str, Any] | None = None,
     decision_id: str | None = None,
+    secondary_quote: Mapping[str, Any] | None = None,
+    tick_size: float | None = None,
 ) -> dict[str, Any]:
     """Evaluate all controls from genuine, context-bound evidence."""
     if str(instrument) != evidence.context.instrument:
@@ -233,6 +235,8 @@ def evaluate_live_governance(
         quote_age_seconds=quote_age,
         provider_available=provider_available,
         exchange_open=exchange_open,
+        secondary_quote=secondary_quote,
+        tick_size=tick_size,
         calibration_evidence=evidence.calibration_evidence,
         outbox_stats=outbox_stats,
         runtime_expected={
