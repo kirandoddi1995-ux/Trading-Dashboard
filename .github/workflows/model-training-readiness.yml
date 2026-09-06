@@ -1,0 +1,55 @@
+name: Daily model evidence readiness
+
+on:
+  schedule:
+    # GitHub cron is UTC: 11:30 UTC = 17:00 Asia/Kolkata, after NSE cash close.
+    - cron: '30 11 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-model-evidence-readiness
+  cancel-in-progress: false
+
+jobs:
+  evaluate-equity-readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Count immutable decision/outcome evidence
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EVIDENCE_LEDGER_SIGNING_KEY: ${{ secrets.EVIDENCE_LEDGER_SIGNING_KEY }}
+        run: python evidence_progress.py --json > evidence-readiness.json
+      - name: Show evidence readiness
+        run: python -m json.tool evidence-readiness.json
+      - name: Re-evaluate the evidence-gated equity candidates
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EVIDENCE_LEDGER_SIGNING_KEY: ${{ secrets.EVIDENCE_LEDGER_SIGNING_KEY }}
+        run: >-
+          python model_training_pipeline.py --scheduled-check
+          --strategy-id equity-scanner-v19.0
+          --target-version net-excess-execution-v2
+          --features scanner_composite_score
+          --horizon 5 > model-readiness-result.json
+      - name: Show model evaluation result
+        run: python -m json.tool model-readiness-result.json
+      - name: Retain read-only readiness reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-readiness-${{ github.run_id }}
+          path: |
+            evidence-readiness.json
+            model-readiness-result.json
+          if-no-files-found: warn
+          retention-days: 30
