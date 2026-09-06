@@ -1,10 +1,14 @@
 from decimal import Decimal
+import datetime as dt
+
+import pytest
 
 from production_repository import (
     _connection_error_code,
     _executemany,
     _finite_decimal,
     _safe_database_url_shape,
+    _strict_utc_datetime,
 )
 
 
@@ -75,3 +79,11 @@ def test_database_connection_errors_are_safely_classified():
     assert _connection_error_code(Exception("circuit breaker open")) == "POOLER_CIRCUIT_BREAKER"
     assert _connection_error_code(Exception("connection timed out")) == "CONNECTION_TIMEOUT"
     assert _connection_error_code(Exception("unexpected provider text")) == "OPERATIONAL_ERROR"
+
+
+def test_training_readiness_timestamp_parser_rejects_naive_values():
+    with pytest.raises(ValueError, match="timezone-aware"):
+        _strict_utc_datetime("2026-09-06T10:00:00", "decision_at")
+    assert _strict_utc_datetime(
+        "2026-09-06T15:30:00+05:30", "decision_at",
+    ) == dt.datetime(2026, 9, 6, 10, 0, tzinfo=dt.timezone.utc)

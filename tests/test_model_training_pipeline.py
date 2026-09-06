@@ -11,7 +11,7 @@ from model_registry import ModelRegistry
 from model_training_pipeline import (
     ModelTrainingPolicy, create_signed_shadow_artifact, create_signed_test_artifact,
     load_verified_model_bundle,
-    production_smoke, register_shadow_candidate, train_step3_candidates,
+    main, production_smoke, register_shadow_candidate, train_step3_candidates,
     validate_training_dataset,
 )
 
@@ -135,3 +135,21 @@ def test_today_smoke_without_production_database_returns_no_artifact(monkeypatch
 def test_shadow_artifact_api_requires_independent_promotion_evidence():
     parameter = inspect.signature(create_signed_shadow_artifact).parameters["promotion_evidence"]
     assert parameter.default is inspect.Parameter.empty
+
+
+def test_scheduled_check_treats_insufficient_as_healthy_fail_closed(monkeypatch):
+    monkeypatch.setattr(
+        "model_training_pipeline.production_smoke",
+        lambda **kwargs: {
+            "status": "INSUFFICIENT_EVIDENCE", "promotable": False, "artifact": None,
+        },
+    )
+    assert main(["--scheduled-check"]) == 0
+
+
+def test_scheduled_check_fails_when_production_evidence_is_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        "model_training_pipeline.production_smoke",
+        lambda **kwargs: {"status": "UNAVAILABLE", "promotable": False, "artifact": None},
+    )
+    assert main(["--scheduled-check"]) == 2
