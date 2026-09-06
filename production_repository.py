@@ -109,6 +109,16 @@ def _utc_datetime(value) -> dt.datetime:
     return parsed.astimezone(dt.timezone.utc)
 
 
+def _strict_utc_datetime(value, name: str) -> dt.datetime:
+    if isinstance(value, dt.datetime):
+        parsed = value
+    else:
+        parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError(f"{name} must be timezone-aware")
+    return parsed.astimezone(dt.timezone.utc)
+
+
 def _json(value):
     clean = json.loads(json.dumps(value or {}, default=str))
     return Jsonb(clean) if Jsonb is not None else clean
@@ -1464,6 +1474,85 @@ class ProductionRepository:
             "ledger_audit": continuity,
         })
         return frame
+
+    def decision_outcome_records(self) -> list[dict]:
+        """Read minimal, row-level readiness facts from the immutable evidence spine."""
+        self.ensure_schema()
+        with self.connect() as conn:
+            rows = conn.execute(f"""
+                SELECT d.payload,d.recorded_at,o.payload,o.recorded_at
+                FROM {SCHEMA}.evidence_ledger_events d
+                LEFT JOIN LATERAL (
+                    SELECT payload,recorded_at
+                    FROM {SCHEMA}.evidence_ledger_events candidate
+                    WHERE candidate.aggregate_id=d.aggregate_id
+                      AND candidate.event_type='OUTCOME_MATURED'
+                    ORDER BY candidate.sequence_no
+                    LIMIT 1
+                ) o ON TRUE
+                WHERE d.event_type='DECISION_EVALUATED'
+                ORDER BY d.effective_at,d.aggregate_id
+            """).fetchall()
+        records = []
+        for raw_decision, decision_recorded_at, raw_outcome, outcome_recorded_at in rows:
+            decision = (
+                dict(raw_decision) if isinstance(raw_decision, Mapping)
+                else json.loads(str(raw_decision))
+            )
+            outcome = (
+                {} if raw_outcome is None else dict(raw_outcome)
+                if isinstance(raw_outcome, Mapping) else json.loads(str(raw_outcome))
+            )
+            identifiers = dict(decision.get("identifiers") or {})
+            features = dict(decision.get("features") or {})
+            universe = dict(decision.get("universe") or {})
+            quote = dict(decision.get("quote") or {})
+            costs = dict(decision.get("costs") or {})
+            quality = dict(decision.get("feature_quality") or {})
+            feature_values = dict(features.get("values") or {})
+            eligibility_failures = []
+            if features.get("status") != "AVAILABLE":
+                eligibility_failures.append("PIT features unavailable")
+            if universe.get("status") != "VERIFIED":
+                eligibility_failures.append("PIT universe unverified")
+            if quality.get("status", "PASS") != "PASS":
+                eligibility_failures.append("feature quality failed")
+            if costs.get("breakdown_complete") is not True:
+                eligibility_failures.append("transaction costs incomplete")
+            if not (
+                quote.get("status") == "AVAILABLE"
+                and quote.get("bid") is not None and quote.get("ask") is not None
+            ):
+                eligibility_failures.append("executable bid/ask unavailable")
+            if outcome and _finite_decimal(outcome.get("actual_forward_return")) is None:
+                eligibility_failures.append("realized return invalid")
+            decision_at = decision.get("decision_at")
+            outcome_at = outcome.get("outcome_at")
+            if outcome:
+                try:
+                    decision_ts = _strict_utc_datetime(decision_at, "decision_at")
+                    outcome_ts = _strict_utc_datetime(outcome_at, "outcome_at")
+                    if outcome_ts <= decision_ts:
+                        eligibility_failures.append("outcome chronology invalid")
+                except (TypeError, ValueError):
+                    eligibility_failures.append("decision/outcome timestamp invalid")
+            records.append({
+                "decision_id": decision.get("decision_id"),
+                "decision_at": decision_at,
+                "decision_recorded_at": decision_recorded_at,
+                "asset_class": identifiers.get("asset_class"),
+                "strategy_id": identifiers.get("strategy_id"),
+                "target_version": identifiers.get("target_version"),
+                "horizon_sessions": identifiers.get("horizon_sessions"),
+                "action": decision.get("action"),
+                "feature_names": sorted(str(name) for name in feature_values),
+                "matured": bool(outcome),
+                "outcome_at": outcome_at,
+                "matured_at": outcome.get("matured_at") or outcome_recorded_at,
+                "training_eligible": bool(outcome) and not eligibility_failures,
+                "eligibility_failures": eligibility_failures,
+            })
+        return records
 
     def stats(self) -> dict:
         if not self.configured:

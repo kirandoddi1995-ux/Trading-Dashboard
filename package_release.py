@@ -25,6 +25,7 @@ RUNTIME = ['app.py', 'app_runtime.py', 'scan_jobs.py', 'reliable_charts.py',
            'production_readiness.py', 'verify_promotion_request.py',
            'managed_secrets.py', 'secondary_quote_provider.py', 'recovery_drill.py',
            'research_features.py', 'model_training_pipeline.py',
+           'evidence_progress.py',
            'resilience_policy.json', 'resilience_policy.sha256',
            'requirements.txt', 'constraints.txt']
 FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_GUIDE.md',
@@ -48,13 +49,16 @@ FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_
                    'tests/test_evidence_tiers.py', 'tests/test_production_readiness.py',
                    'tests/test_decision_evidence.py', 'tests/test_prospective_collection.py',
                    'tests/test_phase3_reliability.py', 'tests/test_research_features.py',
+                   'tests/test_option_research_features.py',
                    'tests/test_model_training_pipeline.py',
+                   'tests/test_evidence_progress.py',
                    '.github/workflows/quality.yml', '.github/workflows/scheduled-collector.yml',
                    '.github/workflows/resilience.yml', '.github/workflows/production-promotion.yml',
                    '.github/workflows/production-rollback.yml',
                    '.github/workflows/recovery-drill.yml',
                    '.github/workflows/model-training-smoke.yml',
-                   'PRODUCTION_EXTERNAL_ACTIONS.md']
+                   '.github/workflows/model-training-readiness.yml',
+                   'PRODUCTION_EXTERNAL_ACTIONS.md', 'EVIDENCE_READINESS.md']
 
 
 def package():
@@ -62,7 +66,7 @@ def package():
     if not canaries['ok']:
         raise RuntimeError(f"Release canaries failed: {canaries['checks']}")
     manifest = {}
-    archive = ROOT / 'release-v22.2-evidence-gated-model-pipeline.zip'
+    archive = ROOT / 'release-v22.4-evidence-readiness.zip'
     for name in FILES:
         path = (ROOT / name).resolve()
         if not path.is_relative_to(ROOT) or not path.is_file():

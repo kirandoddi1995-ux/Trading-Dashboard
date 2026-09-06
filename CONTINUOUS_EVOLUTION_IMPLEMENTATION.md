@@ -95,3 +95,28 @@ Deep and specialist models must first run in SHADOW, then PAPER and CANARY. Only
 independently attested promotion changes them to ACTIVE/CHAMPION/PRODUCTION. Their
 weights must be non-negative, reviewed, and no single model may exceed 80% when an
 ensemble has multiple members.
+
+## Research-only option-surface features
+
+The feature registry now defines unusual option volume/OI activity, near-money and
+far-OTM put/call OI skew, IV term-structure steepness and IV skew steepness. These
+features are deliberately disconnected from recommendation scoring, governance
+gates, allocation and the scheduled live collector.
+
+- Unusual activity is a contract-level median/MAD robust z-score over at least 20
+  prior, PIT-valid observations from the same intraday capture context. A flat or
+  incomplete baseline returns `UNAVAILABLE`; no fixed activity threshold is used.
+- OI skew uses independently reported call and put open interest in absolute-delta
+  buckets. Missing OI, zero-sided buckets, invalid IV rows or future availability
+  timestamps return `UNAVAILABLE` or are rejected.
+- IV term structure uses validated ATM executable-mid model IV across at least two
+  expiries and is withheld when calendar total variance fails. IV skew uses the
+  nearest-expiry validated OTM put/call wings and requires strike coverage on both
+  sides of spot.
+- Every publishable value goes through the existing versioned feature registry,
+  quality monitor and prospective feature-observation store. Until a separately
+  reviewed prospective option-surface archive accumulates real history, the
+  unusual-activity feature correctly remains unavailable.
+
+These fields are evidence for future chronological research only. They cannot
+unlock trading, alter Kelly sizing or support a predictive-accuracy claim.

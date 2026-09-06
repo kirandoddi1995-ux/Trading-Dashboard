@@ -24,6 +24,7 @@ from model_registry import ModelRegistry
 from mf_archive import MutualFundArchive
 from risk_engine import RiskEngine
 from production_repository import ProductionRepository
+from evidence_progress import summarize_evidence_progress
 from evidence_ledger import ImmutableEvidenceLedger
 from quant_foundation import (
     PRODUCTION_QUANT_CONFIG,
@@ -94,7 +95,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("god_mode_quant")
-APP_BUILD = "v22.2-EVIDENCE-GATED-MODEL-PIPELINE"
+APP_BUILD = "v22.4-EVIDENCE-READINESS"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
 
 
@@ -2442,7 +2443,7 @@ primary_section = primary_section or "Today's Picks"
 
 _section_pages = {
     "Today's Picks": ["Options & Derivatives Chain", "Futures & Derivatives", "Equities Screener & Risk"],
-    "Research": ["Commodities (MCX)", "Mutual Funds", "SMC & Technical Analysis", "AI Copilot"],
+    "Research": ["Evidence Readiness", "Commodities (MCX)", "Mutual Funds", "SMC & Technical Analysis", "AI Copilot"],
 }
 if primary_section == "Settings":
     selected_tab = "Settings"
@@ -9160,6 +9161,91 @@ elif selected_tab == "Equities Screener & Risk":
                 f"open '⚙️ Filters' and check Max Stock Price Filter and Require Weekly Uptrend Confirmation."
             )
         st.session_state["last_screener_results"] = []
+
+
+# ==========================================
+# TAB: EVIDENCE READINESS (READ-ONLY)
+# ==========================================
+elif selected_tab == "Evidence Readiness":
+    st.subheader("Model Evidence Readiness")
+    st.caption(
+        "Read-only counts from immutable individual decision/outcome records. "
+        "This page cannot train, promote, activate, size, or place a trade."
+    )
+    st.info(
+        "Current production count policy: 1,000 eligible matured observations, "
+        "including at least 500 nested out-of-fold and 500 untouched holdout "
+        "observations across at least 120 trading days. The earlier 60-day figure "
+        "is a monitoring milestone, not the current model-training gate."
+    )
+    if not DURABLE_REPOSITORY.configured:
+        st.error(
+            "Evidence source unavailable: the restricted production database is not configured "
+            "for this app process. This is not displayed as zero because zero cannot be verified."
+        )
+    else:
+        try:
+            progress = summarize_evidence_progress(
+                DURABLE_REPOSITORY.decision_outcome_records(),
+                now=datetime.datetime.now(datetime.timezone.utc),
+            )
+        except Exception as exc:
+            LOGGER.warning("Evidence readiness unavailable: %s", type(exc).__name__)
+            progress = {
+                "status": "UNAVAILABLE",
+                "reason": "The immutable production evidence spine could not be read",
+            }
+        if progress.get("status") != "PASS":
+            st.error(
+                "Evidence source unavailable. No progress number is inferred from local caches. "
+                f"Reason: {progress.get('reason', 'durable evidence query failed')}"
+            )
+        else:
+            policy = progress["policy"]
+            st.caption(
+                f"Verified at {progress['generated_at']} · Source: {progress['source']} · "
+                "All promotion statuses remain false until model-quality and governance gates pass."
+            )
+            for asset in progress["assets"]:
+                status_icon = "🟢" if asset["status"] == "READY_FOR_MODEL_EVALUATION" else "🟠"
+                with st.expander(
+                    f"{status_icon} {asset['label']} — {asset['status']}",
+                    expanded=asset["key"] == "equity",
+                ):
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Eligible matured", f"{asset['eligible_observations']:,} / {policy['minimum_total_samples']:,}")
+                    c2.metric("Nested OOF", f"{asset['oof_eligible']:,} / {policy['minimum_oof_samples']:,}")
+                    c3.metric("Untouched holdout", f"{asset['holdout_observations']:,} / {policy['minimum_holdout_samples']:,}")
+                    c4.metric("Trading days", f"{asset['distinct_trading_days']:,} / {policy['minimum_observation_days']:,}")
+                    st.progress(min(asset["eligible_observations"] / policy["minimum_total_samples"], 1.0))
+                    st.caption(
+                        f"Contract decisions: {asset['raw_decisions']:,} · Matured: "
+                        f"{asset['matured_observations']:,} · Rejected by PIT/quote/cost/quality checks: "
+                        f"{asset['rejected_matured_observations']:,} · Other versioned contracts: "
+                        f"{asset['other_contract_decisions']:,}"
+                    )
+                    st.write(asset["status_detail"])
+                    if asset["estimated_threshold_date"]:
+                        st.write(
+                            f"Evidence-count projection at the observed qualified pace: "
+                            f"**{asset['estimated_threshold_date']}**"
+                        )
+                    else:
+                        st.write(f"Estimated threshold date: **not defensibly available** — {asset['estimate_note']}.")
+                    st.caption(asset["estimate_note"])
+                    st.caption(
+                        f"Locked contract: {asset['contract']['strategy_id']} · "
+                        f"{asset['contract']['target_version']} · "
+                        f"{asset['contract']['horizon_sessions']} session(s)"
+                    )
+                    st.code(
+                        json.dumps({
+                            "status": asset["status"],
+                            "promotable": asset["promotable"],
+                            "independent_pipeline_available": asset["independent_pipeline_available"],
+                        }, indent=2),
+                        language="json",
+                    )
 
 
 # ==========================================

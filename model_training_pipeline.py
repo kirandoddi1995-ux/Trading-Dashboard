@@ -518,17 +518,25 @@ def _public_result(result):
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument(
+        "--scheduled-check", action="store_true",
+        help="Re-evaluate real evidence; insufficient evidence is an expected successful check",
+    )
     parser.add_argument("--features", default="scanner_composite_score")
     parser.add_argument("--horizon", type=int, default=5)
+    parser.add_argument("--strategy-id", default="equity-scanner-v19.0")
+    parser.add_argument("--target-version", default="net-excess-execution-v2")
     parser.add_argument(
         "--expect-no-artifact", action="store_true",
         help="Pass only when real evidence safely refuses training/artifact creation",
     )
     args = parser.parse_args(argv)
-    if not args.smoke:
-        parser.error("Only the evidence-gated --smoke entry point is exposed")
+    if args.smoke == args.scheduled_check:
+        parser.error("Choose exactly one of --smoke or --scheduled-check")
     result = production_smoke(
         features=[name.strip() for name in args.features.split(",") if name.strip()],
+        strategy_id=args.strategy_id,
+        target_version=args.target_version,
         horizon_sessions=args.horizon,
     )
     print(json.dumps(_public_result(result), indent=2, default=str))
@@ -540,6 +548,12 @@ def main(argv=None) -> int:
             }
         )
         return 0 if safe_refusal else 3
+    if args.scheduled_check:
+        # Insufficient/negative evidence is a healthy fail-closed result. Missing
+        # infrastructure or malformed evidence must make the scheduled job fail.
+        return 0 if result.get("status") in {
+            "INSUFFICIENT_EVIDENCE", "NEGATIVE", "VALIDATED",
+        } else 2
     return 0 if result.get("status") == "VALIDATED" else 2
 
 

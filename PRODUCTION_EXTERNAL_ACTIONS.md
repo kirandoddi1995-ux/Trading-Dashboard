@@ -23,6 +23,8 @@ After deploying this release, manually run **Real evidence model-pipeline refusa
 
 No calendar event feed is guessed by the repository. Select official RBI, Government of India, and statistical-agency publication feeds, map their published/available timestamps to the strict calendar parser, and archive the provider payload under your permitted retention terms. Until that mapping exists, event-distance features remain unavailable and non-scoring.
 
+The read-only evidence tracker and automatic weekday model-readiness check are documented in `EVIDENCE_READINESS.md`. They do not create or promote an artifact. Managed artifact signing, durable registry connectivity, rollback proof, two independent cryptographic approval roles, protected-environment approval, and the hosting deployment integration remain required after a candidate validates.
+
 ## Prospective shadow collection activation
 
 The repository now schedules the exact shared equity Stage-1 funnel at 10:07 and 14:37 IST on weekdays.

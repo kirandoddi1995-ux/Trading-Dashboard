@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from decision_evidence import FeatureDefinition, FeatureRegistry
+from iv_surface import calendar_total_variance_check
 
 
 UTC = dt.timezone.utc
@@ -97,6 +98,54 @@ RESEARCH_FEATURE_DEFINITIONS = (
         "Minutes since previous event that was published before decision time",
         "Event publication/availability timestamp must be <= decision timestamp",
         maximum_age_seconds=86400 * 31, minimum=0, maximum=60 * 24 * 366,
+    ),
+    FeatureDefinition(
+        "option_volume_activity_robust_z", "1", "float", "prospective-option-chain",
+        "Current contract volume minus the same-contract, same-capture-context rolling median, divided by 1.4826 times rolling MAD",
+        "Current and every baseline snapshot must have first-receipt available_at no later than feature computation; every included snapshot must pass IV/no-arbitrage validation",
+        maximum_age_seconds=120,
+    ),
+    FeatureDefinition(
+        "option_oi_activity_robust_z", "1", "float", "prospective-option-chain",
+        "Current contract open interest minus the same-contract, same-capture-context rolling median, divided by 1.4826 times rolling MAD",
+        "Current and every baseline snapshot must have first-receipt available_at no later than feature computation; every included snapshot must pass IV/no-arbitrage validation",
+        maximum_age_seconds=120,
+    ),
+    FeatureDefinition(
+        "unusual_option_activity_score", "1", "float", "prospective-option-chain",
+        "Positive maximum of separately measured rolling robust volume and open-interest z-scores; no fixed activity threshold is embedded",
+        "Published only when both same-contract rolling baselines are PIT-complete and the current option row passed IV/no-arbitrage validation",
+        maximum_age_seconds=120, minimum=0,
+    ),
+    FeatureDefinition(
+        "put_call_oi_skew_near_money", "1", "float", "prospective-option-chain",
+        "(put OI-call OI)/(put OI+call OI) for validated contracts with absolute model delta from 0.35 through 0.65",
+        "All included option-chain rows must be available by feature time and pass IV/no-arbitrage validation; incomplete OI in the bucket makes the feature unavailable",
+        maximum_age_seconds=120, minimum=-1, maximum=1,
+    ),
+    FeatureDefinition(
+        "put_call_oi_skew_far_otm", "1", "float", "prospective-option-chain",
+        "(put OI-call OI)/(put OI+call OI) for validated contracts with absolute model delta from 0.05 through 0.25",
+        "All included option-chain rows must be available by feature time and pass IV/no-arbitrage validation; incomplete OI in the bucket makes the feature unavailable",
+        maximum_age_seconds=120, minimum=-1, maximum=1,
+    ),
+    FeatureDefinition(
+        "put_call_oi_skew_ntm_minus_fotm", "1", "float", "prospective-option-chain",
+        "Near-money put/call OI imbalance minus far-OTM put/call OI imbalance",
+        "Derived only from PIT-available, IV/no-arbitrage-valid rows with complete OI in both delta buckets",
+        maximum_age_seconds=120, minimum=-2, maximum=2,
+    ),
+    FeatureDefinition(
+        "iv_term_structure_steepness", "1", "float", "prospective-option-surface",
+        "Least-squares slope of validated ATM executable-mid model IV percentage points against square-root years across expiries",
+        "Each expiry surface must be first-received by feature time and the combined surface must pass calendar total-variance validation",
+        maximum_age_seconds=120, minimum=-2000, maximum=2000,
+    ),
+    FeatureDefinition(
+        "iv_skew_steepness", "1", "float", "prospective-option-surface",
+        "Nearest-expiry OTM-wing executable-mid model IV percentage-point slope against log strike/spot moneyness",
+        "Uses only first-received, IV/no-arbitrage-valid OTM puts below spot and calls above spot available by feature time",
+        maximum_age_seconds=120, minimum=-5000, maximum=5000,
     ),
 )
 RESEARCH_DEFINITIONS_BY_NAME = {item.name: item for item in RESEARCH_FEATURE_DEFINITIONS}
@@ -220,6 +269,281 @@ def lead_lag_features(frame: pd.DataFrame, *, leader: str, targets: Iterable[str
     output = pd.DataFrame(rows)
     output.attrs.update({"pit_verified": True, "consumed_by_scoring": False})
     return output
+
+
+OPTION_SURFACE_REQUIRED = {
+    "instrument_key", "expiry", "strike", "option_type", "years",
+    "log_moneyness", "model_iv", "model_delta", "volume", "open_interest",
+    "effective_at", "available_at", "production_valid",
+}
+
+
+def _pit_option_surface(surface: pd.DataFrame, *, as_of) -> tuple[pd.DataFrame, int]:
+    """Return validated, first-known option rows without silently accepting future data."""
+    if not isinstance(surface, pd.DataFrame) or surface.empty:
+        raise ValueError("Option surface is empty")
+    missing = OPTION_SURFACE_REQUIRED - set(surface.columns)
+    if missing:
+        raise ValueError(f"Option surface requires {sorted(missing)}")
+    decision = _aware(as_of, "as_of")
+    data = surface.copy()
+    data["effective_at"] = data["effective_at"].map(
+        lambda value: _aware(value, "effective_at")
+    )
+    data["available_at"] = data["available_at"].map(
+        lambda value: _aware(value, "available_at")
+    )
+    if (data["effective_at"] > data["available_at"]).any():
+        raise ValueError("Option surface has reversed effective/availability timestamps")
+    if (data["available_at"] > decision).any():
+        raise ValueError("Option surface contains data unavailable at feature time")
+
+    def explicitly_valid(value):
+        if isinstance(value, (bool, np.bool_)):
+            return bool(value)
+        if isinstance(value, (int, np.integer)) and not isinstance(value, bool):
+            return int(value) == 1
+        return False
+
+    valid_mask = data["production_valid"].map(explicitly_valid)
+    rejected = int((~valid_mask).sum())
+    return data.loc[valid_mask].copy().reset_index(drop=True), rejected
+
+
+def _numeric_nonnegative(frame: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
+    result = frame.copy()
+    for column in columns:
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+        result.loc[~np.isfinite(result[column]) | result[column].lt(0), column] = np.nan
+    return result
+
+
+def _rolling_robust_z(current: float, history: pd.Series) -> tuple[float | None, dict]:
+    values = pd.to_numeric(history, errors="coerce")
+    values = values[np.isfinite(values)]
+    if values.empty:
+        return None, {"count": 0, "median": None, "mad": None}
+    median = float(values.median())
+    mad = float((values - median).abs().median())
+    scale = 1.4826 * mad
+    if not math.isfinite(scale) or scale <= 0:
+        return None, {"count": int(len(values)), "median": median, "mad": mad}
+    return (float(current) - median) / scale, {
+        "count": int(len(values)), "median": median, "mad": mad,
+    }
+
+
+def unusual_option_activity_features(current_surface: pd.DataFrame,
+                                      history: pd.DataFrame, *, as_of,
+                                      capture_context: str,
+                                      rolling_window: int = 60,
+                                      minimum_history: int = 20) -> pd.DataFrame:
+    """Measure contract-level volume/OI surprises against a PIT rolling baseline.
+
+    Volume is intraday cumulative, so mixing morning and afternoon snapshots would
+    manufacture activity.  A caller-supplied capture context is therefore mandatory
+    and historical rows from any other context are excluded.
+    """
+    context = str(capture_context or "").strip()
+    if not context:
+        raise ValueError("capture_context is required")
+    if int(minimum_history) < 20 or int(rolling_window) < int(minimum_history):
+        raise ValueError("rolling_window must cover at least 20 baseline snapshots")
+    current, validation_rejected = _pit_option_surface(current_surface, as_of=as_of)
+    history_valid, history_validation_rejected = _pit_option_surface(history, as_of=as_of)
+    current = _numeric_nonnegative(current, ("volume", "open_interest"))
+    history_valid = _numeric_nonnegative(history_valid, ("volume", "open_interest"))
+    if "capture_context" not in history_valid.columns:
+        raise ValueError("Historical option surface requires capture_context")
+    history_valid = history_valid[
+        history_valid["capture_context"].astype(str).eq(context)
+    ]
+    decision = _aware(as_of, "as_of")
+    rows = []
+    for _, row in current.iterrows():
+        identifier = str(row.get("instrument_key") or "").strip()
+        output = {
+            "instrument_key": identifier or None,
+            "expiry": row.get("expiry"), "strike": row.get("strike"),
+            "option_type": row.get("option_type"), "capture_context": context,
+            "feature_at": decision, "feature_status": "UNAVAILABLE",
+            "option_volume_activity_robust_z": np.nan,
+            "option_oi_activity_robust_z": np.nan,
+            "unusual_option_activity_score": np.nan,
+        }
+        if not identifier or pd.isna(row["volume"]) or pd.isna(row["open_interest"]):
+            output["failure"] = "Current volume/OI or contract identity is incomplete"
+            rows.append(output)
+            continue
+        prior = history_valid[
+            history_valid["instrument_key"].astype(str).eq(identifier)
+            & history_valid["available_at"].lt(row["available_at"])
+        ].sort_values("available_at").tail(int(rolling_window))
+        complete = prior.dropna(subset=["volume", "open_interest"])
+        if len(complete) < int(minimum_history):
+            output.update(
+                failure="Insufficient same-contract, same-context rolling history",
+                baseline_count=int(len(complete)),
+            )
+            rows.append(output)
+            continue
+        volume_z, volume_baseline = _rolling_robust_z(row["volume"], complete["volume"])
+        oi_z, oi_baseline = _rolling_robust_z(row["open_interest"], complete["open_interest"])
+        output.update(
+            volume_baseline_count=volume_baseline["count"],
+            volume_baseline_median=volume_baseline["median"],
+            volume_baseline_mad=volume_baseline["mad"],
+            oi_baseline_count=oi_baseline["count"],
+            oi_baseline_median=oi_baseline["median"],
+            oi_baseline_mad=oi_baseline["mad"],
+        )
+        if volume_z is None or oi_z is None:
+            output["failure"] = "Rolling baseline has no measurable variation"
+            rows.append(output)
+            continue
+        output.update({
+            "feature_status": "PASS", "failure": None,
+            "option_volume_activity_robust_z": float(volume_z),
+            "option_oi_activity_robust_z": float(oi_z),
+            "unusual_option_activity_score": float(max(0.0, volume_z, oi_z)),
+        })
+        rows.append(output)
+    result = pd.DataFrame(rows)
+    result.attrs.update({
+        "pit_verified": True, "consumed_by_scoring": False,
+        "validation_rejected": validation_rejected,
+        "history_validation_rejected": history_validation_rejected,
+        "rolling_window": int(rolling_window), "minimum_history": int(minimum_history),
+    })
+    return result
+
+
+def option_oi_skew_features(surface: pd.DataFrame, *, as_of,
+                            near_delta=(0.35, 0.65), far_delta=(0.05, 0.25)) -> dict:
+    """Contrast validated near-money and far-OTM put/call OI concentration."""
+    valid, validation_rejected = _pit_option_surface(surface, as_of=as_of)
+    valid = _numeric_nonnegative(valid, ("open_interest",))
+    valid["model_delta"] = pd.to_numeric(valid["model_delta"], errors="coerce")
+    valid.loc[~np.isfinite(valid["model_delta"]), "model_delta"] = np.nan
+    valid["absolute_delta"] = valid["model_delta"].abs()
+    failures = []
+    values = {}
+    diagnostics = {"validation_rejected": validation_rejected}
+    skews = {}
+    for label, bounds in (("near_money", near_delta), ("far_otm", far_delta)):
+        low, high = map(float, bounds)
+        if not 0 <= low < high <= 1:
+            raise ValueError("Delta buckets must satisfy 0 <= low < high <= 1")
+        bucket = valid[valid["absolute_delta"].between(low, high, inclusive="both")]
+        if bucket.empty or bucket["open_interest"].isna().any():
+            failures.append(f"{label} bucket has incomplete open interest")
+            continue
+        call_oi = float(bucket.loc[bucket["option_type"].eq("CE"), "open_interest"].sum())
+        put_oi = float(bucket.loc[bucket["option_type"].eq("PE"), "open_interest"].sum())
+        if call_oi <= 0 or put_oi <= 0:
+            failures.append(f"{label} bucket requires positive call and put open interest")
+            continue
+        skews[label] = (put_oi - call_oi) / (put_oi + call_oi)
+        diagnostics[label] = {
+            "call_oi": call_oi, "put_oi": put_oi, "contract_count": int(len(bucket)),
+            "absolute_delta_bounds": [low, high],
+        }
+    if "near_money" in skews:
+        values["put_call_oi_skew_near_money"] = float(skews["near_money"])
+    if "far_otm" in skews:
+        values["put_call_oi_skew_far_otm"] = float(skews["far_otm"])
+    if len(skews) == 2:
+        values["put_call_oi_skew_ntm_minus_fotm"] = float(
+            skews["near_money"] - skews["far_otm"]
+        )
+    return {
+        "status": "PASS" if len(values) == 3 else "UNAVAILABLE",
+        "values": values if len(values) == 3 else {},
+        "failures": failures, "diagnostics": diagnostics,
+        "pit_verified": True, "consumed_by_scoring": False,
+    }
+
+
+def iv_surface_shape_features(surface: pd.DataFrame, *, as_of,
+                              maximum_atm_log_moneyness=0.05,
+                              maximum_skew_log_moneyness=0.20) -> dict:
+    """Compute term and nearest-expiry skew slopes from validated surface rows."""
+    valid, validation_rejected = _pit_option_surface(surface, as_of=as_of)
+    numeric = ("years", "log_moneyness", "model_iv", "model_delta")
+    for column in numeric:
+        valid[column] = pd.to_numeric(valid[column], errors="coerce")
+    finite = np.isfinite(valid[list(numeric)].to_numpy(dtype=float)).all(axis=1)
+    valid = valid.loc[finite & valid["years"].gt(0) & valid["model_iv"].gt(0)].copy()
+    failures = []
+    values = {}
+    diagnostics = {"validation_rejected": validation_rejected,
+                   "validated_rows": int(len(valid))}
+
+    calendar = calendar_total_variance_check(valid)
+    diagnostics["calendar_total_variance"] = calendar
+    if calendar.get("status") != "PASS":
+        failures.append("Term structure failed calendar total-variance validation")
+    else:
+        atm_points = []
+        for years, expiry_rows in valid.groupby("years"):
+            side_points = []
+            for side in ("CE", "PE"):
+                rows = expiry_rows[expiry_rows["option_type"].eq(side)]
+                if rows.empty:
+                    continue
+                nearest = rows.loc[rows["log_moneyness"].abs().idxmin()]
+                if abs(float(nearest["log_moneyness"])) <= float(maximum_atm_log_moneyness):
+                    side_points.append(float(nearest["model_iv"]))
+            if len(side_points) == 2:
+                atm_points.append((float(years), float(np.mean(side_points))))
+        if len(atm_points) < 2:
+            failures.append("At least two expiries need validated call/put ATM IV")
+        else:
+            atm_points.sort()
+            x = np.sqrt(np.array([item[0] for item in atm_points], dtype=float))
+            y = np.array([item[1] for item in atm_points], dtype=float)
+            if np.ptp(x) <= 1e-12:
+                failures.append("Expiry tenors are not distinct")
+            else:
+                values["iv_term_structure_steepness"] = float(np.polyfit(x, y, 1)[0])
+                diagnostics["atm_points"] = [
+                    {"years": years, "model_iv_pct": iv} for years, iv in atm_points
+                ]
+
+    if valid.empty:
+        failures.append("No validated IV rows remain")
+    else:
+        nearest_years = float(valid["years"].min())
+        nearest = valid[np.isclose(valid["years"], nearest_years)].copy()
+        wing = nearest[
+            nearest["log_moneyness"].abs().le(float(maximum_skew_log_moneyness))
+            & (
+                (nearest["option_type"].eq("PE") & nearest["log_moneyness"].le(0))
+                | (nearest["option_type"].eq("CE") & nearest["log_moneyness"].ge(0))
+            )
+        ]
+        wing = wing.groupby("log_moneyness", as_index=False)["model_iv"].mean().sort_values(
+            "log_moneyness"
+        )
+        if (len(wing) < 4 or not (wing["log_moneyness"] < 0).any()
+                or not (wing["log_moneyness"] > 0).any()
+                or np.ptp(wing["log_moneyness"].to_numpy(dtype=float)) < 0.05):
+            failures.append("Nearest expiry needs four validated OTM-wing points spanning spot")
+        else:
+            values["iv_skew_steepness"] = float(np.polyfit(
+                wing["log_moneyness"].to_numpy(dtype=float),
+                wing["model_iv"].to_numpy(dtype=float), 1,
+            )[0])
+            diagnostics["skew_years"] = nearest_years
+            diagnostics["skew_points"] = int(len(wing))
+
+    expected = {"iv_term_structure_steepness", "iv_skew_steepness"}
+    status = "PASS" if expected.issubset(values) else ("PARTIAL" if values else "UNAVAILABLE")
+    return {
+        "status": status, "values": values, "failures": failures,
+        "diagnostics": diagnostics, "pit_verified": True,
+        "consumed_by_scoring": False,
+    }
 
 
 @dataclass(frozen=True)

@@ -119,10 +119,21 @@ def _relative_error(actual, expected):
 
 
 def normalize_iv_surface(chain, spot, expiry, now=None, *, risk_free_rate=0.06,
-                         dividend_yield=0.0, policy=OptionValidationPolicy()):
+                         dividend_yield=0.0, policy=OptionValidationPolicy(),
+                         available_at=None, provider_observed_at=None):
     now = pd.Timestamp.now(tz="Asia/Kolkata") if now is None else pd.Timestamp(now)
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
+    available = now if available_at is None else pd.Timestamp(available_at)
+    if available.tzinfo is None:
+        raise ValueError("available_at must be timezone-aware")
+    provider_observed = (
+        available if provider_observed_at is None else pd.Timestamp(provider_observed_at)
+    )
+    if provider_observed.tzinfo is None:
+        raise ValueError("provider_observed_at must be timezone-aware")
+    if provider_observed.tz_convert("UTC") > available.tz_convert("UTC"):
+        raise ValueError("provider_observed_at cannot follow available_at")
     expiry_ts = _expiry_timestamp(expiry, now)
     seconds = (expiry_ts - now).total_seconds()
     if seconds <= 0:
@@ -140,6 +151,15 @@ def normalize_iv_surface(chain, spot, expiry, now=None, *, risk_free_rate=0.06,
             option = item.get(side) or {}
             greeks = option.get("option_greeks") or {}
             market = option.get("market_data") or {}
+            volume = _finite(market.get("volume"))
+            open_interest = _finite(market.get("oi"))
+            previous_open_interest = _finite(market.get("prev_oi"))
+            if volume is not None and volume < 0:
+                volume = None
+            if open_interest is not None and open_interest < 0:
+                open_interest = None
+            if previous_open_interest is not None and previous_open_interest < 0:
+                previous_open_interest = None
             bid, ask = _finite(market.get("bid_price")), _finite(market.get("ask_price"))
             failures = []
             if bid is None or ask is None or bid < 0 or ask <= 0 or bid > ask:
@@ -192,6 +212,8 @@ def normalize_iv_surface(chain, spot, expiry, now=None, *, risk_free_rate=0.06,
                     if error > tolerance:
                         greek_failures.append(f"Provider {name} differs materially from recomputed {name}")
             rows.append({
+                "instrument_key": str(option.get("instrument_key") or "").strip() or None,
+                "expiry": expiry_ts.isoformat(),
                 "strike": strike, "option_type": option_type, "dte": dte,
                 "years": years, "log_moneyness": float(np.log(strike / spot_value)),
                 "iv": provider_iv * 100 if provider_iv is not None else None,
@@ -199,7 +221,15 @@ def normalize_iv_surface(chain, spot, expiry, now=None, *, risk_free_rate=0.06,
                 **provider_values,
                 **{f"model_{key}": value for key, value in model_greeks.items()},
                 "bid": bid, "ask": ask, "mid": mid, "lower_bound": lower, "upper_bound": upper,
+                "volume": volume, "open_interest": open_interest,
+                "previous_open_interest": previous_open_interest,
+                "effective_at": provider_observed.tz_convert("UTC"),
+                "available_at": available.tz_convert("UTC"),
                 "spread_pct": ((ask - bid) / max(mid, 1e-9) * 100 if mid is not None else None),
+                "option_activity_data_valid": (
+                    volume is not None and open_interest is not None
+                    and bool(str(option.get("instrument_key") or "").strip())
+                ),
                 "pricing_valid": not failures, "greeks_valid": not greek_failures,
                 "validation_failures": failures + greek_failures,
             })
