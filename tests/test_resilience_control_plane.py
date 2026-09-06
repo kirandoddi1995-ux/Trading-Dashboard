@@ -6,6 +6,7 @@ import threading
 import pytest
 
 from evidence_ledger import ImmutableEvidenceLedger
+from artifact_security import ApprovalAuthority, ArtifactSigner
 from model_registry import ModelRegistry
 from resilience_acceptance import run_acceptance
 from resilience_control_plane import (
@@ -26,6 +27,7 @@ from resilience_control_plane import (
     SafetyStateMachine,
     SecretLifecycleMonitor,
     UTC,
+    canonical_hash,
 )
 from scheduled_collector import CollectorLease
 
@@ -170,35 +172,68 @@ def test_failed_release_canary_selects_immutable_rollback_id():
     assert decision == {"action": "ROLLBACK", "reason": "failures=1, p95=100.0ms", "rollback_to": "release-a"}
 
 
-def test_model_gate_requires_independent_approval_and_rollback():
+def test_model_gate_requires_validation_and_rollback():
     package = {
-        "artifact_signature_valid": True, "point_in_time_verified": True,
+        "point_in_time_verified": True,
         "untouched_holdout": True, "costs_applied": True,
-        "rollback_model_available": True, "independent_approval": False,
+        "rollback_model_available": False,
         "oos_samples": 1000, "regimes_tested": 4,
     }
     result = ModelPromotionGate().evaluate(package)
     assert result["promotion_allowed"] is False
-    assert "independent_approval" in result["failures"]
+    assert "rollback_model_available" in result["failures"]
 
 
 def test_model_registry_promotion_is_atomic_and_audited(tmp_path):
     path = str(tmp_path / "models.sqlite")
     registry = ModelRegistry(sqlite3.connect, path)
-    registry.register("old", "logistic", "TREND", "1", "champion", {}, {}, status="ACTIVE")
-    registry.register("new", "logistic", "TREND", "2", "challenger", {}, {}, status="CANARY")
+    signer = ArtifactSigner(b"a" * 32, key_id="artifact-key")
+    approval_authority = ApprovalAuthority({"risk": b"b" * 32, "deploy": b"c" * 32})
+    def signed(model_id):
+        payload = {"model_id": model_id, "version": "1"}
+        return signer.sign({**payload, "artifact_hash": canonical_hash(payload)})
+    old_artifact = signed("old")
+    bootstrap_approvals = [
+        approval_authority.issue(approver="risk", role="model-risk",
+                                 artifact_hash=old_artifact["artifact_hash"], action="BOOTSTRAP"),
+        approval_authority.issue(approver="deploy", role="deployment",
+                                 artifact_hash=old_artifact["artifact_hash"], action="BOOTSTRAP"),
+    ]
+    registry.bootstrap_champion(
+        "old", "logistic", "TREND", "1", old_artifact, {},
+        approvals=bootstrap_approvals, artifact_authority=signer,
+        approval_authority=approval_authority,
+    )
+    registry.register("new", "logistic", "TREND", "2", "challenger", signed("new"), {}, status="SHADOW")
+    registry.transition("new", "PAPER", approved_by="validation-owner", reason="paper passed",
+                        verify_artifact=signer.verify, expected_registry_version=0)
+    registry.transition("new", "CANARY", approved_by="operations-owner", reason="canary approved",
+                        verify_artifact=signer.verify, expected_registry_version=1)
     gate = ModelPromotionGate().evaluate({
-        "artifact_signature_valid": True, "point_in_time_verified": True,
+        "point_in_time_verified": True,
         "untouched_holdout": True, "costs_applied": True,
-        "rollback_model_available": True, "independent_approval": True,
+        "rollback_model_available": True,
         "oos_samples": 800, "regimes_tested": 4,
     })
-    result = registry.promote("new", gate, approved_by="risk-owner")
+    approvals = [
+        approval_authority.issue(approver="risk", role="model-risk",
+                                 artifact_hash=registry.get_model("new")["artifact"]["artifact_hash"],
+                                 action="PROMOTE"),
+        approval_authority.issue(approver="deploy", role="deployment",
+                                 artifact_hash=registry.get_model("new")["artifact"]["artifact_hash"],
+                                 action="PROMOTE"),
+    ]
+    result = registry.promote(
+        "new", gate, approvals=approvals, artifact_authority=signer,
+        approval_authority=approval_authority,
+    )
     conn = sqlite3.connect(path)
     try:
         assert conn.execute("SELECT role,status FROM model_registry WHERE model_id='new'").fetchone() == ("champion", "ACTIVE")
         assert conn.execute("SELECT role,status FROM model_registry WHERE model_id='old'").fetchone() == ("challenger", "ROLLBACK")
-        assert conn.execute("SELECT COUNT(*) FROM model_promotions").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM model_promotions WHERE action='PROMOTE'"
+        ).fetchone()[0] == 1
     finally:
         conn.close()
     assert result["previous_model_id"] == "old"

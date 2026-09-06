@@ -64,6 +64,21 @@ def test_point_in_time_versions_respect_when_data_became_known(tmp_path):
     assert set(store.universe_as_known_at("2026-01-10", after).instrument_key) == {"A0"}
 
 
+def test_point_in_time_universe_lineage_requires_known_membership(tmp_path):
+    store = PointInTimeStore(_connect, str(tmp_path / "pit.sqlite3"), minimum_complete_universe=1)
+    store.archive_universe(_universe(1, "A"), "2026-01-10")
+    conn = _connect(store._db_path)
+    observed_at = conn.execute("SELECT observed_at FROM pit_universe_snapshot_versions").fetchone()[0]
+    conn.close()
+    after = pd.Timestamp(observed_at) + pd.Timedelta(seconds=1)
+    lineage = store.universe_lineage_as_known_at("2026-01-10", after, instrument_key="A0")
+    assert lineage["complete"] is True
+    assert lineage["snapshot_date"] == "2026-01-10"
+    assert lineage["member"] is True
+    assert lineage["instrument_key"] == "A0"
+    assert store.universe_lineage_as_known_at("2026-01-10", after, instrument_key="MISSING") is None
+
+
 def test_feature_store_never_returns_a_future_revision(tmp_path):
     store = PointInTimeStore(_connect, str(tmp_path / "pit.sqlite3"), minimum_complete_universe=1)
     store.record_feature_observation(

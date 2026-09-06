@@ -360,7 +360,8 @@ def test_option_costs_depth_and_capital_use_one_execution_model():
                       IST=datetime.timezone(datetime.timedelta(hours=5,minutes=30)))
     ctx['risk_engine']=RiskEngine(investment_capital=1000000,max_risk_pct=2,max_position_pct=20)
     row={'Strike':'24000','Put LTP':'38.80','_put_bid':38.75,'_put_ask':38.85,
-         '_put_ask_qty':100000,'_put_bid_qty':100000,'_put_volume':1000000}
+         '_put_ask_qty':100000,'_put_bid_qty':100000,'_put_volume':1000000,
+         '_put_validation': {'valid': True, 'failures': []}}
     result=ctx['build_option_recommendation']('Bearish',best_row=row)
     assert result is not None
     cost=result['premium']*.007
