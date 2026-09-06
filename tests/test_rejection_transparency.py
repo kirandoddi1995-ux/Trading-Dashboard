@@ -47,6 +47,18 @@ def test_no_trade_message_separates_passed_bias_from_real_blocker():
     assert "Aligned evidence" not in message
 
 
+def test_no_trade_message_keeps_scan_summary_out_of_blocking_reasons():
+    message = runtime.no_trade_message(
+        "equity candidate",
+        blocking_reasons=["Price is below the 50-day EMA"],
+        context="Quick scan completed successfully; 95 candidates analyzed",
+    )
+    blocking_section, context_section = message.split("**Decision context:**")
+    assert "Price is below the 50-day EMA" in blocking_section
+    assert "Quick scan completed successfully" not in blocking_section
+    assert "Quick scan completed successfully" in context_section
+
+
 def test_all_five_asset_displays_use_the_shared_message_contract():
     source = (ROOT / "app.py").read_text(encoding="utf-8")
     for label in (
