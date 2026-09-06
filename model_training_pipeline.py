@@ -31,11 +31,13 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import SplineTransformer, StandardScaler
+from scipy.optimize import minimize
 
 from artifact_security import ArtifactSigner
 from decision_evidence import ExperimentTracker
 from prediction_validation import (
-    calibration_metrics, chronological_holdout_split, purged_walk_forward_splits,
+    calibration_metrics, chronological_holdout_split, paired_log_loss_improvement,
+    purged_walk_forward_splits,
 )
 from production_repository import ProductionRepository
 from resilience_control_plane import ModelPromotionGate, canonical_hash
@@ -59,7 +61,10 @@ class ModelTrainingPolicy:
     embargo_sessions: int = 20
     maximum_missing_fraction: float = 0.05
     maximum_ece: float = 0.08
-    maximum_log_loss: float = 0.69
+    minimum_log_loss_skill: float = 0.01
+    minimum_log_loss_improvement_ci_low: float = 0.0
+    log_loss_bootstrap_samples: int = 1_000
+    log_loss_block_length: int = 5
     minimum_regimes: int = 3
     random_state: int = 1729
 
@@ -213,6 +218,49 @@ def _calibrate(calibrator, raw_probabilities):
     return calibrator.predict_proba(_model_logit(raw_probabilities))[:, 1]
 
 
+class ConvexProbabilityStacker:
+    """Interpretable non-negative linear probability pool with weights summing to one."""
+
+    def __init__(self):
+        self.weights_ = None
+        self.model_names_ = ("logistic", "gam", "monotonic_boosted")
+
+    def fit(self, probabilities, labels):
+        matrix = np.clip(np.asarray(probabilities, dtype=float), 1e-6, 1 - 1e-6)
+        outcomes = np.asarray(labels, dtype=int)
+        if matrix.ndim != 2 or matrix.shape[0] != len(outcomes) or matrix.shape[1] != 3:
+            raise ValueError("Convex stack requires three aligned model probabilities")
+        if not np.isfinite(matrix).all() or len(np.unique(outcomes)) < 2:
+            raise ValueError("Convex stack requires finite probabilities and both classes")
+
+        def objective(weights):
+            pooled = np.clip(matrix @ weights, 1e-9, 1 - 1e-9)
+            return float(-np.mean(
+                outcomes * np.log(pooled) + (1 - outcomes) * np.log(1 - pooled)
+            ))
+
+        fitted = minimize(
+            objective,
+            np.repeat(1.0 / matrix.shape[1], matrix.shape[1]),
+            method="SLSQP",
+            bounds=[(0.0, 1.0)] * matrix.shape[1],
+            constraints=[{"type": "eq", "fun": lambda weights: float(np.sum(weights) - 1.0)}],
+            options={"maxiter": 2_000, "ftol": 1e-12},
+        )
+        if not fitted.success:
+            raise RuntimeError("Convex probability stacking did not converge")
+        weights = np.clip(np.asarray(fitted.x, dtype=float), 0.0, 1.0)
+        self.weights_ = weights / float(np.sum(weights))
+        return self
+
+    def predict_proba(self, probabilities):
+        if self.weights_ is None:
+            raise ValueError("Convex stacker is not fitted")
+        matrix = np.clip(np.asarray(probabilities, dtype=float), 1e-6, 1 - 1e-6)
+        pooled = np.clip(matrix @ self.weights_, 1e-9, 1 - 1e-9)
+        return np.column_stack([1.0 - pooled, pooled])
+
+
 def train_step3_candidates(frame: pd.DataFrame, *, features: Sequence[str],
                            monotonic_constraints: Mapping[str, int] | None = None,
                            policy=PRODUCTION_TRAINING_POLICY, experiment_tracker=None,
@@ -299,15 +347,14 @@ def train_step3_candidates(frame: pd.DataFrame, *, features: Sequence[str],
             )
         return result
 
-    stacker = LogisticRegression(C=0.5, max_iter=2000, random_state=policy.random_state)
+    stacker = ConvexProbabilityStacker()
     stack_features = np.column_stack([
-        _model_logit(baseline_oof[meta_indices]).ravel(),
-        _model_logit(boosted_oof[meta_indices]).ravel(),
+        baseline_oof[meta_indices], gam_oof[meta_indices], boosted_oof[meta_indices],
     ])
     stacker.fit(stack_features, labels[meta_indices])
     calibration_stack = np.column_stack([
-        _model_logit(baseline_oof[calibration_indices]).ravel(),
-        _model_logit(boosted_oof[calibration_indices]).ravel(),
+        baseline_oof[calibration_indices], gam_oof[calibration_indices],
+        boosted_oof[calibration_indices],
     ])
     raw_calibration = stacker.predict_proba(calibration_stack)[:, 1]
     platt = _fit_platt(raw_calibration, labels[calibration_indices])
@@ -323,20 +370,48 @@ def train_step3_candidates(frame: pd.DataFrame, *, features: Sequence[str],
     gam_holdout = gam.predict_proba(holdout[list(feature_names)])[:, 1]
     boosted_holdout = boosted.predict_proba(holdout[list(feature_names)])[:, 1]
     raw_holdout = stacker.predict_proba(np.column_stack([
-        _model_logit(baseline_holdout).ravel(), _model_logit(boosted_holdout).ravel(),
+        baseline_holdout, gam_holdout, boosted_holdout,
     ]))[:, 1]
     probabilities = _calibrate(platt, raw_holdout)
-    metrics = calibration_metrics(holdout_labels, probabilities)
+    development_base_rate = float(np.mean(labels))
+    metrics = calibration_metrics(
+        holdout_labels, probabilities, baseline_probability=development_base_rate,
+    )
     metrics["accuracy"] = float(accuracy_score(holdout_labels, probabilities >= 0.5))
-    baseline_metrics = calibration_metrics(holdout_labels, baseline_holdout)
-    gam_metrics = calibration_metrics(holdout_labels, gam_holdout)
-    boosted_metrics = calibration_metrics(holdout_labels, boosted_holdout)
+    baseline_metrics = calibration_metrics(
+        holdout_labels, baseline_holdout, baseline_probability=development_base_rate,
+    )
+    gam_metrics = calibration_metrics(
+        holdout_labels, gam_holdout, baseline_probability=development_base_rate,
+    )
+    boosted_metrics = calibration_metrics(
+        holdout_labels, boosted_holdout, baseline_probability=development_base_rate,
+    )
+    log_loss_improvement = paired_log_loss_improvement(
+        holdout_labels, probabilities, baseline_probability=development_base_rate,
+        bootstrap_samples=policy.log_loss_bootstrap_samples,
+        block_length=policy.log_loss_block_length, seed=policy.random_state,
+    )
+    metrics["log_loss_improvement"] = log_loss_improvement
+    metrics["log_loss_improvement_ci_low"] = log_loss_improvement.get("lower_one_sided")
+    metrics["stack_weights"] = {
+        name: float(weight) for name, weight in zip(stacker.model_names_, stacker.weights_)
+    }
     if metrics["brier"] >= metrics["baseline_brier"]:
         failures.append("Calibrated stack does not beat holdout base-rate Brier")
     if metrics["ece"] > policy.maximum_ece:
         failures.append("Holdout ECE exceeds policy")
-    if metrics["log_loss"] > policy.maximum_log_loss:
-        failures.append("Holdout log loss exceeds policy")
+    if (
+        metrics.get("log_loss_skill") is None
+        or metrics["log_loss_skill"] < policy.minimum_log_loss_skill
+    ):
+        failures.append("Holdout log-loss skill does not beat the base-rate policy margin")
+    if (
+        log_loss_improvement.get("status") != "PASS"
+        or log_loss_improvement.get("lower_one_sided", -math.inf)
+        <= policy.minimum_log_loss_improvement_ci_low
+    ):
+        failures.append("Paired holdout log-loss improvement is not statistically established")
     regimes = int(holdout.get("market_regime", pd.Series(dtype=str)).dropna().astype(str).nunique())
     if not frame.attrs.get("synthetic_fixture") and regimes < policy.minimum_regimes:
         failures.append("Untouched holdout lacks required regime coverage")

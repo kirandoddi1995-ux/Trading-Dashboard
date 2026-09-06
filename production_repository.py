@@ -1549,6 +1549,12 @@ class ProductionRepository:
                 "matured": bool(outcome),
                 "outcome_at": outcome_at,
                 "matured_at": outcome.get("matured_at") or outcome_recorded_at,
+                "outcome": outcome.get("outcome"),
+                "actual_forward_return": (
+                    float(_finite_decimal(outcome.get("actual_forward_return")))
+                    if _finite_decimal(outcome.get("actual_forward_return")) is not None else None
+                ),
+                "actual_costs": dict(outcome.get("actual_costs") or {}),
                 "training_eligible": bool(outcome) and not eligibility_failures,
                 "eligibility_failures": eligibility_failures,
             })

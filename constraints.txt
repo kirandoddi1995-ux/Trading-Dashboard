@@ -97,7 +97,6 @@ typing_extensions==4.16.0
 tzdata==2026.3
 upstox-python-sdk==2.29.0
 urllib3==2.7.0
-uuid==1.30
 uvicorn==0.52.4
 watchdog==6.0.0
 websocket-client==1.9.1

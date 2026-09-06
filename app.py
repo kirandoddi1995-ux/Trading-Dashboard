@@ -25,6 +25,9 @@ from mf_archive import MutualFundArchive
 from risk_engine import RiskEngine
 from production_repository import ProductionRepository
 from evidence_progress import summarize_evidence_progress
+from event_backtest import run_long_bracket_backtest
+from track_record import build_complete_track_record
+from volatility_models import fit_student_t_garch11
 from evidence_ledger import ImmutableEvidenceLedger
 from quant_foundation import (
     PRODUCTION_QUANT_CONFIG,
@@ -95,7 +98,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("god_mode_quant")
-APP_BUILD = "v22.4-EVIDENCE-READINESS"
+APP_BUILD = "v22.5-PREDICTION-RIGOR"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
 
 
@@ -8978,11 +8981,13 @@ elif selected_tab == "Equities Screener & Risk":
             else:
                 st.info("Not enough return history.")
 
-        with st.expander("🧪 Strategy Backtest — Upgraded Sanity Test"):
+        with st.expander("🧪 Event-Driven Strategy Backtest — Sanity Test"):
             st.caption(
-                "This is a historical sanity test, not an out-of-sample prediction. It uses next-bar entry, "
+                "This is a historical sanity test, not an out-of-sample prediction. It replays ordered market, "
+                "signal, order, fill and exit events; uses next-event entry, "
                 "structural support/resistance targets derived from derive_long_trade_levels() (matching live trading), "
                 "no overlapping trades, conservative same-candle handling, estimated round-trip costs, and a 20-trade minimum."
+                " Student-t GARCH volatility is fitted as shadow risk evidence only and cannot alter a live score."
             )
             if st.button("Run Upgraded Backtest", key="run_backtest_btn"):
                 def backtest_signal(hist_df, hold_days, cost_pct=0.3):
@@ -9001,47 +9006,47 @@ elif selected_tab == "Equities Screener & Risk":
                         if len(d) < hold_days + 70:
                             return None
 
-                        closes = d['Close'].values
-                        highs = d['High'].values
-                        lows = d['Low'].values
-                        opens = d['Open'].values
-                        ema20 = d['EMA_20'].values
-                        ema50 = d['EMA_50'].values
-                        adx = d['ADX'].values
-                        atr = d['ATR'].values
+                        if d.index.tz is None:
+                            d.index = (
+                                d.index.normalize().tz_localize("Asia/Kolkata")
+                                + pd.Timedelta(hours=15, minutes=30)
+                            )
+                        else:
+                            d.index = d.index.tz_convert("Asia/Kolkata")
 
-                        trades = []
-                        curve = [1.0]
-                        i = 0
-                        while i + hold_days < len(d):
-                            signal = closes[i] > ema50[i] and ema20[i] >= ema50[i] and adx[i] >= 20
-                            if not signal:
-                                i += 1
-                                continue
+                        def event_signal(history):
+                            latest = history.iloc[-1]
+                            return bool(
+                                latest['Close'] > latest['EMA_50']
+                                and latest['EMA_20'] >= latest['EMA_50']
+                                and latest['ADX'] >= 20
+                            )
 
-                            entry_idx = i + 1
-                            entry = opens[entry_idx]
-                            if entry <= 0:
-                                i += 1
-                                continue
-
-                            hist_window = d.iloc[:i + 1]
-                            sl, tgt, rr, _ = derive_long_trade_levels(hist_window, entry, float(atr[i]), hold_days)
+                        def event_levels(history, entry, event_hold_days):
+                            latest_atr = float(history.iloc[-1]['ATR'])
+                            sl, tgt, rr, _ = derive_long_trade_levels(
+                                history, entry, latest_atr, event_hold_days,
+                            )
                             if sl is None or tgt is None or rr is None or rr < 1.2:
-                                i += 1
-                                continue
+                                return None
+                            return float(sl), float(tgt)
 
-                            bars = list(d.iloc[entry_idx:entry_idx + hold_days][['Open', 'High', 'Low', 'Close']].itertuples(index=False, name=None))
-                            outcome = runtime.trade_outcome(bars, float(entry), sl, tgt, cost_pct)
-                            net = outcome["net_return_pct"]
-                            trades.append({"ret": net, "outcome": outcome["reason"]})
-                            curve.append(curve[-1] * (1.0 + net / 100.0))
-                            i = entry_idx + hold_days
+                        replay = run_long_bracket_backtest(
+                            d,
+                            signal=event_signal,
+                            levels=event_levels,
+                            maximum_holding_bars=hold_days,
+                            round_trip_cost_bps=float(cost_pct) * 100.0,
+                        )
+                        trades = replay['trades']
+                        curve = [1.0]
 
                         if len(trades) < 20:
                             return None
 
-                        rets = np.array([t["ret"] for t in trades], dtype=float)
+                        rets = np.array([100.0 * t["net_return"] for t in trades], dtype=float)
+                        for net in rets:
+                            curve.append(curve[-1] * (1.0 + net / 100.0))
                         wins = int((rets > 0).sum())
                         losses = int((rets < 0).sum())
                         gross_profit = float(rets[rets > 0].sum()) if wins else 0.0
@@ -9058,14 +9063,29 @@ elif selected_tab == "Equities Screener & Risk":
                             raw_win_rate * (1.0 - raw_win_rate) / len(trades)
                             + z * z / (4.0 * len(trades) * len(trades))
                         ) / denominator
+                        volatility = fit_student_t_garch11(
+                            d['Close'].pct_change().dropna(),
+                            observed_through=d.index[-1],
+                            available_at=datetime.datetime.now(datetime.timezone.utc),
+                            forecast_horizon=hold_days,
+                        )
+                        sigma = (
+                            volatility.get("volatility_forecast", [None])[0]
+                            if volatility.get("status") == "PASS" else None
+                        )
 
                         return {
+                            "Engine": replay["engine"],
                             "Trades": len(trades),
                             "Win Rate": f"{100.0 * wins / len(trades):.1f}%",
                             "Win Rate 95% CI": f"{max(0.0, centre-margin)*100.0:.1f}–{min(1.0, centre+margin)*100.0:.1f}%",
                             "Avg Return/Trade": f"{rets.mean():+.2f}%",
                             "Profit Factor": f"{profit_factor:.2f}" if np.isfinite(profit_factor) else "∞",
                             "Max Drawdown": f"{max_dd:.2f}%",
+                            "GARCH Vol (ann.)": (
+                                f"{sigma * np.sqrt(252.0) * 100.0:.1f}% (shadow)"
+                                if sigma is not None else "Unavailable"
+                            ),
                         }
                     except Exception as exc:
                         LOGGER.debug("Backtest failed: %s", exc)
@@ -9185,8 +9205,9 @@ elif selected_tab == "Evidence Readiness":
         )
     else:
         try:
+            evidence_records = DURABLE_REPOSITORY.decision_outcome_records()
             progress = summarize_evidence_progress(
-                DURABLE_REPOSITORY.decision_outcome_records(),
+                evidence_records,
                 now=datetime.datetime.now(datetime.timezone.utc),
             )
         except Exception as exc:
@@ -9246,6 +9267,38 @@ elif selected_tab == "Evidence Readiness":
                         }, indent=2),
                         language="json",
                     )
+            track_record = build_complete_track_record(
+                evidence_records,
+                generated_at=datetime.datetime.now(datetime.timezone.utc),
+            )
+            st.markdown("### Complete Decision/Outcome Track Record")
+            st.caption(
+                "Includes losses, pending outcomes, No Trade decisions and evidence-quality rejections. "
+                "Overlapping decision returns are not presented as a portfolio equity curve."
+            )
+            denominators = track_record["denominators"]
+            performance = track_record["performance"]
+            tr1, tr2, tr3, tr4 = st.columns(4)
+            tr1.metric("All decisions", f"{denominators['all_decisions']:,}")
+            tr2.metric("Matured / pending", f"{denominators['matured']:,} / {denominators['pending']:,}")
+            tr3.metric("Wins / losses", f"{performance['wins']:,} / {performance['losses']:,}")
+            tr4.metric(
+                "Positive-return rate",
+                (f"{performance['positive_return_rate']:.1%}"
+                 if performance["positive_return_rate"] is not None else "Unavailable"),
+            )
+            track_frame = pd.DataFrame(track_record["rows"])
+            if not track_frame.empty:
+                st.dataframe(track_frame.tail(200), width="stretch", hide_index=True)
+                st.caption("Showing the latest 200 rows; the download contains the complete unfiltered record.")
+                st.download_button(
+                    "Download complete track record",
+                    data=runtime.csv_bytes(track_frame),
+                    file_name="complete_decision_outcome_track_record.csv",
+                    mime="text/csv",
+                )
+            else:
+                st.info("The immutable evidence spine currently contains zero individual decisions.")
 
 
 # ==========================================

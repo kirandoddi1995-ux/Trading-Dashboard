@@ -58,7 +58,9 @@ Alert on any of the following:
 - Model probability range above 0.15, missing baseline, regime mismatch, unsigned
   artifact, or a SHADOW specialist attempting to affect production.
 - Calibration age above 30 days, ECE above 0.08, Brier deterioration above 0.05,
-  log loss above 0.69, weak reliability-bin support or conformal coverage below 88%.
+  holdout log-loss skill below 1% versus the development-window base-rate model,
+  a non-positive one-sided 95% block-bootstrap improvement bound, weak
+  reliability-bin support or conformal coverage below 88%.
 - Fill-model OOS samples below 500, fill ECE above 0.08, stale partial fills,
   negative fill-adjusted EV or execution slippage above policy.
 - Missing aligned portfolio histories, Expected Shortfall/stress/MRC/concentration

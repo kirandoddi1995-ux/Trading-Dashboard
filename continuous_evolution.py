@@ -33,7 +33,8 @@ class ContinuousEvolutionPolicy:
     maximum_conformal_width: float = 0.35
     minimum_conformal_coverage: float = 0.88
     minimum_reliability_bin_samples: int = 30
-    maximum_log_loss: float = 0.69
+    minimum_log_loss_skill: float = 0.01
+    minimum_log_loss_improvement_ci_low: float = 0.0
     minimum_fill_oos_samples: int = 500
     maximum_fill_brier: float = 0.25
     maximum_fill_ece: float = 0.08
@@ -250,8 +251,20 @@ def validate_calibration_package(
             failures.append(reason)
     try:
         log_loss = _finite(package.get("log_loss"), name="log_loss", minimum=0)
-        if log_loss > policy.maximum_log_loss:
-            failures.append("Log loss exceeds policy")
+        baseline_log_loss = _finite(
+            package.get("baseline_log_loss"), name="baseline_log_loss", minimum=0,
+        )
+        log_loss_skill = _finite(package.get("log_loss_skill"), name="log_loss_skill")
+        improvement_low = _finite(
+            package.get("log_loss_improvement_ci_low"),
+            name="log_loss_improvement_ci_low",
+        )
+        if log_loss >= baseline_log_loss:
+            failures.append("Log loss does not beat the chronological base-rate model")
+        if log_loss_skill < policy.minimum_log_loss_skill:
+            failures.append("Log-loss skill is below policy")
+        if improvement_low <= policy.minimum_log_loss_improvement_ci_low:
+            failures.append("Paired log-loss improvement is not statistically established")
     except ValueError as exc:
         failures.append(str(exc))
     reliability = package.get("reliability")

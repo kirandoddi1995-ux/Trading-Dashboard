@@ -25,12 +25,14 @@ RUNTIME = ['app.py', 'app_runtime.py', 'scan_jobs.py', 'reliable_charts.py',
            'production_readiness.py', 'verify_promotion_request.py',
            'managed_secrets.py', 'secondary_quote_provider.py', 'recovery_drill.py',
            'research_features.py', 'model_training_pipeline.py',
-           'evidence_progress.py',
+           'evidence_progress.py', 'event_backtest.py', 'volatility_models.py',
+           'track_record.py',
            'resilience_policy.json', 'resilience_policy.sha256',
            'requirements.txt', 'constraints.txt']
 FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_GUIDE.md',
                    'RESILIENCE_IMPLEMENTATION.md', 'RESILIENCE_RUNBOOK.md',
                    'CONTINUOUS_EVOLUTION_IMPLEMENTATION.md',
+                   'PREDICTION_RIGOR_IMPLEMENTATION.md',
                    'FIX_VERIFICATION_2026-08-31.md', 'provider_smoke.py', 'package_release.py',
                    'database_runtime_role.sql.example', 'bootstrap_clean_environment.ps1',
                    'tests/test_regressions.py', 'tests/test_mf_research.py', 'tests/test_audit_fixes.py',
@@ -51,7 +53,7 @@ FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_
                    'tests/test_phase3_reliability.py', 'tests/test_research_features.py',
                    'tests/test_option_research_features.py',
                    'tests/test_model_training_pipeline.py',
-                   'tests/test_evidence_progress.py',
+                   'tests/test_evidence_progress.py', 'tests/test_prediction_rigor.py',
                    '.github/workflows/quality.yml', '.github/workflows/scheduled-collector.yml',
                    '.github/workflows/resilience.yml', '.github/workflows/production-promotion.yml',
                    '.github/workflows/production-rollback.yml',
@@ -66,7 +68,7 @@ def package():
     if not canaries['ok']:
         raise RuntimeError(f"Release canaries failed: {canaries['checks']}")
     manifest = {}
-    archive = ROOT / 'release-v22.4-evidence-readiness.zip'
+    archive = ROOT / 'release-v22.5-prediction-rigor.zip'
     for name in FILES:
         path = (ROOT / name).resolve()
         if not path.is_relative_to(ROOT) or not path.is_file():

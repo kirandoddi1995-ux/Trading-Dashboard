@@ -123,7 +123,10 @@ def build_calibration_artifact(
         raise ValueError("Score-drift evidence needs at least 20 development and holdout samples")
     holdout_metrics = dict((result.get("holdout") or {}).get("metrics") or {})
     development_metrics = dict(result.get("metrics") or {})
-    for name in ("brier", "baseline_brier", "ece", "log_loss"):
+    for name in (
+        "brier", "baseline_brier", "ece", "log_loss", "baseline_log_loss",
+        "log_loss_skill", "log_loss_improvement_ci_low",
+    ):
         _finite(holdout_metrics.get(name), f"holdout {name}")
     calibration_decay = max(
         0.0,
@@ -258,6 +261,9 @@ def infer_equity_probability(
         "ece": float(metrics["ece"]), "brier": float(metrics["brier"]),
         "baseline_brier": float(metrics["baseline_brier"]),
         "log_loss": float(metrics["log_loss"]),
+        "baseline_log_loss": float(metrics["baseline_log_loss"]),
+        "log_loss_skill": float(metrics["log_loss_skill"]),
+        "log_loss_improvement_ci_low": float(metrics["log_loss_improvement_ci_low"]),
         "model_version": str(package["version"]),
         "validated_at": package["validated_at"], "valid_until": package["valid_until"],
         "feature_psi": float(package["feature_psi"]),

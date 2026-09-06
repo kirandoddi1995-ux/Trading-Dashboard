@@ -347,6 +347,14 @@ class CalibrationDriftMonitor:
             brier = finite(evidence.get("brier"), name="Brier score", minimum=0)
             ece = finite(evidence.get("ece"), name="ECE", minimum=0)
             log_loss = finite(evidence.get("log_loss"), name="log loss", minimum=0)
+            baseline_log_loss = finite(
+                evidence.get("baseline_log_loss"), name="baseline log loss", minimum=0,
+            )
+            log_loss_skill = finite(evidence.get("log_loss_skill"), name="log-loss skill")
+            improvement_low = finite(
+                evidence.get("log_loss_improvement_ci_low"),
+                name="log-loss improvement lower bound",
+            )
             validated = aware_datetime(evidence.get("validated_at"), name="validated_at")
             deterioration = finite(evidence.get("brier_deterioration", 0), name="Brier deterioration", minimum=0)
             age_days = ((aware_datetime(now or utcnow(), name="now") - validated).total_seconds() / 86400)
@@ -358,7 +366,10 @@ class CalibrationDriftMonitor:
             if age_days > float(p["maximum_age_days"]): reasons.append("Calibration evidence expired")
             if brier > float(p["maximum_brier"]): reasons.append("Brier score breached")
             if ece > float(p["maximum_ece"]): reasons.append("ECE breached")
-            if log_loss > float(p["maximum_log_loss"]): reasons.append("Log loss breached")
+            if log_loss >= baseline_log_loss: reasons.append("Log loss did not beat base rate")
+            if log_loss_skill < float(p["minimum_log_loss_skill"]): reasons.append("Log-loss skill breached")
+            if improvement_low <= float(p["minimum_log_loss_improvement_ci_low"]):
+                reasons.append("Log-loss improvement is not statistically established")
             if deterioration > float(p["maximum_brier_deterioration"]): reasons.append("Calibration deterioration breached")
         with self._lock:
             self._consecutive = self._consecutive + 1 if reasons else 0

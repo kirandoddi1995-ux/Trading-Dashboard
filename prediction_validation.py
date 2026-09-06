@@ -52,6 +52,8 @@ class CalibrationPolicy:
     minimum_class_samples: int = 30
     minimum_oos_samples: int = 100
     maximum_ece: float = 0.10
+    minimum_log_loss_skill: float = 0.01
+    minimum_log_loss_improvement_ci_low: float = 0.0
     minimum_probability: float = 0.60
     minimum_probability_margin: float = 0.05
     minimum_pit_coverage: float = 0.90
@@ -296,7 +298,7 @@ class PlattCalibrator:
         return self._sigmoid(self.intercept + self.slope * x)
 
 
-def calibration_metrics(outcomes, probabilities, bins=10) -> dict:
+def calibration_metrics(outcomes, probabilities, bins=10, *, baseline_probability=None) -> dict:
     y = np.asarray(outcomes, dtype=float)
     raw_p = np.asarray(probabilities, dtype=float)
     p = np.clip(raw_p, 1e-9, 1 - 1e-9)
@@ -310,7 +312,14 @@ def calibration_metrics(outcomes, probabilities, bins=10) -> dict:
         raise ValueError("At least two calibration bins are required")
     brier = float(np.mean((p - y) ** 2))
     log_loss = float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
-    baseline = float(np.mean((np.mean(y) - y) ** 2))
+    base_probability = float(np.mean(y) if baseline_probability is None else baseline_probability)
+    if not math.isfinite(base_probability) or not 0 <= base_probability <= 1:
+        raise ValueError("baseline_probability must be finite and between zero and one")
+    base_probability = float(np.clip(base_probability, 1e-9, 1 - 1e-9))
+    baseline = float(np.mean((base_probability - y) ** 2))
+    baseline_log_loss = float(-np.mean(
+        y * np.log(base_probability) + (1 - y) * np.log(1 - base_probability)
+    ))
     edges = np.linspace(0.0, 1.0, bins + 1)
     reliability, ece = [], 0.0
     base_rate = float(np.mean(y))
@@ -332,7 +341,65 @@ def calibration_metrics(outcomes, probabilities, bins=10) -> dict:
             "brier_reliability": float(calibration_component),
             "brier_resolution": float(resolution_component),
             "brier_uncertainty": float(base_rate * (1.0 - base_rate)),
-            "log_loss": log_loss, "ece": float(ece), "reliability": reliability}
+            "log_loss": log_loss, "baseline_log_loss": baseline_log_loss,
+            "log_loss_skill": (1.0 - log_loss / baseline_log_loss if baseline_log_loss > 0 else None),
+            "baseline_probability": base_probability,
+            "ece": float(ece), "reliability": reliability}
+
+
+def paired_log_loss_improvement(
+    outcomes,
+    probabilities,
+    *,
+    baseline_probability,
+    confidence=0.95,
+    bootstrap_samples=1_000,
+    block_length=5,
+    seed=1729,
+) -> dict:
+    """One-sided block-bootstrap interval for baseline minus candidate log loss."""
+    y = np.asarray(outcomes, dtype=float)
+    p = np.asarray(probabilities, dtype=float)
+    if not len(y) or len(y) != len(p) or not np.isin(y, [0.0, 1.0]).all():
+        return {"status": "UNAVAILABLE", "reason": "Valid paired binary outcomes are required"}
+    try:
+        base = float(baseline_probability)
+    except (TypeError, ValueError, OverflowError):
+        return {"status": "UNAVAILABLE", "reason": "Baseline probability is invalid"}
+    if not np.isfinite(p).all() or not math.isfinite(base) or not 0 < base < 1:
+        return {"status": "UNAVAILABLE", "reason": "Finite interior probabilities are required"}
+    if len(y) < 30:
+        return {"status": "UNAVAILABLE", "reason": "At least 30 paired observations are required"}
+    p = np.clip(p, 1e-9, 1 - 1e-9)
+    base = float(np.clip(base, 1e-9, 1 - 1e-9))
+    candidate_loss = -(y * np.log(p) + (1 - y) * np.log(1 - p))
+    baseline_loss = -(y * math.log(base) + (1 - y) * math.log(1 - base))
+    differences = baseline_loss - candidate_loss
+    count = len(differences)
+    block = max(1, min(int(block_length), count))
+    draws = max(int(bootstrap_samples), 200)
+    blocks_needed = int(math.ceil(count / block))
+    rng = np.random.default_rng(seed)
+    estimates = np.empty(draws, dtype=float)
+    for draw in range(draws):
+        starts = rng.integers(0, count, size=blocks_needed)
+        sample = np.concatenate([
+            np.take(differences, np.arange(start, start + block) % count)
+            for start in starts
+        ])[:count]
+        estimates[draw] = float(np.mean(sample))
+    alpha = 1.0 - float(confidence)
+    if not 0 < alpha < 1:
+        return {"status": "UNAVAILABLE", "reason": "confidence must be between zero and one"}
+    return {
+        "status": "PASS",
+        "samples": count,
+        "mean_improvement": float(np.mean(differences)),
+        "lower_one_sided": float(np.quantile(estimates, alpha)),
+        "confidence": float(confidence),
+        "bootstrap_samples": draws,
+        "block_length": block,
+    }
 
 
 def wilson_score_interval(successes: int, samples: int, confidence=0.95) -> tuple[float, float]:
@@ -658,7 +725,18 @@ def run_advanced_chronological_validation(
         float(model["intercept"]) + float(model["slope"]) * holdout["score"].astype(float).to_numpy() / 100.0
     )
     holdout_y = holdout["target_before_stop"].astype(int).to_numpy()
-    holdout_metrics = calibration_metrics(holdout_y, holdout_probability)
+    development_base_rate = float(development["target_before_stop"].astype(int).mean())
+    holdout_metrics = calibration_metrics(
+        holdout_y, holdout_probability, baseline_probability=development_base_rate,
+    )
+    holdout_log_loss_improvement = paired_log_loss_improvement(
+        holdout_y, holdout_probability, baseline_probability=development_base_rate,
+        bootstrap_samples=bootstrap_samples, block_length=bootstrap_block_length,
+    )
+    holdout_metrics["log_loss_improvement_ci_low"] = (
+        holdout_log_loss_improvement.get("lower_one_sided")
+        if holdout_log_loss_improvement.get("status") == "PASS" else None
+    )
     # Multiple same-day signals are correlated. Aggregate by decision date
     # before bootstrap and Sharpe inference instead of treating them as IID.
     holdout_return_series = holdout.assign(
@@ -679,6 +757,17 @@ def run_advanced_chronological_validation(
         failures.append("Holdout Brier score does not beat the base rate")
     if holdout_metrics["ece"] > policy.maximum_ece:
         failures.append("Holdout calibration error exceeds policy")
+    if (
+        holdout_metrics.get("log_loss_skill") is None
+        or holdout_metrics["log_loss_skill"] < policy.minimum_log_loss_skill
+    ):
+        failures.append("Holdout log-loss skill is below policy")
+    if (
+        holdout_log_loss_improvement.get("status") != "PASS"
+        or holdout_log_loss_improvement.get("lower_one_sided", -math.inf)
+        <= policy.minimum_log_loss_improvement_ci_low
+    ):
+        failures.append("Holdout paired log-loss improvement is not statistically established")
     if return_interval.get("status") != "PASS" or return_interval["lower"] <= 0:
         failures.append("Holdout net excess-return interval is not strictly positive")
     if deflated.get("status") != "PASS" or deflated["deflated_sharpe_probability"] < 0.95:
@@ -697,6 +786,7 @@ def run_advanced_chronological_validation(
             "start": str(holdout["as_of_date"].min()),
             "end": str(holdout["as_of_date"].max()),
             "metrics": holdout_metrics,
+            "log_loss_improvement": holdout_log_loss_improvement,
             "win_rate": float(np.mean(holdout_y)),
             "win_rate_interval": {"lower": win_interval[0], "upper": win_interval[1]},
             "excess_return_interval": return_interval,
