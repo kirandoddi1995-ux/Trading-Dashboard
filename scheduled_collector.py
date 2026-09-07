@@ -157,8 +157,19 @@ def fetch_nse_exchange_status(client, token: str, *, now=None) -> dict:
     updated = dt.datetime.fromtimestamp(float(data["last_updated"]) / 1000.0, dt.timezone.utc)
     received = (now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc)
     age = (received - updated).total_seconds()
-    if age < -30 or age > 300:
-        raise RuntimeError(f"NSE exchange status is stale or future-dated ({age:.0f}s)")
+    # Upstox's last_updated is the time the exchange *status changed* (for
+    # example, NORMAL_OPEN at the opening transition), not a heartbeat that is
+    # refreshed on every request.  It therefore becomes hours old during a
+    # perfectly healthy session.  Require the transition to belong to today's
+    # IST session instead of incorrectly imposing a five-minute heartbeat SLA.
+    # Fresh quote timestamps and coverage are validated separately below.
+    if age < -30:
+        raise RuntimeError(f"NSE exchange status is future-dated ({age:.0f}s)")
+    if updated.astimezone(IST).date() != received.astimezone(IST).date():
+        raise RuntimeError(
+            "NSE exchange status was not updated for the current IST trading date "
+            f"({age:.0f}s old)"
+        )
     if str(data["status"]).upper() != "NORMAL_OPEN":
         raise RuntimeError(f"NSE is not in NORMAL_OPEN state ({data['status']})")
     return {
