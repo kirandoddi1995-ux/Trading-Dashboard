@@ -136,18 +136,25 @@ def test_manual_and_scheduled_stage1_share_one_deterministic_algorithm():
 
 def test_stage1_represents_non_finite_average_volume_as_unavailable():
     now = dt.datetime(2026, 9, 7, 10, 0, tzinfo=collector.IST)
-    key = "NSE_EQ|AAA"
+    keys = {"AAA": "NSE_EQ|AAA", "BBB": "NSE_EQ|BBB"}
 
     _, stats = stage1_prefilter(
-        ["AAA"], {"AAA": key},
-        {key: quote(105, 100, 1800, now.astimezone(UTC))},
-        1, average_volumes={key: float("nan")}, elapsed_fraction=0.25,
+        list(keys), keys,
+        {
+            keys["AAA"]: quote(105, 100, 1800, now.astimezone(UTC)),
+            keys["BBB"]: quote(102, 100, 1200, now.astimezone(UTC)),
+        },
+        2,
+        average_volumes={keys["AAA"]: float("nan"), keys["BBB"]: 1000.0},
+        elapsed_fraction=0.25,
     )
 
-    features = stats["_evidence"][0]["features"]
+    evidence = {row["trading_symbol"]: row for row in stats["_evidence"]}
+    features = evidence["AAA"]["features"]
     assert features["average_volume_20d"] is None
     assert features["raw_volume_ratio"] is None
     assert features["volume_pace_ratio"] is None
+    assert evidence["BBB"]["features"]["average_volume_20d"] == 1000.0
 
 
 def test_scheduled_scan_records_complete_shadow_funnel_and_never_buy(monkeypatch):

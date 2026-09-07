@@ -159,6 +159,53 @@ def test_buy_requires_executable_quote_verified_universe_and_complete_costs(tmp_
     assert ledger.events("decision:decision-1") == []
 
 
+def test_candidate_batch_isolates_non_finite_input_and_records_other_candidates(tmp_path):
+    ledger, _, spine = services(tmp_path)
+    common = {
+        "quote": {"status": "AVAILABLE", "last": 100.0},
+        "costs": {"status": "NOT_EVALUATED", "reason": "Stage-1 only"},
+    }
+    candidates = [
+        {
+            **common, "decision_id": "bad-1", "instrument_key": "NSE_EQ|BAD",
+            "instrument": "BAD", "action": "Watch", "stage1_pass": True,
+            "rejection_reason": None,
+            "inputs_used": {"average_volume_20d": float("nan"), "momentum": 1.2},
+        },
+        {
+            **common, "decision_id": "good-1", "instrument_key": "NSE_EQ|GOOD",
+            "instrument": "GOOD", "action": "Watch", "stage1_pass": True,
+            "rejection_reason": None,
+            "inputs_used": {"average_volume_20d": 1000.0, "momentum": 2.4},
+        },
+    ]
+
+    result = spine.capture_candidate_batch(
+        scan_run_id="scan-quality-1", observed_at=NOW,
+        strategy_id="stage1-v1", target_version="target-v1", horizon_sessions=5,
+        candidates=candidates,
+        universe={"status": "VERIFIED", "snapshot_id": "snapshot-1"},
+        code_version="v1", code_hash="c" * 64, config_hash="g" * 64,
+        policy_hash="p" * 64,
+    )
+
+    stored = ledger.events("scan:scan-quality-1")[0]["payload"]
+    rows = {row["instrument"]: row for row in stored["candidates"]}
+    assert stored["candidate_count"] == 2
+    assert stored["data_quality_failure_count"] == 1
+    assert rows["BAD"]["action"] == "No Trade"
+    assert rows["BAD"]["stage1_pass"] is False
+    assert rows["BAD"]["inputs_used"]["average_volume_20d"] is None
+    assert rows["BAD"]["data_quality"]["code"] == "NON_FINITE_CANDIDATE_VALUE"
+    assert rows["GOOD"]["action"] == "Watch"
+    assert rows["GOOD"]["stage1_pass"] is True
+    assert result["quality_failures"] == [{
+        "decision_id": "bad-1", "instrument_key": "NSE_EQ|BAD",
+        "instrument": "BAD", "code": "NON_FINITE_CANDIDATE_VALUE",
+        "fields": ["candidate.inputs_used.average_volume_20d"],
+    }]
+
+
 def test_feature_quality_records_stale_range_and_schema_failures(tmp_path):
     ledger, registry, _ = services(tmp_path)
     monitor = FeatureQualityMonitor(registry, ledger.append, MetricsRegistry())
