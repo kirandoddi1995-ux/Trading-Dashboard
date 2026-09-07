@@ -7,6 +7,7 @@ from production_repository import (
     _connection_error_code,
     _executemany,
     _finite_decimal,
+    _json_compatible,
     _safe_database_url_shape,
     _strict_utc_datetime,
 )
@@ -49,6 +50,18 @@ def test_finite_decimal_preserves_valid_values_and_rejects_non_finite_values():
     assert _finite_decimal("NaN") is None
     assert _finite_decimal("Infinity") is None
     assert _finite_decimal(None) is None
+
+
+def test_json_compatible_recursively_normalizes_non_finite_numbers():
+    payload = {
+        "average_volume_20d": float("nan"),
+        "nested": [1.0, float("inf"), {"negative": float("-inf")}],
+    }
+
+    assert _json_compatible(payload) == {
+        "average_volume_20d": None,
+        "nested": [1.0, None, {"negative": None}],
+    }
 
 
 def test_database_url_shape_reports_structure_without_exposing_password():
