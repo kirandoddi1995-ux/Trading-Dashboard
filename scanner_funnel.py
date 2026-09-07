@@ -82,7 +82,13 @@ def stage1_prefilter(
             )
             close_location = _clamp(close_location, 0.0, 1.0)
             avg_vol = average_volumes.get(key)
-            if avg_vol and float(avg_vol) > 0 and day_volume > 0:
+            try:
+                avg_vol = float(avg_vol)
+                if not math.isfinite(avg_vol) or avg_vol <= 0:
+                    avg_vol = None
+            except (TypeError, ValueError, OverflowError):
+                avg_vol = None
+            if avg_vol is not None and day_volume > 0:
                 raw_daily_ratio = day_volume / float(avg_vol)
                 volume_pace_ratio = (
                     min(raw_daily_ratio / float(elapsed_fraction), 5.0)

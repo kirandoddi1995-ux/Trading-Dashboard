@@ -17,6 +17,7 @@ import os
 import threading
 import urllib.parse
 import uuid
+from numbers import Real
 from contextlib import contextmanager
 from decimal import Decimal
 from typing import Iterable, Mapping
@@ -119,8 +120,27 @@ def _strict_utc_datetime(value, name: str) -> dt.datetime:
     return parsed.astimezone(dt.timezone.utc)
 
 
+def _json_compatible(value):
+    """Return strict-JSON data, representing unavailable numerics as null.
+
+    Python's JSON encoder emits NaN and Infinity by default even though they
+    are not valid JSON values. PostgreSQL JSONB correctly rejects them, so all
+    durable JSON writes pass through this repository-boundary normalization.
+    """
+    if isinstance(value, Mapping):
+        return {key: _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    if isinstance(value, Decimal):
+        return value if value.is_finite() else None
+    if isinstance(value, Real) and not math.isfinite(float(value)):
+        return None
+    return value
+
+
 def _json(value):
-    clean = json.loads(json.dumps(value or {}, default=str))
+    clean = _json_compatible(value or {})
+    clean = json.loads(json.dumps(clean, default=str, allow_nan=False))
     return Jsonb(clean) if Jsonb is not None else clean
 
 
