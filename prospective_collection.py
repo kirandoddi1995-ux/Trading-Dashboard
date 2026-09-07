@@ -16,6 +16,8 @@ import time
 import urllib.parse
 from collections.abc import Iterable, Mapping
 
+import requests
+
 from decision_evidence import FeatureDefinition, FeatureQualityMonitor, FeatureRegistry
 from observability import get_registry
 from research_features import order_book_features, publish_research_features
@@ -26,6 +28,9 @@ UPSTOX_API = "https://api.upstox.com"
 GLOBAL_INSTRUMENTS = (
     "https://assets.upstox.com/market-quote/instruments/exchange/global.json.gz"
 )
+# Upstox's Global Instruments announcement links these keys to the established
+# Full Market Quote API. Keep this separate from the high-volume NSE V3 path.
+GLOBAL_QUOTE_API = f"{UPSTOX_API}/v2/market-quote/quotes"
 FULL_QUOTE_BATCH_SIZE = 400  # Official endpoint maximum is 500.
 GLOBAL_NAMES = {
     "GIFT NIFTY", "DOW JONES", "S&P", "S&P 500", "US 30",
@@ -135,6 +140,77 @@ def fetch_global_instruments(client) -> list[dict]:
         if name in GLOBAL_NAMES and row.get("instrument_key"):
             wanted.append(dict(row))
     return wanted
+
+
+def fetch_global_quotes(client, token: str, instrument_keys: Iterable[str]) -> dict:
+    """Fetch global quotes independently with explicit per-key failures.
+
+    Keys are supplied by Upstox's Global Instruments master. One request per
+    key prevents one rejected global instrument from invalidating every cue.
+    In particular, HTTP 400 responses are recorded once and are not retried.
+    """
+    keys = list(dict.fromkeys(str(key) for key in instrument_keys if key))
+    quotes: dict[str, dict] = {}
+    failures: list[dict] = []
+    for key in keys:
+        try:
+            payload = _request_json(
+                client,
+                GLOBAL_QUOTE_API,
+                token=token,
+                params={"instrument_key": key},
+            )
+        except (PermissionError, ValueError, requests.RequestException) as exc:
+            response = getattr(exc, "response", None)
+            status_code = getattr(response, "status_code", None)
+            provider_code = None
+            if response is not None:
+                try:
+                    body = response.json()
+                    errors = body.get("errors") if isinstance(body, Mapping) else None
+                    if isinstance(errors, list) and errors and isinstance(errors[0], Mapping):
+                        provider_code = errors[0].get("errorCode") or errors[0].get("error_code")
+                except (TypeError, ValueError, requests.RequestException):
+                    pass
+            failures.append({
+                "instrument_key": key,
+                "error_kind": type(exc).__name__,
+                "http_status": status_code,
+                "provider_code": provider_code,
+            })
+            continue
+
+        data = payload.get("data") or {}
+        matched = False
+        for response_key, raw in data.items():
+            if not isinstance(raw, Mapping):
+                continue
+            item = dict(raw)
+            returned_key = str(
+                item.get("instrument_token") or item.get("instrument_key") or ""
+            )
+            if returned_key and returned_key != key:
+                continue
+            # With one requested key, a provider colon-form response key is
+            # unambiguous even if instrument_token is omitted from the body.
+            if not returned_key and len(data) != 1:
+                continue
+            item["instrument_key"] = key
+            item["provider_response_key"] = str(response_key)
+            if item.get("prev_close_price") is not None and not item.get("prev_ohlc"):
+                item["prev_ohlc"] = {"close": item.get("prev_close_price")}
+            item["_received_at"] = dt.datetime.now(UTC).isoformat()
+            quotes[key] = item
+            matched = True
+            break
+        if not matched:
+            failures.append({
+                "instrument_key": key,
+                "error_kind": "QuoteUnavailable",
+                "http_status": None,
+                "provider_code": None,
+            })
+    return {"quotes": quotes, "failures": failures, "requested": len(keys)}
 
 
 def fetch_institutional_flows(client, token: str) -> list[dict]:

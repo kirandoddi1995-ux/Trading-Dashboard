@@ -45,6 +45,7 @@ from prospective_collection import (
     collect_company_profiles,
     fetch_full_quotes,
     fetch_global_instruments,
+    fetch_global_quotes,
     fetch_institutional_flows,
     require_licence_acknowledgement,
     store_global_cues,
@@ -347,33 +348,74 @@ def _post_close_shadow(repo, client, token: str) -> dict:
         )
         return {"status": "DISABLED", "reason": str(exc)}
     writer = ProspectiveFeatureWriter(repo)
-    flow_rows = fetch_institutional_flows(client, token)
-    flows = store_institutional_flows(writer, flow_rows)
-    repo.record_quality_event(
-        "prospective_institutional_flows", "WARNING",
-        "PROVIDER_PUBLICATION_TIME_UNAVAILABLE",
-        "Upstox exposes record time but not a separate official release time; first collector receipt is preserved as availability",
-        {"records": len(flow_rows), "availability_semantics": "first_observed_by_collector"},
-    )
-    if not flow_rows:
+    try:
+        flow_rows = fetch_institutional_flows(client, token)
+        flows = store_institutional_flows(writer, flow_rows)
         repo.record_quality_event(
-            "prospective_institutional_flows", "ERROR", "FLOW_DATA_MISSING",
-            "No current-date FII/DII records were available after close",
+            "prospective_institutional_flows", "WARNING",
+            "PROVIDER_PUBLICATION_TIME_UNAVAILABLE",
+            "Upstox exposes record time but not a separate official release time; first collector receipt is preserved as availability",
+            {"records": len(flow_rows), "availability_semantics": "first_observed_by_collector"},
         )
-        flows["missing"] = 2
-    global_cues = _global_cue_shadow(
-        repo, client, token, writer=writer, capture_context="INDIA_CLOSE",
-    )
-    profiles = collect_company_profiles(
-        repo, client, token, limit=max(1, int(os.environ.get("PROFILE_COLLECTION_LIMIT", "25"))),
-    )
+        if not flow_rows:
+            repo.record_quality_event(
+                "prospective_institutional_flows", "ERROR", "FLOW_DATA_MISSING",
+                "No current-date FII/DII records were available after close",
+            )
+            flows["missing"] = 2
+        flows["status"] = "PARTIAL" if (
+            flows.get("rejected", 0) or flows.get("missing", 0)
+        ) else "SUCCESS"
+    except Exception as exc:
+        repo.record_quality_event(
+            "prospective_institutional_flows", "ERROR", "FLOW_COLLECTION_FAILED",
+            f"Institutional-flow collection failed: {type(exc).__name__}",
+        )
+        flows = {
+            "status": "FAILED", "stored": 0, "rejected": 0, "missing": 2,
+            "error_kind": type(exc).__name__,
+        }
+
+    try:
+        global_cues = _global_cue_shadow(
+            repo, client, token, writer=writer, capture_context="INDIA_CLOSE",
+        )
+    except Exception as exc:
+        repo.record_quality_event(
+            "prospective_global_cues", "ERROR", "GLOBAL_CUE_STAGE_FAILED",
+            f"Global-cue collection failed: {type(exc).__name__}",
+        )
+        global_cues = {
+            "status": "FAILED", "stored": 0, "rejected": 0,
+            "missing_quotes": 0, "error_kind": type(exc).__name__,
+        }
+
+    try:
+        profiles = collect_company_profiles(
+            repo, client, token,
+            limit=max(1, int(os.environ.get("PROFILE_COLLECTION_LIMIT", "25"))),
+        )
+        profiles["status"] = "PARTIAL" if profiles.get("failed", 0) else "SUCCESS"
+    except Exception as exc:
+        repo.record_quality_event(
+            "prospective_company_profile", "ERROR", "PROFILE_STAGE_FAILED",
+            f"Company-profile collection failed: {type(exc).__name__}",
+        )
+        profiles = {
+            "status": "FAILED", "checked": 0, "stored": 0, "failed": 1,
+            "error_kind": type(exc).__name__,
+        }
     failures = (
         flows.get("rejected", 0) + flows.get("missing", 0)
         + global_cues.get("rejected", 0) + global_cues.get("missing_quotes", 0)
         + profiles.get("failed", 0)
     )
+    stage_failed = any(
+        stage.get("status") == "FAILED"
+        for stage in (flows, global_cues, profiles)
+    )
     return {
-        "status": "PARTIAL" if failures else "SUCCESS",
+        "status": "PARTIAL" if failures or stage_failed else "SUCCESS",
         "institutional_flows": flows, "global_cues": global_cues,
         "company_profiles": profiles, "failures": failures,
     }
@@ -392,15 +434,28 @@ def _global_cue_shadow(repo, client, token: str, *, writer=None,
         return {"status": "DISABLED", "reason": str(exc)}
     writer = writer or ProspectiveFeatureWriter(repo)
     instruments = fetch_global_instruments(client)
-    global_quotes = fetch_full_quotes(
+    quote_result = fetch_global_quotes(
         client, token, [row["instrument_key"] for row in instruments],
     )
+    global_quotes = quote_result["quotes"]
+    for failure in quote_result["failures"]:
+        status = failure.get("http_status")
+        suffix = f" (HTTP {status})" if status is not None else ""
+        repo.record_quality_event(
+            "prospective_global_cues", "ERROR", "GLOBAL_QUOTE_FETCH_FAILED",
+            f"Global quote collection failed for one configured instrument{suffix}",
+            failure,
+        )
     result = store_global_cues(
         writer, instruments, global_quotes, capture_context=capture_context,
     )
-    result["status"] = "PARTIAL" if (
-        result.get("rejected", 0) or result.get("missing_quotes", 0)
-    ) else "SUCCESS"
+    result["fetch_failures"] = quote_result["failures"]
+    if quote_result["requested"] and not global_quotes:
+        result["status"] = "FAILED"
+    elif result.get("rejected", 0) or result.get("missing_quotes", 0):
+        result["status"] = "PARTIAL"
+    else:
+        result["status"] = "SUCCESS"
     result["capture_context"] = capture_context
     return result
 
@@ -928,8 +983,8 @@ def run(mode: str, *, nav_file=None) -> dict:
             lease.assert_valid()
             run_status = "PARTIAL" if (
                 result.get("targets", {}).get("failed", 0)
-                or result.get("prospective_shadow", {}).get("status") == "PARTIAL"
-                or result.get("global_cue_shadow", {}).get("status") == "PARTIAL"
+                or result.get("prospective_shadow", {}).get("status") in {"PARTIAL", "FAILED"}
+                or result.get("global_cue_shadow", {}).get("status") in {"PARTIAL", "FAILED"}
                 or result.get("corporate_actions", {}).get("failed", 0)
             ) else "SUCCESS"
             result["status"] = run_status
