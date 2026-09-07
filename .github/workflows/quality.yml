@@ -18,6 +18,8 @@ jobs:
       - run: python production_readiness.py --repository-only --strict
       - name: Static analysis (mandatory)
         run: python -m pyflakes *.py tests
+      - name: Import deployed Streamlit entry point (mandatory)
+        run: python -c "import app"
       # requirements.txt already loads constraints.txt via its first `-c` line.
       - run: python -m pip_audit -r requirements.txt
       - run: python -m pytest -q
