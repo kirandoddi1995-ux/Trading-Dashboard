@@ -3,12 +3,14 @@ import datetime as dt
 from pathlib import Path
 
 import pytest
+import requests
 
 import scheduled_collector as collector
 from prospective_collection import (
     COMPANY_PROFILE,
     LicenseAcknowledgementRequired,
     ProspectiveFeatureWriter,
+    fetch_global_quotes,
     fetch_institutional_flows,
     require_licence_acknowledgement,
     store_order_books,
@@ -90,6 +92,28 @@ class FlowClient:
                 "sell_amount": 90,
             }]},
         })
+
+
+class BadGlobalQuoteResponse:
+    status_code = 400
+
+    def raise_for_status(self):
+        raise requests.HTTPError("400 Bad Request", response=self)
+
+    def json(self):
+        return {
+            "status": "error",
+            "errors": [{"errorCode": "UDAPI100095", "message": "Invalid Instrument key"}],
+        }
+
+
+class BadGlobalQuoteClient:
+    def __init__(self):
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return BadGlobalQuoteResponse()
 
 
 def quote(price, close, volume, received):
@@ -301,3 +325,116 @@ def test_flow_collection_uses_provider_effective_and_actual_receipt_timestamps()
     assert {row["participant"] for row in rows} == {"FII", "DII"}
     assert all(before <= row["available_at"] <= after for row in rows)
     assert all(row["provider_effective_at"] < row["available_at"] for row in rows)
+
+
+def test_global_quote_400_is_per_key_explicit_and_not_retried():
+    client = BadGlobalQuoteClient()
+
+    result = fetch_global_quotes(client, "token", ["GLOBAL_INDEX|^DJI"])
+
+    assert result == {
+        "quotes": {},
+        "failures": [{
+            "instrument_key": "GLOBAL_INDEX|^DJI",
+            "error_kind": "HTTPError",
+            "http_status": 400,
+            "provider_code": "UDAPI100095",
+        }],
+        "requested": 1,
+    }
+    assert len(client.calls) == 1
+    assert client.calls[0][0].endswith("/v2/market-quote/quotes")
+    assert client.calls[0][1]["params"] == {"instrument_key": "GLOBAL_INDEX|^DJI"}
+
+
+def test_close_run_keeps_committed_stages_when_one_global_quote_returns_400(monkeypatch):
+    class RunRepository(MemoryRepository):
+        def __init__(self):
+            super().__init__()
+            self.commits = []
+            self.finished = []
+
+        def acquire_collector_lease(self, *args, **kwargs):
+            return {"fencing_token": 41}
+
+        def renew_collector_lease(self, *args, **kwargs):
+            return True
+
+        def release_collector_lease(self, *args, **kwargs):
+            return True
+
+        def start_run(self, *args, **kwargs):
+            return "close-run"
+
+        def finish_run(self, run_id, **kwargs):
+            self.finished.append((run_id, kwargs))
+
+        def archive_universe(self, rows, snapshot_date):
+            self.commits.append("nse_universe")
+            return super().archive_universe(rows, snapshot_date)
+
+        def archive_quotes(self, rows, **kwargs):
+            self.commits.append("nse_quotes")
+            return super().archive_quotes(rows, **kwargs)
+
+    repo = RunRepository()
+    client = BadGlobalQuoteClient()
+    universe = [{"instrument_key": "NSE_EQ|AAA", "trading_symbol": "AAA"}]
+
+    monkeypatch.setenv("UPSTOX_ANALYTICS_TOKEN", "token")
+    monkeypatch.setenv("PROSPECTIVE_DATA_LICENSE_ACK", "true")
+    monkeypatch.setattr(collector, "ProductionRepository", lambda *args, **kwargs: repo)
+    monkeypatch.setattr(collector, "session", lambda: client)
+    monkeypatch.setattr(collector, "fetch_nse_universe", lambda unused: universe)
+    monkeypatch.setattr(
+        collector, "fetch_quotes",
+        lambda unused_client, unused_token, unused_keys: [{"instrument_key": "NSE_EQ|AAA"}],
+    )
+
+    def mature(*args, **kwargs):
+        repo.commits.append("target_maturation")
+        return {"stored": 2, "failed": 0}
+
+    def mutual_funds(*args, **kwargs):
+        repo.commits.append("mutual_funds")
+        return {"nav_archived": 3, "disclosures_archived": 0}
+
+    def store_flows(writer, rows):
+        writer.repository.commits.append("institutional_flows")
+        return {"stored": 4, "rejected": 0}
+
+    def profiles(repository, *args, **kwargs):
+        repository.commits.append("company_profiles")
+        return {"checked": 5, "stored": 5, "failed": 0}
+
+    monkeypatch.setattr(collector, "update_matured_targets", mature)
+    monkeypatch.setattr(collector, "archive_mutual_funds", mutual_funds)
+    monkeypatch.setattr(collector, "fetch_institutional_flows", lambda *args: [{}])
+    monkeypatch.setattr(collector, "store_institutional_flows", store_flows)
+    monkeypatch.setattr(
+        collector, "fetch_global_instruments",
+        lambda unused: [{
+            "name": "DOW JONES", "instrument_key": "GLOBAL_INDEX|^DJI",
+            "latency": "20 Seconds",
+        }],
+    )
+    monkeypatch.setattr(collector, "collect_company_profiles", profiles)
+
+    result = collector.run("close")
+
+    assert result["status"] == "PARTIAL"
+    assert result["prospective_shadow"]["global_cues"]["status"] == "FAILED"
+    assert result["prospective_shadow"]["company_profiles"]["status"] == "SUCCESS"
+    assert repo.commits == [
+        "nse_universe", "nse_quotes", "target_maturation", "mutual_funds",
+        "institutional_flows", "company_profiles",
+    ]
+    assert repo.finished[-1][1]["status"] == "PARTIAL"
+    assert repo.finished[-1][1]["record_count"] == 16
+    assert "error_kind" not in repo.finished[-1][1]
+    assert repo.finished[-1][1]["metadata"]["targets"] == {"stored": 2, "failed": 0}
+    assert any(
+        args[0] == "prospective_global_cues" and args[2] == "GLOBAL_QUOTE_FETCH_FAILED"
+        for args, _ in repo.quality_events
+    )
+    assert len(client.calls) == 1
