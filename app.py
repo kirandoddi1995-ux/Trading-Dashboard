@@ -5,10 +5,8 @@ import app_runtime as runtime
 import trade_contracts
 import observability as observability
 import smc_analysis as smc
-from feature_store import (
-    FeatureDefinition, FeatureQualityMonitor, FeatureRegistry,
-    TechnicalFeatureStore, compute_feature_frame,
-)
+from decision_evidence import FeatureDefinition, FeatureQualityMonitor, FeatureRegistry
+from feature_store import TechnicalFeatureStore, compute_feature_frame
 from point_in_time import PointInTimeStore
 from prediction_validation import (
     STRATEGY_VERSION, TARGET_VERSION, PRODUCTION_CALIBRATION_POLICY, ValidationStore,
@@ -81,7 +79,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("god_mode_quant")
-APP_BUILD = "v22.5.5-ALL-PATH-GOVERNANCE-HARDENING"
+APP_BUILD = "v22.5.6-IMPORT-HOTFIX"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
 
 

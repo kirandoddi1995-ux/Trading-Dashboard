@@ -55,6 +55,7 @@ FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_
                    'tests/test_model_training_pipeline.py',
                    'tests/test_evidence_progress.py', 'tests/test_prediction_rigor.py',
                    'tests/test_rejection_transparency.py',
+                   'tests/test_app_import_smoke.py',
                    '.github/workflows/quality.yml', '.github/workflows/scheduled-collector.yml',
                    '.github/workflows/resilience.yml', '.github/workflows/production-promotion.yml',
                    '.github/workflows/production-rollback.yml',
@@ -69,7 +70,7 @@ def package():
     if not canaries['ok']:
         raise RuntimeError(f"Release canaries failed: {canaries['checks']}")
     manifest = {}
-    archive = ROOT / 'release-v22.5.5-all-path-governance-hardening.zip'
+    archive = ROOT / 'release-v22.5.6-import-hotfix.zip'
     for name in FILES:
         path = (ROOT / name).resolve()
         if not path.is_relative_to(ROOT) or not path.is_file():
