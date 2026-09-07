@@ -183,8 +183,8 @@ def test_scan_clock_is_timezone_aware_and_bounded():
     )
 
 
-def test_exchange_status_fails_closed_when_not_normal_or_stale():
-    now = dt.datetime(2026, 9, 7, 5, 0, tzinfo=UTC)
+def test_exchange_status_accepts_same_session_transition_and_fails_closed():
+    now = dt.datetime(2026, 9, 7, 5, 11, tzinfo=UTC)  # 10:41 IST
 
     class Client:
         def __init__(self, status, updated):
@@ -201,11 +201,21 @@ def test_exchange_status_fails_closed_when_not_normal_or_stale():
     assert collector.fetch_nse_exchange_status(
         Client("NORMAL_OPEN", now - dt.timedelta(seconds=10)), "token", now=now,
     )["status"] == "NORMAL_OPEN"
+    # last_updated identifies the status transition (normally the 09:15 open),
+    # not a continuously refreshed provider heartbeat.
+    same_session = collector.fetch_nse_exchange_status(
+        Client("NORMAL_OPEN", now - dt.timedelta(minutes=85)), "token", now=now,
+    )
+    assert same_session["age_seconds"] == pytest.approx(85 * 60)
     with pytest.raises(RuntimeError, match="not in NORMAL_OPEN"):
         collector.fetch_nse_exchange_status(Client("CLOSED", now), "token", now=now)
-    with pytest.raises(RuntimeError, match="stale"):
+    with pytest.raises(RuntimeError, match="current IST trading date"):
         collector.fetch_nse_exchange_status(
-            Client("NORMAL_OPEN", now - dt.timedelta(minutes=10)), "token", now=now,
+            Client("NORMAL_OPEN", now - dt.timedelta(days=1)), "token", now=now,
+        )
+    with pytest.raises(RuntimeError, match="future-dated"):
+        collector.fetch_nse_exchange_status(
+            Client("NORMAL_OPEN", now + dt.timedelta(minutes=1)), "token", now=now,
         )
 
 
