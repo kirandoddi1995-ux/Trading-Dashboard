@@ -120,10 +120,77 @@ def test_unexpected_governance_exception_is_observable_and_fail_closed():
     assert observer.events[0][1]["ok"] is False
 
 
-def test_all_four_interactive_governance_paths_use_exception_boundary():
+def test_options_governance_exception_uses_the_same_fail_closed_result():
     source = (ROOT / "app.py").read_text(encoding="utf-8")
-    for label in ('"Futures"', '"Equity"', '"MCX"', '"SMC"'):
-        assert "_evaluate_governance_fail_closed(\n" in source
-        assert label in source
-    assert source.count("_evaluate_governance_fail_closed(") == 5  # definition + four calls
+    node = next(
+        item for item in ast.parse(source).body
+        if isinstance(item, ast.FunctionDef) and item.name == "_evaluate_governance_fail_closed"
+    )
+
+    class Observer:
+        def record(self, *_args, **_kwargs):
+            return None
+
+    def broken_options_governance(**_kwargs):
+        raise RuntimeError("unexpected options governance failure")
+
+    namespace = {
+        "runtime": runtime,
+        "LOGGER": logging.getLogger("options-governance-fallback-test"),
+        "OBSERVABILITY": Observer(),
+        "evaluate_live_governance_contract": lambda **_kwargs: None,
+    }
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "app.py", "exec"), namespace)
+    result = namespace["_evaluate_governance_fail_closed"](
+        "Options", evaluator=broken_options_governance, instrument="NIFTY 25000 CE"
+    )
+
+    assert result["status"] == "SYSTEM_ERROR_NO_TRADE"
+    assert result["allow_trade"] is False
+    assert result["blocking_reasons"] == [
+        "Options governance system error — treated as NO TRADE."
+    ]
+
+
+def test_every_interactive_governance_path_uses_exception_boundary():
+    source = (ROOT / "app.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    parents = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+
+    canonical_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "evaluate_live_governance_contract"
+    ]
+    assert len(canonical_calls) == 0
+
+    dynamic_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "governance_evaluator"
+    ]
+    assert len(dynamic_calls) == 1
+    owner = parents[dynamic_calls[0]]
+    while owner is not None and not isinstance(owner, ast.FunctionDef):
+        owner = parents.get(owner)
+    assert owner is not None and owner.name == "_evaluate_governance_fail_closed"
+
+    wrapped_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_evaluate_governance_fail_closed"
+    ]
+    labels = {
+        node.args[0].value for node in wrapped_calls
+        if node.args and isinstance(node.args[0], ast.Constant)
+    }
+    assert labels == {"Options", "Futures", "Equity", "MCX", "SMC"}
+    assert len(wrapped_calls) == 5
+    assert "evaluator=governance_evaluator" in source
     assert "_embedded_live_governance_contract_v22_1" not in source

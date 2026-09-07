@@ -431,6 +431,62 @@ def test_option_costs_depth_and_capital_use_one_execution_model():
     assert ctx['build_option_recommendation']('Bearish',best_row=row) is None
 
 
+def test_option_recommendation_governance_exception_becomes_no_trade():
+    fixed_now = datetime.datetime(
+        2026, 9, 2, 10, 0,
+        tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30)),
+    )
+    contracts = SimpleNamespace(
+        calculate_trade_math=trade_contracts.calculate_trade_math,
+        MIN_NET_REWARD_RISK=trade_contracts.MIN_NET_REWARD_RISK,
+        rule_confidence=trade_contracts.rule_confidence,
+        build_trade_timing=lambda *args, **kwargs: trade_contracts.build_trade_timing(
+            fixed_now, intraday=True
+        ),
+    )
+
+    class Observer:
+        def __init__(self):
+            self.events = []
+
+        def record(self, *args, **kwargs):
+            self.events.append((args, kwargs))
+
+    observer = Observer()
+    rejections = []
+    ctx = app_functions(
+        'build_option_recommendation', '_evaluate_governance_fail_closed',
+        lot_size=65, dte=1, iv_percentile_proxy=20,
+        selected_opt_asset='NIFTY 50', using_live_chain=True, MARKET_OPEN=True,
+        trade_contracts=contracts,
+        IST=datetime.timezone(datetime.timedelta(hours=5, minutes=30)),
+        OBSERVABILITY=observer,
+    )
+    ctx['risk_engine'] = RiskEngine(
+        investment_capital=1000000, max_risk_pct=2, max_position_pct=20
+    )
+    ctx['evaluate_live_governance_contract'] = (
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError('unexpected governance failure'))
+    )
+    ctx['_reject_option'] = (
+        lambda reason, detail=None, **values:
+        rejections.append(runtime.rejection_record(reason, detail, **values))
+    )
+    row = {
+        'Strike': '24000', 'Put LTP': '38.80', '_put_bid': 38.75, '_put_ask': 38.85,
+        '_put_ask_qty': 100000, '_put_bid_qty': 100000, '_put_volume': 1000000,
+        '_put_validation': {'valid': True, 'failures': []},
+    }
+
+    assert ctx['build_option_recommendation']('Bearish', best_row=row) is None
+    assert rejections[-1]['reason'] == 'governance_blocked'
+    assert rejections[-1]['blocking_reasons'] == [
+        'Options governance system error — treated as NO TRADE.'
+    ]
+    assert observer.events[-1][0][:2] == ('governance', 'options_evaluation')
+    assert observer.events[-1][1]['ok'] is False
+
+
 def test_revalidation_does_not_rewrite_original_signal():
     previous=dict(signal_id='old',status='NEW',strike=100,direction='CE',entry=10,target=14,stop=8)
     calls=[]
