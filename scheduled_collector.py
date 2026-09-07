@@ -434,6 +434,20 @@ def _global_cue_shadow(repo, client, token: str, *, writer=None,
         return {"status": "DISABLED", "reason": str(exc)}
     writer = writer or ProspectiveFeatureWriter(repo)
     instruments = fetch_global_instruments(client)
+    known_excluded_gaps = list(getattr(instruments, "known_excluded_gaps", []))
+    resolution_failures = list(getattr(instruments, "resolution_failures", []))
+    for gap in known_excluded_gaps:
+        repo.record_quality_event(
+            "prospective_global_cues", "WARNING", "GLOBAL_CUE_PROXY_EXCLUDED",
+            "A domestic proxy cue was excluded because no current contract was available",
+            gap,
+        )
+    for failure in resolution_failures:
+        repo.record_quality_event(
+            "prospective_global_cues", "ERROR", "GLOBAL_CUE_PROXY_RESOLUTION_FAILED",
+            "A domestic proxy instrument master could not be resolved",
+            failure,
+        )
     quote_result = fetch_global_quotes(
         client, token, [row["instrument_key"] for row in instruments],
     )
@@ -450,9 +464,15 @@ def _global_cue_shadow(repo, client, token: str, *, writer=None,
         writer, instruments, global_quotes, capture_context=capture_context,
     )
     result["fetch_failures"] = quote_result["failures"]
+    result["known_excluded_gaps"] = known_excluded_gaps
+    result["resolution_failures"] = resolution_failures
     if quote_result["requested"] and not global_quotes:
         result["status"] = "FAILED"
-    elif result.get("rejected", 0) or result.get("missing_quotes", 0):
+    elif (
+        result.get("rejected", 0)
+        or result.get("missing_quotes", 0)
+        or resolution_failures
+    ):
         result["status"] = "PARTIAL"
     else:
         result["status"] = "SUCCESS"

@@ -15,6 +15,7 @@ import re
 import time
 import urllib.parse
 from collections.abc import Iterable, Mapping
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -28,14 +29,50 @@ UPSTOX_API = "https://api.upstox.com"
 GLOBAL_INSTRUMENTS = (
     "https://assets.upstox.com/market-quote/instruments/exchange/global.json.gz"
 )
+NSE_INSTRUMENTS = (
+    "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
+)
+MCX_INSTRUMENTS = (
+    "https://assets.upstox.com/market-quote/instruments/exchange/MCX.json.gz"
+)
 # Upstox's Global Instruments announcement links these keys to the established
 # Full Market Quote API. Keep this separate from the high-volume NSE V3 path.
 GLOBAL_QUOTE_API = f"{UPSTOX_API}/v2/market-quote/quotes"
 FULL_QUOTE_BATCH_SIZE = 400  # Official endpoint maximum is 500.
-GLOBAL_NAMES = {
+GLOBAL_INDEX_NAMES = {
     "GIFT NIFTY", "DOW JONES", "S&P", "S&P 500", "US 30",
-    "OIL (BRENT)", "USD INR", "USDINR",
 }
+DOMESTIC_CUE_PROXIES = (
+    {
+        "master_url": NSE_INSTRUMENTS,
+        "segment": "NCD_FO",
+        "underlying_symbol": "USDINR",
+        "cue_label": "NSE USDINR futures (INR spot proxy)",
+        "proxy_for": "USD/INR spot",
+        "proxy_disclosure": (
+            "Nearest-expiry NSE currency future; not the RBI USD/INR reference rate"
+        ),
+    },
+    {
+        "master_url": MCX_INSTRUMENTS,
+        "segment": "MCX_FO",
+        "underlying_symbol": "CRUDEOIL",
+        "cue_label": "MCX CRUDEOIL (WTI-linked, domestic crude proxy)",
+        "proxy_for": "global crude oil",
+        "proxy_disclosure": (
+            "Nearest-expiry MCX CRUDEOIL future; WTI-linked domestic proxy, not ICE Brent"
+        ),
+    },
+)
+
+
+class CueInstrumentSelection(list):
+    """Resolved cues plus non-fatal proxy gaps and master-fetch failures."""
+
+    def __init__(self, rows=(), *, known_excluded_gaps=(), resolution_failures=()):
+        super().__init__(rows)
+        self.known_excluded_gaps = list(known_excluded_gaps)
+        self.resolution_failures = list(resolution_failures)
 
 
 class LicenseAcknowledgementRequired(RuntimeError):
@@ -121,25 +158,108 @@ def fetch_full_quotes(client, token: str, instrument_keys: Iterable[str]) -> dic
     return result
 
 
-def fetch_global_instruments(client) -> list[dict]:
-    response = client.get(GLOBAL_INSTRUMENTS, timeout=(5, 30))
+def _fetch_instrument_master(client, url: str) -> list[dict]:
+    response = client.get(url, timeout=(5, 30))
     response.raise_for_status()
     raw = response.content
     if len(raw) > 20_000_000:
-        raise ValueError("Global instrument payload exceeded the safety limit")
+        raise ValueError("Instrument-master payload exceeded the safety limit")
     if raw[:2] == b"\x1f\x8b":
         raw = gzip.decompress(raw)
     rows = json.loads(raw.decode("utf-8"))
     if not isinstance(rows, list):
-        raise ValueError("Global instrument schema changed")
-    wanted = []
+        raise ValueError("Instrument-master schema changed")
+    return [dict(row) for row in rows if isinstance(row, Mapping)]
+
+
+def _expiry_date(value) -> dt.date | None:
+    try:
+        if isinstance(value, (int, float)):
+            return dt.datetime.fromtimestamp(float(value) / 1000.0, UTC).date()
+        return dt.date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _nearest_future(rows: Iterable[Mapping], proxy: Mapping,
+                    *, as_of: dt.date) -> dict | None:
+    candidates = []
     for row in rows:
-        if not isinstance(row, Mapping):
+        expiry = _expiry_date(row.get("expiry"))
+        if (
+            str(row.get("segment") or "") == proxy["segment"]
+            and str(row.get("instrument_type") or "").upper() == "FUT"
+            and str(row.get("underlying_symbol") or "").upper()
+            == proxy["underlying_symbol"]
+            and row.get("instrument_key")
+            and expiry is not None
+            and expiry >= as_of
+        ):
+            candidates.append((expiry, str(row.get("trading_symbol") or ""), dict(row)))
+    if not candidates:
+        return None
+    expiry, _, selected = min(candidates, key=lambda item: (item[0], item[1]))
+    selected.update({
+        "cue_kind": "domestic_futures_proxy",
+        "cue_label": proxy["cue_label"],
+        "proxy_for": proxy["proxy_for"],
+        "proxy_disclosure": proxy["proxy_disclosure"],
+        "selected_expiry": expiry.isoformat(),
+        "selected_as_of": as_of.isoformat(),
+        "master_source": proxy["master_url"],
+    })
+    return selected
+
+
+def fetch_global_instruments(client, *, as_of: dt.date | None = None) -> list[dict]:
+    """Resolve global-index cues and current domestic futures proxies.
+
+    Contract keys are intentionally selected from Upstox's daily BOD masters
+    instead of being persisted across rollovers. GLOBAL_INDICATOR pseudo-keys
+    are excluded because the quote endpoint rejects that segment.
+    """
+    selection_date = as_of or dt.datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    global_rows = _fetch_instrument_master(client, GLOBAL_INSTRUMENTS)
+    wanted = [
+        row for row in global_rows
+        if str(row.get("segment") or "") == "GLOBAL_INDEX"
+        and str(row.get("name") or "").strip().upper() in GLOBAL_INDEX_NAMES
+        and row.get("instrument_key")
+    ]
+    masters: dict[str, list[dict]] = {}
+    known_excluded_gaps = []
+    resolution_failures = []
+    for proxy in DOMESTIC_CUE_PROXIES:
+        master_url = str(proxy["master_url"])
+        try:
+            if master_url not in masters:
+                masters[master_url] = _fetch_instrument_master(client, master_url)
+            rows = masters[master_url]
+        except (requests.RequestException, ValueError, OSError) as exc:
+            resolution_failures.append({
+                "cue_label": proxy["cue_label"],
+                "underlying_symbol": proxy["underlying_symbol"],
+                "segment": proxy["segment"],
+                "reason": "instrument_master_unavailable",
+                "error_kind": type(exc).__name__,
+            })
             continue
-        name = str(row.get("name") or "").strip().upper()
-        if name in GLOBAL_NAMES and row.get("instrument_key"):
-            wanted.append(dict(row))
-    return wanted
+        selected = _nearest_future(rows, proxy, as_of=selection_date)
+        if selected is None:
+            known_excluded_gaps.append({
+                "cue_label": proxy["cue_label"],
+                "underlying_symbol": proxy["underlying_symbol"],
+                "segment": proxy["segment"],
+                "reason": "no_non_expired_future_in_current_master",
+                "as_of": selection_date.isoformat(),
+            })
+            continue
+        wanted.append(selected)
+    return CueInstrumentSelection(
+        wanted,
+        known_excluded_gaps=known_excluded_gaps,
+        resolution_failures=resolution_failures,
+    )
 
 
 def fetch_global_quotes(client, token: str, instrument_keys: Iterable[str]) -> dict:
@@ -315,10 +435,13 @@ INSTITUTIONAL_FLOW = FeatureDefinition(
 )
 GLOBAL_CUE = FeatureDefinition(
     name="global_market_cue",
-    version="upstox-global-instruments-v1",
+    version="upstox-global-and-domestic-proxies-v2",
     dtype="object",
-    source="Upstox Global Instruments + Full Market Quote V3",
-    computation_logic="Unmodified quote plus declared provider latency and instrument metadata",
+    source="Upstox Global/BOD Instruments + Full Market Quote V2",
+    computation_logic=(
+        "Unmodified quote plus instrument metadata; USDINR and crude are explicitly "
+        "labelled nearest-expiry domestic futures proxies"
+    ),
     availability_rule="effective_at and available_at equal collector receipt time; declared latency is retained and never hidden",
     maximum_age_seconds=1200,
 )
@@ -470,9 +593,18 @@ def store_global_cues(writer: ProspectiveFeatureWriter, instruments: Iterable[Ma
             value={
                 "instrument": dict(instrument),
                 "quote": {k: v for k, v in quote.items() if k != "_received_at"},
-                "declared_latency_seconds": _latency_seconds(instrument.get("latency")),
+                "declared_latency_seconds": (
+                    _latency_seconds(instrument.get("latency"))
+                    if instrument.get("latency") else None
+                ),
                 "snapshot_semantics": "collector_receipt_time",
                 "capture_context": str(capture_context),
+                "cue_label": str(
+                    instrument.get("cue_label") or instrument.get("name") or key
+                ),
+                "cue_kind": str(instrument.get("cue_kind") or "global_index"),
+                "proxy_for": instrument.get("proxy_for"),
+                "proxy_disclosure": instrument.get("proxy_disclosure"),
             },
             effective_at=effective,
             available_at=received,
