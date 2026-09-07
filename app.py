@@ -81,7 +81,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("god_mode_quant")
-APP_BUILD = "v22.5.4-STATIC-GOVERNANCE-HARDENING"
+APP_BUILD = "v22.5.5-ALL-PATH-GOVERNANCE-HARDENING"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
 
 
@@ -274,10 +274,11 @@ def evaluate_live_governance_contract(
     )
 
 
-def _evaluate_governance_fail_closed(asset_label, **kwargs):
+def _evaluate_governance_fail_closed(asset_label, *, evaluator=None, **kwargs):
     """Convert an unexpected governance failure into an observable NO TRADE."""
+    governance_evaluator = evaluator or evaluate_live_governance_contract
     try:
-        return evaluate_live_governance_contract(**kwargs)
+        return governance_evaluator(**kwargs)
     except Exception as exc:
         error_label = runtime.safe_exception_label(exc)
         LOGGER.error("%s governance evaluation failed: %s", asset_label, error_label)
@@ -6695,7 +6696,9 @@ elif selected_tab == "Options & Derivatives Chain":
                 traded_volume = 0.0
             governance_evaluator = globals().get("evaluate_live_governance_contract")
             governance = (
-                governance_evaluator(
+                _evaluate_governance_fail_closed(
+                    "Options",
+                    evaluator=governance_evaluator,
                     instrument=f"{selected_opt_asset} {actual_strike:g} {side}",
                     entry=premium, stop=stop_premium, target=target_premium,
                     quantity=lots * lot_size, cost_bps=ESTIMATED_ROUND_TRIP_COST_PCT * 100,
