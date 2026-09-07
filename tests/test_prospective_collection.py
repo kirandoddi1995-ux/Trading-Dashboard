@@ -1,5 +1,7 @@
 import ast
 import datetime as dt
+import gzip
+import json
 from pathlib import Path
 
 import pytest
@@ -8,11 +10,14 @@ import requests
 import scheduled_collector as collector
 from prospective_collection import (
     COMPANY_PROFILE,
+    CueInstrumentSelection,
     LicenseAcknowledgementRequired,
     ProspectiveFeatureWriter,
+    fetch_global_instruments,
     fetch_global_quotes,
     fetch_institutional_flows,
     require_licence_acknowledgement,
+    store_global_cues,
     store_order_books,
 )
 from scanner_funnel import stage1_prefilter
@@ -114,6 +119,29 @@ class BadGlobalQuoteClient:
     def get(self, url, **kwargs):
         self.calls.append((url, kwargs))
         return BadGlobalQuoteResponse()
+
+
+class InstrumentMasterResponse:
+    status_code = 200
+
+    def __init__(self, rows):
+        self.content = gzip.compress(json.dumps(rows).encode("utf-8"))
+
+    def raise_for_status(self):
+        return None
+
+
+class InstrumentMasterClient:
+    def __init__(self, global_rows, nse_rows, mcx_rows):
+        self.rows = {
+            "global.json.gz": global_rows,
+            "NSE.json.gz": nse_rows,
+            "MCX.json.gz": mcx_rows,
+        }
+
+    def get(self, url, **kwargs):
+        name = url.rsplit("/", 1)[-1]
+        return InstrumentMasterResponse(self.rows[name])
 
 
 def quote(price, close, volume, received):
@@ -345,6 +373,112 @@ def test_global_quote_400_is_per_key_explicit_and_not_retried():
     assert len(client.calls) == 1
     assert client.calls[0][0].endswith("/v2/market-quote/quotes")
     assert client.calls[0][1]["params"] == {"instrument_key": "GLOBAL_INDEX|^DJI"}
+
+
+def test_domestic_proxy_cues_select_nearest_futures_and_store_clear_labels():
+    as_of = dt.date(2026, 9, 7)
+    client = InstrumentMasterClient(
+        global_rows=[
+            {"segment": "GLOBAL_INDEX", "name": "DOW JONES",
+             "instrument_key": "GLOBAL_INDEX|^DJI", "latency": "20 Seconds"},
+            {"segment": "GLOBAL_INDICATOR", "name": "USD INR",
+             "instrument_key": "GLOBAL_INDICATOR|USDINR", "latency": "20 Seconds"},
+            {"segment": "GLOBAL_INDICATOR", "name": "OIL (BRENT)",
+             "instrument_key": "GLOBAL_INDICATOR|BZUSD", "latency": "20 Seconds"},
+        ],
+        nse_rows=[
+            {"segment": "NCD_FO", "instrument_type": "FUT",
+             "underlying_symbol": "USDINR", "expiry": 1788652800000,
+             "trading_symbol": "USDINR FUT 06 SEP 26", "instrument_key": "NCD_FO|old"},
+            {"segment": "NCD_FO", "instrument_type": "FUT",
+             "underlying_symbol": "USDINR", "expiry": 1789084800000,
+             "trading_symbol": "USDINR FUT 11 SEP 26", "instrument_key": "NCD_FO|11993"},
+            {"segment": "NCD_FO", "instrument_type": "FUT",
+             "underlying_symbol": "USDINR", "expiry": 1789689600000,
+             "trading_symbol": "USDINR FUT 18 SEP 26", "instrument_key": "NCD_FO|1883"},
+        ],
+        mcx_rows=[
+            {"segment": "MCX_FO", "instrument_type": "FUT",
+             "underlying_symbol": "CRUDEOIL", "expiry": 1789948800000,
+             "trading_symbol": "CRUDEOIL FUT 21 SEP 26",
+             "instrument_key": "MCX_FO|565899"},
+            {"segment": "MCX_FO", "instrument_type": "FUT",
+             "underlying_symbol": "CRUDEOIL", "expiry": 1792368000000,
+             "trading_symbol": "CRUDEOIL FUT 19 OCT 26",
+             "instrument_key": "MCX_FO|569900"},
+        ],
+    )
+
+    instruments = fetch_global_instruments(client, as_of=as_of)
+    by_key = {row["instrument_key"]: row for row in instruments}
+
+    assert set(by_key) == {
+        "GLOBAL_INDEX|^DJI", "NCD_FO|11993", "MCX_FO|565899",
+    }
+    assert "GLOBAL_INDICATOR|USDINR" not in by_key
+    assert "GLOBAL_INDICATOR|BZUSD" not in by_key
+    assert by_key["NCD_FO|11993"]["cue_label"] == (
+        "NSE USDINR futures (INR spot proxy)"
+    )
+    assert by_key["MCX_FO|565899"]["cue_label"] == (
+        "MCX CRUDEOIL (WTI-linked, domestic crude proxy)"
+    )
+
+    now = dt.datetime(2026, 9, 7, 10, 30, tzinfo=UTC)
+    quotes = {
+        key: {**quote(100, 99, 1000, now), "instrument_key": key}
+        for key in by_key
+    }
+    repo = MemoryRepository()
+    result = store_global_cues(
+        ProspectiveFeatureWriter(repo), instruments, quotes,
+    )
+
+    assert result == {"stored": 3, "rejected": 0, "missing_quotes": 0}
+    stored = {row["instrument_key"]: row["value"] for row in repo.features}
+    assert stored["NCD_FO|11993"]["proxy_for"] == "USD/INR spot"
+    assert "not the RBI" in stored["NCD_FO|11993"]["proxy_disclosure"]
+    assert stored["NCD_FO|11993"]["declared_latency_seconds"] is None
+    assert stored["MCX_FO|565899"]["proxy_for"] == "global crude oil"
+    assert "not ICE Brent" in stored["MCX_FO|565899"]["proxy_disclosure"]
+
+
+def test_known_missing_proxy_is_excluded_without_failing_global_cues(monkeypatch):
+    now = dt.datetime(2026, 9, 7, 10, 30, tzinfo=UTC)
+    instrument = {
+        "segment": "GLOBAL_INDEX", "name": "DOW JONES",
+        "instrument_key": "GLOBAL_INDEX|^DJI", "latency": "20 Seconds",
+    }
+    selection = CueInstrumentSelection(
+        [instrument],
+        known_excluded_gaps=[{
+            "cue_label": "NSE USDINR futures (INR spot proxy)",
+            "underlying_symbol": "USDINR", "segment": "NCD_FO",
+            "reason": "no_non_expired_future_in_current_master",
+            "as_of": "2026-09-07",
+        }],
+    )
+    repo = MemoryRepository()
+    monkeypatch.setenv("PROSPECTIVE_DATA_LICENSE_ACK", "true")
+    monkeypatch.setattr(collector, "fetch_global_instruments", lambda unused: selection)
+    monkeypatch.setattr(
+        collector, "fetch_global_quotes",
+        lambda *args: {
+            "quotes": {"GLOBAL_INDEX|^DJI": quote(100, 99, 1000, now)},
+            "failures": [], "requested": 1,
+        },
+    )
+
+    result = collector._global_cue_shadow(
+        repo, object(), "token", capture_context="INDIA_CLOSE",
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert result["stored"] == 1
+    assert result["known_excluded_gaps"][0]["underlying_symbol"] == "USDINR"
+    assert any(
+        args[2] == "GLOBAL_CUE_PROXY_EXCLUDED" for args, _ in repo.quality_events
+    )
 
 
 def test_close_run_keeps_committed_stages_when_one_global_quote_returns_400(monkeypatch):
