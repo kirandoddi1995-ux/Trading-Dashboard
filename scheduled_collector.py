@@ -282,7 +282,9 @@ def _scheduled_stage1(repo, client, token: str, run_id: str, *, now=None) -> dic
         raise RuntimeError("Stage-1 evidence did not cover the complete PIT universe")
     stored = repo.upsert_scanner_observations(records)
     code_hash, config_hash, policy_hash = _runtime_hashes()
-    DecisionEvidenceSpine(repo.append_evidence_event, repo).capture_candidate_batch(
+    decision_batch = DecisionEvidenceSpine(
+        repo.append_evidence_event, repo,
+    ).capture_candidate_batch(
         scan_run_id=run_id,
         observed_at=observed_at,
         strategy_id=SCHEDULED_STAGE1_VERSION,
@@ -304,6 +306,21 @@ def _scheduled_stage1(repo, client, token: str, run_id: str, *, now=None) -> dic
         config_hash=config_hash,
         policy_hash=policy_hash,
     )
+    quality_failures = list(decision_batch.get("quality_failures") or [])
+    if quality_failures:
+        try:
+            repo.record_quality_event(
+                "scheduled_stage1", "WARNING", "CANDIDATE_DATA_QUALITY_REJECTED",
+                f"Rejected {len(quality_failures)} candidate(s) with invalid evidence values",
+                {"scan_run_id": run_id, "failures": quality_failures},
+            )
+        except Exception as exc:
+            # The immutable decision batch already contains the quality record;
+            # failure of this secondary index must not discard the whole batch.
+            print(json.dumps({
+                "warning": "Candidate quality-event index write failed",
+                "error_type": type(exc).__name__,
+            }))
     shadow = {"status": "DISABLED", "reason": "Licence acknowledgement not configured"}
     try:
         require_licence_acknowledgement()

@@ -930,7 +930,12 @@ class ProductionRepository:
                 SELECT instrument_key,AVG(day_volume)
                 FROM ranked WHERE rn <= %s GROUP BY instrument_key
             """, (keys, as_of_date, max(1, int(lookback)))).fetchall()
-        return {str(key): float(value) for key, value in rows if value is not None}
+        result = {}
+        for key, value in rows:
+            average = _finite_decimal(value)
+            if average is not None and average > 0:
+                result[str(key)] = float(average)
+        return result
 
     def enrichment_candidates(self, resource: str, *, limit=100, refresh_days=30) -> list[dict]:
         """Return current PIT-universe identifiers not checked recently."""

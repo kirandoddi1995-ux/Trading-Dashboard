@@ -13,6 +13,8 @@ import json
 import logging
 import math
 import uuid
+from decimal import Decimal
+from numbers import Real
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -75,6 +77,52 @@ def _hash(value: Mapping[str, Any]) -> str:
 def _copy(value: Any) -> Any:
     """Detach caller-owned objects and reject NaN/infinity before persistence."""
     return json.loads(json.dumps(value, sort_keys=True, default=str, allow_nan=False))
+
+
+def _quality_json_copy(value: Any, *, root: str = "candidate") -> tuple[Any, list[str]]:
+    """Copy JSON data while turning non-finite numerics into explicit missing values.
+
+    The returned paths make this a visible data-quality rejection. Strict
+    ``_copy`` remains the final serializer, so NaN/Infinity can never enter the
+    evidence ledger.
+    """
+    invalid_paths: list[str] = []
+    active_containers: set[int] = set()
+
+    def clean(item: Any, path: str) -> Any:
+        if isinstance(item, Mapping):
+            marker = id(item)
+            if marker in active_containers:
+                raise ValueError("circular mapping in candidate evidence")
+            active_containers.add(marker)
+            try:
+                return {
+                    str(key): clean(child, f"{path}.{key}")
+                    for key, child in item.items()
+                }
+            finally:
+                active_containers.remove(marker)
+        if isinstance(item, (list, tuple)):
+            marker = id(item)
+            if marker in active_containers:
+                raise ValueError("circular sequence in candidate evidence")
+            active_containers.add(marker)
+            try:
+                return [clean(child, f"{path}[{index}]")
+                        for index, child in enumerate(item)]
+            finally:
+                active_containers.remove(marker)
+        if isinstance(item, Decimal):
+            if not item.is_finite():
+                invalid_paths.append(path)
+                return None
+            return item
+        if isinstance(item, Real) and not math.isfinite(float(item)):
+            invalid_paths.append(path)
+            return None
+        return item
+
+    return _copy(clean(value, root)), invalid_paths
 
 
 def _audit_copy(value: Any) -> Any:
@@ -543,26 +591,76 @@ class DecisionEvidenceSpine:
         run_id = _required_text(scan_run_id, "scan_run_id")
         timestamp = _aware(observed_at, "observed_at")
         rows = []
+        quality_failures = []
         for raw in candidates:
             row = dict(raw or {})
             action = str(row.get("action") or "")
             if action not in DECISION_ACTIONS:
                 raise EvidenceContractError("every batched candidate needs a valid action")
-            rows.append({
-                "decision_id": _required_text(row.get("decision_id"), "decision_id"),
-                "instrument_key": _required_text(row.get("instrument_key"), "instrument_key"),
-                "instrument": _required_text(row.get("instrument"), "instrument"),
+            decision_id = _required_text(row.get("decision_id"), "decision_id")
+            instrument_key = _required_text(row.get("instrument_key"), "instrument_key")
+            instrument = _required_text(row.get("instrument"), "instrument")
+            candidate_payload = {
+                "inputs_used": dict(row.get("inputs_used") or {}),
+                "quote": dict(row.get("quote") or {
+                    "status": "UNAVAILABLE", "reason": "No quote context supplied",
+                }),
+                "costs": dict(row.get("costs") or {
+                    "status": "NOT_EVALUATED", "reason": "Stage-1 candidate only",
+                }),
+            }
+            error_type = None
+            try:
+                copied, invalid_fields = _quality_json_copy(candidate_payload)
+            except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+                error_type = type(exc).__name__
+                invalid_fields = ["candidate_payload"]
+                copied = {
+                    "inputs_used": {},
+                    "quote": {"status": "UNAVAILABLE",
+                              "reason": "Candidate evidence was not serializable"},
+                    "costs": {"status": "NOT_EVALUATED",
+                              "reason": "Candidate evidence was not serializable"},
+                }
+
+            rejection_reason = row.get("rejection_reason")
+            candidate_row = {
+                "decision_id": decision_id,
+                "instrument_key": instrument_key,
+                "instrument": instrument,
                 "action": action,
                 "stage1_pass": bool(row.get("stage1_pass")),
-                "rejection_reason": row.get("rejection_reason"),
-                "inputs_used": _copy(dict(row.get("inputs_used") or {})),
-                "quote": _copy(dict(row.get("quote") or {
-                    "status": "UNAVAILABLE", "reason": "No quote context supplied",
-                })),
-                "costs": _copy(dict(row.get("costs") or {
-                    "status": "NOT_EVALUATED", "reason": "Stage-1 candidate only",
-                })),
-            })
+                "rejection_reason": rejection_reason,
+                **copied,
+            }
+            if invalid_fields:
+                code = ("NON_FINITE_CANDIDATE_VALUE" if error_type is None
+                        else "NON_SERIALIZABLE_CANDIDATE_PAYLOAD")
+                quality = {
+                    "status": "REJECTED",
+                    "code": code,
+                    "fields": invalid_fields,
+                    "original_action": action,
+                }
+                if error_type is not None:
+                    quality["error_type"] = error_type
+                candidate_row.update({
+                    "action": "No Trade",
+                    "stage1_pass": False,
+                    "rejection_reason": (
+                        "Data quality rejection: candidate evidence contained "
+                        "non-finite or non-serializable values"
+                    ),
+                    "data_quality": quality,
+                })
+                quality_failures.append({
+                    "decision_id": decision_id,
+                    "instrument_key": instrument_key,
+                    "instrument": instrument,
+                    "code": code,
+                    "fields": invalid_fields,
+                })
+            rows.append(candidate_row)
         if not rows:
             raise EvidenceContractError("candidate batch cannot be empty")
         snapshot = dict(universe or {})
@@ -579,6 +677,7 @@ class DecisionEvidenceSpine:
             "policy_hash": _required_text(policy_hash, "policy_hash"),
             "universe": _copy(snapshot),
             "candidate_count": len(rows),
+            "data_quality_failure_count": len(quality_failures),
             "candidates": rows,
         }
         event = _record(
@@ -587,7 +686,12 @@ class DecisionEvidenceSpine:
             effective_at=timestamp, idempotency_key=f"decision-batch:{run_id}",
             source=self._source,
         )
-        return {"scan_run_id": run_id, "event": event, "record": _copy(payload)}
+        return {
+            "scan_run_id": run_id,
+            "event": event,
+            "record": _copy(payload),
+            "quality_failures": _copy(quality_failures),
+        }
 
     def outcome(self, *, decision_id: str, outcome: str, outcome_at: Any,
                 actual_forward_return: Any, completed_session_closes: Sequence[Any],

@@ -18,6 +18,16 @@ def _clamp(value, lo=0.0, hi=100.0):
     return max(lo, min(hi, float(value)))
 
 
+def _finite_or_none(value):
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def stage1_prefilter(
     tickers: Sequence[str],
     instrument_dict: Mapping[str, str],
@@ -64,6 +74,18 @@ def stage1_prefilter(
             day_high = float(ohlc.get("high") or ltp)
             day_low = float(ohlc.get("low") or ltp)
             day_volume = float(quote.get("volume") or ohlc.get("volume") or 0.0)
+            if not all(math.isfinite(value) for value in (
+                ltp, prev_close, day_high, day_low, day_volume,
+            )):
+                evidence_by_ticker[ticker] = {
+                    "instrument_key": key,
+                    "trading_symbol": ticker,
+                    "stage1_pass": False,
+                    "rejection_reason": "Non-finite quote input",
+                    "score": None,
+                    "features": {},
+                }
+                continue
             if ltp <= 0 or prev_close <= 0:
                 evidence_by_ticker[ticker] = {
                     "instrument_key": key,
@@ -208,14 +230,14 @@ def stage1_prefilter(
             ),
             "score": float(row["balanced_score"]),
             "features": {
-                "momentum_pct": row["momentum_pct"],
-                "range_pct": row["range_pct"],
-                "close_location": row["close_location"],
-                "day_volume": row["day_volume"],
-                "average_volume_20d": row["avg_vol"],
-                "raw_volume_ratio": row["raw_volume_ratio"],
-                "volume_pace_ratio": row["volume_pace_ratio"],
-                "liquidity_percentile": row["liquidity_pct"],
+                "momentum_pct": _finite_or_none(row["momentum_pct"]),
+                "range_pct": _finite_or_none(row["range_pct"]),
+                "close_location": _finite_or_none(row["close_location"]),
+                "day_volume": _finite_or_none(row["day_volume"]),
+                "average_volume_20d": _finite_or_none(row["avg_vol"]),
+                "raw_volume_ratio": _finite_or_none(row["raw_volume_ratio"]),
+                "volume_pace_ratio": _finite_or_none(row["volume_pace_ratio"]),
+                "liquidity_percentile": _finite_or_none(row["liquidity_pct"]),
             },
         }
 
