@@ -22,6 +22,35 @@ APP_PATH = ROOT / "app.py"
 SOURCE = APP_PATH.read_text(encoding="utf-8")
 
 
+class FuturesHistoryRegressionTests(unittest.TestCase):
+    def test_continuous_underlying_history_has_trading_session_buffer(self):
+        for underlying_key in ("NSE_INDEX|Nifty 50", "NSE_EQ|RELIANCE"):
+            with self.subTest(underlying_key=underlying_key):
+                calls = []
+
+                def fetch_history(key, token, *, days):
+                    calls.append((key, token, days))
+                    return pd.DataFrame({"Close": np.arange(83, dtype=float) + 100.0})
+
+                history = runtime.fetch_futures_trend_history(
+                    fetch_history, underlying_key, "test-token",
+                )
+                self.assertEqual(len(history), 83)
+                self.assertEqual(calls, [(
+                    underlying_key,
+                    "test-token",
+                    runtime.FUTURES_TREND_LOOKBACK_CALENDAR_DAYS,
+                )])
+                self.assertGreaterEqual(
+                    calls[0][2],
+                    math.ceil(runtime.FUTURES_TREND_MIN_BARS * 7 / 5) + 30,
+                )
+
+    def test_screen_uses_rollover_safe_underlying_loader(self):
+        self.assertIn("runtime.fetch_futures_trend_history(", SOURCE)
+        self.assertIn("fetch_upstox_history, spot_key, access_token", SOURCE)
+
+
 class SourceRegressionTests(unittest.TestCase):
     def test_app_parses(self):
         ast.parse(SOURCE)
