@@ -79,7 +79,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("god_mode_quant")
-APP_BUILD = "v22.5.6-IMPORT-HOTFIX"
+APP_BUILD = "v22.5.7-FUTURES-HISTORY-HOTFIX"
 NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
 
 
@@ -7219,9 +7219,17 @@ elif selected_tab == "Futures & Derivatives":
 
             def determine_futures_bias():
                 try:
-                    hist = fetch_upstox_history(spot_key, access_token, days=60)
-                    if hist.empty or len(hist) < 50:
-                        return "Neutral", {"reason": "At least 50 daily bars are required", "history": hist}
+                    hist = runtime.fetch_futures_trend_history(
+                        fetch_upstox_history, spot_key, access_token,
+                    )
+                    if hist.empty or len(hist) < runtime.FUTURES_TREND_MIN_BARS:
+                        return "Neutral", {
+                            "reason": (
+                                f"At least {runtime.FUTURES_TREND_MIN_BARS} daily bars are required "
+                                f"(received {len(hist)})"
+                            ),
+                            "history": hist,
+                        }
                     ema20 = ta.ema(hist['Close'], length=20).dropna()
                     ema50 = ta.ema(hist['Close'], length=50).dropna()
                     rsi14 = ta.rsi(hist['Close'], length=14).dropna()

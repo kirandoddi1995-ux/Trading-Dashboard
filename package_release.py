@@ -70,7 +70,7 @@ def package():
     if not canaries['ok']:
         raise RuntimeError(f"Release canaries failed: {canaries['checks']}")
     manifest = {}
-    archive = ROOT / 'release-v22.5.6-import-hotfix.zip'
+    archive = ROOT / 'release-v22.5.7-futures-history-hotfix.zip'
     for name in FILES:
         path = (ROOT / name).resolve()
         if not path.is_relative_to(ROOT) or not path.is_file():

@@ -8,6 +8,37 @@ import time
 from email.utils import parsedate_to_datetime
 
 
+FUTURES_TREND_MIN_BARS = 50
+FUTURES_TREND_LOOKBACK_CALENDAR_DAYS = 120
+
+
+def fetch_futures_trend_history(fetch_history, underlying_key, token, *,
+                                minimum_bars=FUTURES_TREND_MIN_BARS,
+                                lookback_calendar_days=FUTURES_TREND_LOOKBACK_CALENDAR_DAYS):
+    """Load rollover-safe trend history from the continuous underlying.
+
+    Provider lookbacks use calendar days, while indicator warm-up is measured
+    in trading sessions. Add weekend and holiday headroom so a 50-session
+    requirement cannot be requested as only 50/60 calendar days. The key must
+    identify the continuous spot index or equity; the expiring futures contract
+    remains the source for executable quotes elsewhere in the caller.
+    """
+    required_bars = int(minimum_bars)
+    requested_days = int(lookback_calendar_days)
+    if required_bars <= 0:
+        raise ValueError("minimum_bars must be positive")
+    if requested_days <= 0:
+        raise ValueError("lookback_calendar_days must be positive")
+    if not str(underlying_key or "").strip():
+        raise ValueError("underlying_key is required")
+    minimum_calendar_buffer = math.ceil(required_bars * 7 / 5) + 30
+    return fetch_history(
+        underlying_key,
+        token,
+        days=max(requested_days, minimum_calendar_buffer),
+    )
+
+
 class SecretRedactor(logging.Filter):
     def __init__(self, values=()):
         super().__init__()
