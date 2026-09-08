@@ -1,0 +1,3 @@
+[functions.dispatch-scheduled-collector]
+verify_jwt = false
+
