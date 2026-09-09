@@ -13,6 +13,9 @@ import math
 
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 MIN_NET_REWARD_RISK = 2.0
+# Provisional operating threshold for the equity fixed-target policy, not a
+# calibrated profitability claim. Keep the shared/non-equity default unchanged.
+EQUITY_MIN_NET_REWARD_RISK = 1.30
 ENTRY_WINDOW_MINUTES = 15
 INTRADAY_TIME_EXIT = dt.time(15, 15)
 

@@ -3962,7 +3962,7 @@ def derive_long_trade_levels(df, price, atr, horizon_days=15):
         minimum_target = price + risk_distance * 1.5
         suitable_resistance = [r for r in resistance_candidates if r >= minimum_target]
         if suitable_resistance:
-            target = min(min(suitable_resistance), max(target_floor, atr_target * 0.85))
+            target = min(min(suitable_resistance), max(target_floor, price + 0.85 * (atr_target - price)))
             target = min(target, min(suitable_resistance))
         else:
             target = max(target_floor, atr_target)
@@ -8162,13 +8162,13 @@ elif selected_tab == "Equities Screener & Risk":
                 trade_math = trade_contracts.calculate_trade_math(
                     price, sl, tgt, direction="long",
                     round_trip_cost_bps=cost_estimate.round_trip_bps,
-                    minimum_ratio=trade_contracts.MIN_NET_REWARD_RISK,
+                    minimum_ratio=trade_contracts.EQUITY_MIN_NET_REWARD_RISK,
                 )
                 rr_ratio = trade_math["net_ratio"]
                 if not trade_math["passes_gate"]:
                     return _reject(
                         "Risk:Reward",
-                        f"Net reward:risk {rr_ratio:.2f} is below 2.00 after estimated "
+                        f"Net reward:risk {rr_ratio:.2f} is below {trade_math['minimum_ratio']:.2f} after estimated "
                         f"{cost_estimate.round_trip_bps:.0f} bps costs",
                     )
                 if risk_per_share <= 0:
