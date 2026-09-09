@@ -3,6 +3,27 @@ import datetime as dt
 import pytest
 
 from trade_contracts import IST, build_trade_timing, calculate_trade_math, rule_confidence
+from trade_contracts import EQUITY_MIN_NET_REWARD_RISK, MIN_NET_REWARD_RISK
+
+
+@pytest.mark.parametrize("ratio,passes", [(1.2999, False), (1.30, True), (1.3001, True)])
+def test_equity_gate_uses_unrounded_cost_adjusted_ratio(ratio, passes):
+    # Risk=5, costs=0.14. Construct the target for the requested net ratio.
+    target = 100 + ratio * (5 + 0.14) + 0.14
+    result = calculate_trade_math(100, 95, target, round_trip_cost_bps=14,
+                                  minimum_ratio=EQUITY_MIN_NET_REWARD_RISK)
+    assert result["passes_gate"] is passes
+    assert result["minimum_ratio"] == 1.30
+
+
+def test_shared_default_and_options_gate_remain_two():
+    assert MIN_NET_REWARD_RISK == 2.0
+    assert EQUITY_MIN_NET_REWARD_RISK == 1.30
+    assert calculate_trade_math(100, 95, 107)["passes_gate"] is False
+    assert calculate_trade_math(100, 95, 107,
+                                minimum_ratio=MIN_NET_REWARD_RISK)["passes_gate"] is False
+    assert calculate_trade_math(100, 95, 107,
+                                minimum_ratio=EQUITY_MIN_NET_REWARD_RISK)["passes_gate"] is True
 
 
 def test_long_trade_math_includes_costs_and_enforces_two_to_one_gate():
