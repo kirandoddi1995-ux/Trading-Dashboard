@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+import pandas as pd
 import requests
 
 import scheduled_collector as collector
@@ -479,6 +480,101 @@ def test_known_missing_proxy_is_excluded_without_failing_global_cues(monkeypatch
     assert any(
         args[2] == "GLOBAL_CUE_PROXY_EXCLUDED" for args, _ in repo.quality_events
     )
+
+
+def test_target_maturation_uses_each_decisions_immutable_fifteen_session_horizon(monkeypatch):
+    observed_at = dt.datetime(2026, 1, 2, 10, 0, tzinfo=collector.IST)
+    decision_at = observed_at.astimezone(UTC)
+    dates = pd.bdate_range("2026-01-05", periods=20)
+    history = pd.DataFrame({
+        "Open": 100.0, "High": 103.0, "Low": 98.0, "Close": 101.0, "Volume": 1000.0,
+    }, index=dates)
+
+    class MaturityRepository(MemoryRepository):
+        def __init__(self):
+            super().__init__()
+            self.pending_kwargs = None
+            self.saved_targets = []
+            self.ledger.append({
+                "aggregate_id": "decision:decision-15",
+                "event_type": "DECISION_EVALUATED",
+                "idempotency_key": "decision-15-evaluated",
+                "payload": {
+                    "decision_at": decision_at.isoformat(),
+                    "identifiers": {
+                        "target_version": collector.TARGET_VERSION,
+                        "horizon_sessions": 15,
+                    },
+                },
+            })
+
+        def pending_observations(self, **kwargs):
+            self.pending_kwargs = kwargs
+            return [{
+                "observation_id": "decision-15",
+                "as_of_date": "2026-01-02",
+                "observed_at": observed_at,
+                "instrument_key": "NSE_EQ|TEST",
+                "trading_symbol": "TEST",
+                "entry": 100.0,
+                "stop": 95.0,
+                "target": 110.0,
+                "features": {"execution_cost_bps": 30.0},
+                "horizon_sessions": 15,
+            }]
+
+        def save_prediction_target(self, observation_id, target):
+            self.saved_targets.append((observation_id, target))
+
+    repo = MaturityRepository()
+    evaluated_horizons = []
+    history_state = {"value": history.iloc[:14]}
+
+    monkeypatch.setattr(
+        collector, "fetch_daily_history", lambda *args, **kwargs: history_state["value"],
+    )
+    monkeypatch.setattr(collector, "fetch_historical_minutes", lambda *args, **kwargs: pd.DataFrame())
+
+    def compute_target(prices, as_of_date, definition, **kwargs):
+        evaluated_horizons.append(definition.horizon_sessions)
+        outcome_date = prices.index[definition.horizon_sessions - 1]
+        return {
+            "horizon_sessions": definition.horizon_sessions,
+            "target_version": collector.TARGET_VERSION,
+            "entry_date": str(prices.index[0].date()),
+            "label_end_date": str(outcome_date.date()),
+            "outcome_date": outcome_date,
+            "outcome": "horizon",
+            "target_before_stop": False,
+            "gross_return": 0.04,
+            "net_return": 0.037,
+            "benchmark_return": 0.01,
+            "excess_return": 0.027,
+            "positive_excess": True,
+            "cost_bps": 30.0,
+            "entry_quality": "first_minute_after_signal",
+        }
+
+    monkeypatch.setattr(collector, "compute_forward_target", compute_target)
+
+    deferred = collector.update_matured_targets(repo, object(), "token")
+
+    assert deferred == {"pending": 1, "stored": 0, "failed": 0, "deferred": 1, "failures": []}
+    assert evaluated_horizons == []
+    assert not [row for row in repo.ledger if row["event_type"] == "OUTCOME_MATURED"]
+
+    history_state["value"] = history
+    result = collector.update_matured_targets(repo, object(), "token")
+
+    assert result == {"pending": 1, "stored": 1, "failed": 0, "deferred": 0, "failures": []}
+    assert repo.pending_kwargs == {"target_version": collector.TARGET_VERSION, "limit": 40}
+    assert evaluated_horizons == [15]
+    assert repo.saved_targets[0][0] == "decision-15"
+    assert repo.saved_targets[0][1]["horizon_sessions"] == 15
+    matured = [row for row in repo.ledger if row["event_type"] == "OUTCOME_MATURED"]
+    assert len(matured) == 1
+    assert matured[0]["payload"]["horizon_sessions"] == 15
+    assert len(matured[0]["payload"]["completed_session_closes"]) == 15
 
 
 def test_close_run_keeps_committed_stages_when_one_global_quote_returns_400(monkeypatch):

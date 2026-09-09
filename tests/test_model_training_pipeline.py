@@ -133,6 +133,7 @@ def test_today_smoke_without_production_database_returns_no_artifact(monkeypatch
     result = production_smoke(features=["scanner_composite_score"])
     assert result["status"] == "UNAVAILABLE"
     assert result["promotable"] is False and result["artifact"] is None
+    assert inspect.signature(production_smoke).parameters["horizon_sessions"].default == 15
 
 
 def test_shadow_artifact_api_requires_independent_promotion_evidence():
@@ -141,13 +142,25 @@ def test_shadow_artifact_api_requires_independent_promotion_evidence():
 
 
 def test_scheduled_check_treats_insufficient_as_healthy_fail_closed(monkeypatch):
+    calls = []
+
+    def smoke(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "INSUFFICIENT_EVIDENCE", "promotable": False, "artifact": None,
+        }
+
     monkeypatch.setattr(
         "model_training_pipeline.production_smoke",
-        lambda **kwargs: {
-            "status": "INSUFFICIENT_EVIDENCE", "promotable": False, "artifact": None,
-        },
+        smoke,
     )
     assert main(["--scheduled-check"]) == 0
+    assert calls == [{
+        "features": ["scanner_composite_score"],
+        "strategy_id": "equity-scanner-v19.0",
+        "target_version": "net-excess-execution-v2",
+        "horizon_sessions": 15,
+    }]
 
 
 def test_scheduled_check_fails_when_production_evidence_is_unavailable(monkeypatch):

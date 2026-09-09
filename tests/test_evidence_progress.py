@@ -7,7 +7,7 @@ UTC = dt.timezone.utc
 
 
 def _equity_record(index, day, *, matured=True, eligible=True, feature=True,
-                   strategy_id="equity-scanner-v19.0"):
+                   strategy_id="equity-scanner-v19.0", horizon_sessions=15):
     decision_at = dt.datetime.combine(day, dt.time(4, 30), tzinfo=UTC)
     return {
         "decision_id": f"decision-{index}",
@@ -15,7 +15,7 @@ def _equity_record(index, day, *, matured=True, eligible=True, feature=True,
         "asset_class": "equity",
         "strategy_id": strategy_id,
         "target_version": "net-excess-execution-v2",
-        "horizon_sessions": 5,
+        "horizon_sessions": horizon_sessions,
         "feature_names": ["scanner_composite_score"] if feature else [],
         "matured": matured,
         "outcome_at": (decision_at + dt.timedelta(days=7)).isoformat() if matured else None,
@@ -55,6 +55,7 @@ def test_progress_counts_only_real_matured_contract_eligible_rows():
         _equity_record(4, base + dt.timedelta(days=3), matured=False, eligible=False),
         _equity_record(5, base + dt.timedelta(days=4), matured=True, eligible=True, feature=False),
         _equity_record(6, base + dt.timedelta(days=5), strategy_id="older-equity-contract"),
+        _equity_record(7, base + dt.timedelta(days=6), horizon_sessions=5),
     ]
 
     equity = _asset(
@@ -65,7 +66,7 @@ def test_progress_counts_only_real_matured_contract_eligible_rows():
     )
 
     assert equity["raw_decisions"] == 5
-    assert equity["other_contract_decisions"] == 1
+    assert equity["other_contract_decisions"] == 2
     assert equity["matured_observations"] == 4
     assert equity["eligible_observations"] == 2
     assert equity["rejected_matured_observations"] == 2
