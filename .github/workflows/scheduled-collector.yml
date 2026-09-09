@@ -1,16 +1,6 @@
 name: Scheduled evidence collector
 
 on:
-  schedule:
-    # GitHub cron is UTC. India does not observe daylight saving time.
-    # Two standardized snapshots avoid correlated pseudo-samples and excessive DB growth.
-    # Both are offset from the top of the hour because GitHub documents higher queue delay there.
-    - cron: '37 4 * * 1-5'  # 10:07 IST, Monday-Friday
-    - cron: '7 9 * * 1-5'   # 14:37 IST, Monday-Friday
-    - cron: '45 21 * * 1-5' # 03:15 IST Tuesday-Saturday, safely after US cash close
-    - cron: '55 3 * * 1-5'   # 09:25 IST, Monday-Friday
-    - cron: '15 10 * * 1-5'  # 15:45 IST, Monday-Friday
-    - cron: '30 12 * * 6'    # 18:00 IST, Saturday
   workflow_dispatch:
     inputs:
       mode:
