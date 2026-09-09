@@ -678,6 +678,8 @@ def update_matured_targets(repo: ProductionRepository, client: requests.Session,
     outcome_spine = DecisionEvidenceSpine(repo.append_evidence_event, repo)
     stored, failed, deferred, failures = 0, 0, 0, []
     for observation in pending:
+        failure_code = "TARGET_INPUT_FETCH_FAILED"
+        failure_message = "Target inputs failed"
         try:
             start = pd.Timestamp(observation["as_of_date"]).date() - dt.timedelta(days=5)
             history = fetch_daily_history(client, token, observation["instrument_key"], start)
@@ -693,81 +695,71 @@ def update_matured_targets(repo: ProductionRepository, client: requests.Session,
             market_open = observed_at.replace(hour=9, minute=15, second=0, microsecond=0)
             market_close = observed_at.replace(hour=15, minute=30, second=0, microsecond=0)
             signal_timestamp = observed_at if market_open <= observed_at <= market_close else None
-            for horizon in observation["missing_horizons"]:
-                try:
-                    completed_sessions = history.loc[
-                        history.index.normalize() > pd.Timestamp(observation["as_of_date"]).normalize()
-                    ]
-                    if len(completed_sessions) < int(horizon):
-                        deferred += 1
-                        continue
-                    target = compute_forward_target(
-                        history, observation["as_of_date"],
-                        TargetDefinition(int(horizon), round_trip_cost_bps=cost_bps, entry_rule="exact_intraday"),
-                        stop=float(observation["stop"]), target=float(observation["target"]), benchmark=benchmark,
-                        intraday=intraday, signal_timestamp=signal_timestamp,
-                    )
-                    if target is None:
-                        raise ValueError("Exact target evidence is incomplete or ambiguous")
-                    eligible_sessions = completed_sessions.iloc[:int(horizon)]
-                    session_closes = []
-                    source_ids = []
-                    for session_at, session_row in eligible_sessions.iterrows():
-                        session_date = pd.Timestamp(session_at).date()
-                        session_close = dt.datetime.combine(
-                            session_date, dt.time(15, 30), tzinfo=IST,
-                        ).astimezone(dt.timezone.utc)
-                        session_closes.append(session_close)
-                        source_ids.append(hashlib.sha256(json.dumps({
-                            "instrument_key": observation["instrument_key"],
-                            "session_date": session_date.isoformat(),
-                            "ohlcv": {
-                                name: (None if pd.isna(session_row.get(name)) else float(session_row.get(name)))
-                                for name in ("Open", "High", "Low", "Close", "Volume")
-                            },
-                        }, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
-                    outcome_date = pd.Timestamp(target["outcome_date"]).date()
-                    outcome_at = dt.datetime.combine(
-                        outcome_date, dt.time(15, 30), tzinfo=IST,
-                    ).astimezone(dt.timezone.utc)
-                    outcome_spine.outcome(
-                        decision_id=observation["observation_id"],
-                        outcome=str(target["outcome"]).upper(),
-                        outcome_at=outcome_at,
-                        actual_forward_return=target["net_return"],
-                        completed_session_closes=session_closes,
-                        source_observation_ids=source_ids,
-                        actual_costs={
-                            "round_trip_bps": target["cost_bps"],
-                            "entry_quality": target.get("entry_quality"),
-                            "gross_return": target["gross_return"],
-                            "net_return": target["net_return"],
-                        },
-                    )
-                    repo.save_prediction_target(observation["observation_id"], target)
-                    stored += 1
-                except Exception as exc:
-                    failed += 1
-                    detail = {
-                        "observation_id": observation["observation_id"], "horizon": int(horizon),
-                        "error_kind": type(exc).__name__, "message": str(exc)[:300],
-                    }
-                    failures.append(detail)
-                    repo.record_quality_event(
-                        "prediction_targets", "ERROR", "TARGET_GENERATION_FAILED",
-                        f"Target generation failed for observation {observation['observation_id']}", detail,
-                    )
+            failure_code = "TARGET_GENERATION_FAILED"
+            failure_message = "Target generation failed"
+            horizon = int(observation["horizon_sessions"])
+            completed_sessions = history.loc[
+                history.index.normalize() > pd.Timestamp(observation["as_of_date"]).normalize()
+            ]
+            if len(completed_sessions) < horizon:
+                deferred += 1
+                continue
+            target = compute_forward_target(
+                history, observation["as_of_date"],
+                TargetDefinition(horizon, round_trip_cost_bps=cost_bps, entry_rule="exact_intraday"),
+                stop=float(observation["stop"]), target=float(observation["target"]), benchmark=benchmark,
+                intraday=intraday, signal_timestamp=signal_timestamp,
+            )
+            if target is None:
+                raise ValueError("Exact target evidence is incomplete or ambiguous")
+            eligible_sessions = completed_sessions.iloc[:horizon]
+            session_closes = []
+            source_ids = []
+            for session_at, session_row in eligible_sessions.iterrows():
+                session_date = pd.Timestamp(session_at).date()
+                session_close = dt.datetime.combine(
+                    session_date, dt.time(15, 30), tzinfo=IST,
+                ).astimezone(dt.timezone.utc)
+                session_closes.append(session_close)
+                source_ids.append(hashlib.sha256(json.dumps({
+                    "instrument_key": observation["instrument_key"],
+                    "session_date": session_date.isoformat(),
+                    "ohlcv": {
+                        name: (None if pd.isna(session_row.get(name)) else float(session_row.get(name)))
+                        for name in ("Open", "High", "Low", "Close", "Volume")
+                    },
+                }, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
+            outcome_date = pd.Timestamp(target["outcome_date"]).date()
+            outcome_at = dt.datetime.combine(
+                outcome_date, dt.time(15, 30), tzinfo=IST,
+            ).astimezone(dt.timezone.utc)
+            outcome_spine.outcome(
+                decision_id=observation["observation_id"],
+                outcome=str(target["outcome"]).upper(),
+                outcome_at=outcome_at,
+                actual_forward_return=target["net_return"],
+                completed_session_closes=session_closes,
+                source_observation_ids=source_ids,
+                actual_costs={
+                    "round_trip_bps": target["cost_bps"],
+                    "entry_quality": target.get("entry_quality"),
+                    "gross_return": target["gross_return"],
+                    "net_return": target["net_return"],
+                },
+            )
+            repo.save_prediction_target(observation["observation_id"], target)
+            stored += 1
         except Exception as exc:
-            missing_count = max(len(observation.get("missing_horizons") or []), 1)
-            failed += missing_count
+            failed += 1
             detail = {
                 "observation_id": observation.get("observation_id"),
+                "horizon": observation.get("horizon_sessions"),
                 "error_kind": type(exc).__name__, "message": str(exc)[:300],
             }
             failures.append(detail)
             repo.record_quality_event(
-                "prediction_targets", "ERROR", "TARGET_INPUT_FETCH_FAILED",
-                f"Target inputs failed for observation {observation.get('observation_id')}", detail,
+                "prediction_targets", "ERROR", failure_code,
+                f"{failure_message} for observation {observation.get('observation_id')}", detail,
             )
     return {"pending": len(pending), "stored": stored, "failed": failed, "deferred": deferred,
             "failures": failures[:50]}

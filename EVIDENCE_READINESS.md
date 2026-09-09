@@ -36,6 +36,8 @@ The Streamlit **Research → Evidence Readiness** page is read-only. It counts o
 
 Batch Stage-1 scan summaries are not counted as training observations. The present scheduled Stage-1 path marks candidates as not having passed Stage 2 and does not append the individual complete decision/outcome contract required by the trainer. Treating those batches as completed training evidence would inflate progress and violate the point-in-time contract.
 
+The production equity readiness contract is `equity-scanner-v19.0` / `net-excess-execution-v2` at `horizon_sessions=15`. Fifteen sessions is the maximum time-stop ceiling; target or stop exits may occur earlier. Outcome maturation always uses the immutable horizon recorded on each individual decision rather than applying a fixed set of generic horizons. The independently tracked `index-options-directional-v1` contract remains at `horizon_sessions=1`.
+
 Options, futures, MCX and SMC are displayed independently. Their counts cannot reuse the equity contract or calibrator. Until each asset class has its own complete decision/outcome contract and independent training/calibration pipeline, its status remains `INSUFFICIENT_EVIDENCE` and `promotable:false`.
 
 ## Calendar-date estimate

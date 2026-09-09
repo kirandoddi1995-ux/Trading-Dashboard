@@ -1167,33 +1167,33 @@ class ProductionRepository:
             ))
             conn.commit()
 
-    def pending_observations(self, *, horizons=(5, 10, 20), target_version="net-excess-execution-v2",
+    def pending_observations(self, *, target_version="net-excess-execution-v2",
                              limit=100) -> list[dict]:
-        """Return passed signals missing at least one requested horizon label."""
+        """Return passed signals missing their immutable decision-horizon outcome."""
         self.ensure_schema()
-        horizons = tuple(sorted({int(value) for value in horizons if int(value) > 0}))
-        if not horizons:
-            return []
         with self.connect() as conn:
             rows = conn.execute(f"""
                 SELECT o.observation_id,o.as_of_date,o.observed_at,o.instrument_key,o.trading_symbol,
                        o.entry,o.stop,o.target,o.feature_json,
-                       ARRAY(
-                           SELECT h FROM UNNEST(%s::int[]) AS h
-                           WHERE NOT EXISTS (
-                               SELECT 1 FROM {SCHEMA}.prediction_targets t
-                               WHERE t.observation_id=o.observation_id AND t.horizon_sessions=h
-                                 AND t.target_version=%s
-                           )
-                       ) AS missing_horizons
+                       (decision.payload->'identifiers'->>'horizon_sessions')::integer AS horizon_sessions
                 FROM {SCHEMA}.scanner_observations o
+                JOIN {SCHEMA}.evidence_ledger_events decision
+                  ON decision.aggregate_id='decision:' || o.observation_id
+                 AND decision.event_type='DECISION_EVALUATED'
                 WHERE o.stage2_pass=TRUE AND o.entry IS NOT NULL AND o.stop IS NOT NULL AND o.target IS NOT NULL
+                  AND decision.payload->'identifiers'->>'target_version'=%s
+                  AND (decision.payload->'identifiers'->>'horizon_sessions')::integer > 0
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {SCHEMA}.evidence_ledger_events outcome
+                      WHERE outcome.aggregate_id=decision.aggregate_id
+                        AND outcome.event_type='OUTCOME_MATURED'
+                  )
                 ORDER BY o.as_of_date,o.instrument_key
                 LIMIT %s
-            """, (list(horizons), str(target_version), int(limit))).fetchall()
+            """, (str(target_version), int(limit))).fetchall()
         names = ["observation_id", "as_of_date", "observed_at", "instrument_key", "trading_symbol",
-                 "entry", "stop", "target", "features", "missing_horizons"]
-        return [dict(zip(names, row)) for row in rows if row[-1]]
+                 "entry", "stop", "target", "features", "horizon_sessions"]
+        return [dict(zip(names, row)) for row in rows]
 
     def archive_mf_nav(self, records: Iterable[Mapping], *, source="AMFI NAVOpen.txt", source_hash="") -> int:
         self.ensure_schema()

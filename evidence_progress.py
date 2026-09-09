@@ -51,7 +51,7 @@ class AssetEvidenceContract:
 ASSET_CONTRACTS = (
     AssetEvidenceContract(
         "equity", "Equity", ("equity",), "equity-scanner-v19.0",
-        "net-excess-execution-v2", 5, ("scanner_composite_score",), True,
+        "net-excess-execution-v2", 15, ("scanner_composite_score",), True,
     ),
     AssetEvidenceContract(
         "options", "Options", ("options",), "index-options-directional-v1",

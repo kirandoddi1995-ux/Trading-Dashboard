@@ -557,7 +557,7 @@ def register_shadow_candidate(registry, artifact: Mapping, *, signer: ArtifactSi
 
 
 def production_smoke(*, database_url=None, features=(), strategy_id="equity-scanner-v19.0",
-                     target_version="net-excess-execution-v2", horizon_sessions=5) -> dict:
+                     target_version="net-excess-execution-v2", horizon_sessions=15) -> dict:
     url = str(database_url or os.environ.get("DATABASE_URL") or "").strip()
     if not url:
         local = pathlib.Path(__file__).resolve().parent / "market_cache.sqlite3"
@@ -598,7 +598,7 @@ def main(argv=None) -> int:
         help="Re-evaluate real evidence; insufficient evidence is an expected successful check",
     )
     parser.add_argument("--features", default="scanner_composite_score")
-    parser.add_argument("--horizon", type=int, default=5)
+    parser.add_argument("--horizon", type=int, default=15)
     parser.add_argument("--strategy-id", default="equity-scanner-v19.0")
     parser.add_argument("--target-version", default="net-excess-execution-v2")
     parser.add_argument(
