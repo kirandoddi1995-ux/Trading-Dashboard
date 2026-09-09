@@ -40,7 +40,7 @@ jobs:
           --strategy-id equity-scanner-v19.0
           --target-version net-excess-execution-v2
           --features scanner_composite_score
-          --horizon 5 > model-readiness-result.json
+          --horizon 15 > model-readiness-result.json
       - name: Show model evaluation result
         run: python -m json.tool model-readiness-result.json
       - name: Retain read-only readiness reports
