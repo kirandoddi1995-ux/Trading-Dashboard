@@ -113,3 +113,43 @@ def test_workflow_check_job_has_no_collection_secrets_or_enable_gate():
     assert 'EQUITY_RESEARCH_SESSIONS_JSON' not in check_job
     assert 'run: python equity_research_collector.py --check' in check_job
     assert "inputs.mode == 'collect'" in workflow.split('  research:\n')[1]
+
+
+@pytest.mark.parametrize('message,category', [
+    ('password authentication failed', 'authentication_failure'),
+    ('SASL authentication failed', 'authentication_failure'),
+    ('could not translate host name', 'dns_failure'),
+    ('Temporary failure in name resolution', 'dns_failure'),
+    ('getaddrinfo failed', 'dns_failure'),
+    ('connection timeout expired', 'timeout'),
+    ('connection timed out', 'timeout'),
+    ('Tenant or user not found', 'invalid_pooler_address_or_routing'),
+    ('invalid port number', 'invalid_pooler_address_or_routing'),
+    ('connection refused', 'unclassified_operational_error'),
+    ('SSL connection has been closed unexpectedly', 'unclassified_operational_error'),
+])
+def test_cli_diagnostics_never_emit_raw_error_or_credentials(monkeypatch, capsys, message, category):
+    import json
+    import psycopg
+    import equity_research_collector as collector
+    secret = 'postgresql://private-user:private-password@private-host/postgres'
+    def fail():
+        raise psycopg.OperationalError(message + ' ' + secret)
+    monkeypatch.setattr(collector, 'main', fail)
+    with pytest.raises(SystemExit) as error:
+        collector.cli()
+    assert error.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == ''
+    assert json.loads(captured.out) == {
+        'status': 'FAILED', 'error_type': 'OperationalError', 'error_category': category}
+    assert secret not in captured.out
+    assert message not in captured.out
+
+
+def test_diagnostics_use_sqlstate_and_do_not_misclassify_other_errors():
+    import psycopg
+    from equity_research_collector import error_category
+    assert error_category(psycopg.errors.InvalidPassword('private detail')) == 'authentication_failure'
+    assert error_category(PermissionError('authentication failed')) == 'unclassified_error'
+    assert error_category(ValueError('timeout expired')) == 'unclassified_error'
