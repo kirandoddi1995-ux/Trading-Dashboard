@@ -75,6 +75,7 @@ def evaluate_live_governance(
     exchange_open: bool = True,
     quote_snapshot: Mapping[str, Any] | None = None,
     cost_breakdown: Mapping[str, Any] | None = None,
+    equity_capture_inputs: Mapping[str, Any] | None = None,
     universe_lineage: Mapping[str, Any] | None = None,
     decision_id: str | None = None,
     secondary_quote: Mapping[str, Any] | None = None,
@@ -408,6 +409,8 @@ def evaluate_live_governance(
                 policy_hash=services.control_plane.policy.digest,
                 correlation_id=resilience_public["correlation_id"],
                 decision_id=decision_id,
+                **({"input_values": equity_capture_inputs}
+                   if evidence.context.asset_class == "equity" and equity_capture_inputs is not None else {}),
             )
             decision["decision_evidence"] = {
                 "decision_id": captured["decision_id"],

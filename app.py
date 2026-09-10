@@ -150,7 +150,7 @@ def evaluate_live_governance_contract(
     asset_class="unknown", target_version="unavailable", horizon_sessions=1,
     quote_observed_at=None, quote_received_at=None, evidence_tier="OBSERVATION",
     quote_bid=None, quote_ask=None, quote_last=None, quote_unavailable_reason=None,
-    cost_breakdown=None, universe_lineage=None,
+    cost_breakdown=None, universe_lineage=None, equity_capture_inputs=None,
     decision_id=None,
     secondary_quote=None, tick_size=None,
 ):
@@ -253,6 +253,7 @@ def evaluate_live_governance_contract(
         },
         cost_breakdown=cost_breakdown,
         universe_lineage=universe_lineage,
+        equity_capture_inputs=equity_capture_inputs,
         decision_id=decision_id,
         secondary_quote=secondary_quote,
         tick_size=tick_size,
@@ -7959,6 +7960,16 @@ elif selected_tab == "Equities Screener & Risk":
         analysis_timing_log = []
 
         def evaluate_stock(ticker):
+            from equity_observation_capture import EquityCapture
+            observation = EquityCapture(
+                identity={"strategy_id": STRATEGY_VERSION, "scanner_strategy_id": _scanner_strategy_version,
+                          "target_version": TARGET_VERSION, "code_hash": RUNTIME_CODE_HASH,
+                          "config_hash": RUNTIME_QUANT_CONFIG_HASH,
+                          "policy_hash": RESILIENCE_CONTROL_PLANE.policy.digest, "ticker": ticker},
+                settings={"horizon_sessions": custom_days, "minimum_net_rr": trade_contracts.EQUITY_MIN_NET_REWARD_RISK,
+                          "scan_mode": scan_mode,
+                          "market_regime": runtime.market_regime_code(regime)},
+            )
             # REDESIGN NOTE: every `return None` below now returns
             # `None, {"category": ..., "reason": ...}` instead — a companion
             # rejection reason, added alongside the existing decision, not
@@ -7975,6 +7986,7 @@ elif selected_tab == "Equities Screener & Risk":
             def _archive_stage2(passed, *, category=None, reason=None, score=None,
                                 entry=None, stop=None, target=None, features=None):
                 evidence_features = dict(features or {})
+                evidence_features["equity_capture"] = observation.snapshot()
                 evidence_features.setdefault("market_regime", runtime.market_regime_code(regime))
                 evidence_features.setdefault("scan_mode", scan_mode)
                 try:
@@ -7993,7 +8005,7 @@ elif selected_tab == "Equities Screener & Risk":
                     return
                 decision_at = datetime.datetime.now(datetime.timezone.utc)
                 observed_at, received_at, lineage = _live_lineage_from_quote(
-                    raw_quote, evidence_features,
+                    raw_quote, {k: v for k, v in evidence_features.items() if k != "equity_capture"},
                     definition_version=f"{STRATEGY_VERSION}:scanner-filter-v1",
                 )
                 _register_runtime_lineage(lineage)
@@ -8056,7 +8068,9 @@ elif selected_tab == "Equities Screener & Risk":
                     )
 
             def _reject(category, reason):
-                _archive_stage2(False, category=category, reason=reason)
+                _archive_stage2(False, category=category, reason=reason,
+                                score=observation.inputs.get("score"), entry=observation.inputs.get("price"),
+                                stop=observation.inputs.get("sl"), target=observation.inputs.get("tgt"))
                 return None, {"category": category, "reason": reason}
 
             try:
@@ -8065,6 +8079,7 @@ elif selected_tab == "Equities Screener & Risk":
 
                 raw_quote = live_quote_data.get(key, {}) if live_quote_data else {}
                 live_price = raw_quote.get("last_price")
+                observation.observe(locals(), now=datetime.datetime.now(datetime.timezone.utc))
 
                 # Use a long history so the fixed-setup probability can gather a
                 # meaningful non-overlapping sample after indicator warm-up. The
@@ -8097,6 +8112,10 @@ elif selected_tab == "Equities Screener & Risk":
                 if df_clean.empty:
                     return _reject("Data", "Indicators could not be computed (NaN in EMA/ATR)")
                 latest = df_clean.iloc[-1]
+                observation.settings.update({"max_stock_price": max_stock_price,
+                                             "require_weekly": require_weekly_align,
+                                             "advanced_filters": use_advanced_signal_filters})
+                observation.observe(locals(), now=datetime.datetime.now(datetime.timezone.utc))
 
                 if price > max_stock_price:
                     return _reject("Price Filter", f"Price ₹{price:,.2f} exceeds your ₹{max_stock_price:,.0f} filter")
@@ -8111,6 +8130,7 @@ elif selected_tab == "Equities Screener & Risk":
                     return _reject("Trend", "20-day EMA is below the 50-day EMA")
 
                 atr_val = float(latest['ATR'])
+                observation.observe(locals(), now=datetime.datetime.now(datetime.timezone.utc))
                 if not np.isfinite(atr_val) or atr_val <= 0:
                     return _reject("Data", "Invalid ATR (zero or non-finite)")
 
@@ -8126,6 +8146,7 @@ elif selected_tab == "Equities Screener & Risk":
                     is_choppy_adx = adx_val is not None and 18 <= adx_val <= 22
                     is_low_volume = avg_vol20 > 0 and current_vol < avg_vol20 * 0.7
                     timeframes_mixed = weekly_trend != "Bullish (Weekly)"
+                    observation.observe(locals(), now=datetime.datetime.now(datetime.timezone.utc))
                     if is_choppy_adx and is_low_volume and timeframes_mixed:
                         analysis_timing_log.append(("false_breakout_filter", time.perf_counter() - _breakout_t0))
                         return _reject("Volume", "No-Trade Zone: choppy ADX, low volume, and weekly trend not confirming")
@@ -8148,6 +8169,7 @@ elif selected_tab == "Equities Screener & Risk":
                 sl, tgt, rr_ratio, levels = derive_long_trade_levels(
                     df_clean, price, atr_val, horizon_days=custom_days
                 )
+                observation.observe(locals(), now=datetime.datetime.now(datetime.timezone.utc))
                 if sl is None or tgt is None or not 0 < sl < price < tgt:
                     return _reject("Risk:Reward", "Invalid structural trade levels")
                 average_daily_value = float(pd.to_numeric(df_clean['Volume'], errors='coerce').tail(20).mean()) * price
@@ -8165,6 +8187,7 @@ elif selected_tab == "Equities Screener & Risk":
                     minimum_ratio=trade_contracts.EQUITY_MIN_NET_REWARD_RISK,
                 )
                 rr_ratio = trade_math["net_ratio"]
+                observation.observe(locals(), now=datetime.datetime.now(datetime.timezone.utc))
                 if not trade_math["passes_gate"]:
                     return _reject(
                         "Risk:Reward",
@@ -8289,6 +8312,7 @@ elif selected_tab == "Equities Screener & Risk":
                     "momentum_beta": factor_score,
                 }
                 score = scanner_composite_score(scanner_components)
+                observation.observe(locals(), now=datetime.datetime.now(datetime.timezone.utc))
 
                 if score >= 78:
                     conviction = "🟢🟢🟢 High"
@@ -8323,6 +8347,7 @@ elif selected_tab == "Equities Screener & Risk":
                 )
 
                 if use_advanced_signal_filters and breakout_quality is not None:
+                    observation.observe(locals(), now=datetime.datetime.now(datetime.timezone.utc))
                     # Extends the EXISTING opt-in Advanced Signal Filters toggle
                     # (built earlier this session, off by default) rather than
                     # adding a second, separate always-on gate — "reject weak
@@ -8357,8 +8382,10 @@ elif selected_tab == "Equities Screener & Risk":
                     model_artifact_signer=MODEL_ARTIFACT_SIGNER,
                     runtime_evidence_signer=RUNTIME_EVIDENCE_SIGNER,
                 )
+                observation.observe(locals(), now=datetime.datetime.now(datetime.timezone.utc))
                 equity_governance = _evaluate_governance_fail_closed(
                     "Equity",
+                    equity_capture_inputs={"equity_capture": observation.snapshot()},
                     instrument=ticker, entry=price, stop=sl, target=tgt, direction="long",
                     quantity=qty_to_buy, cost_bps=cost_estimate.round_trip_bps,
                     feature_lineage=equity_lineage,
