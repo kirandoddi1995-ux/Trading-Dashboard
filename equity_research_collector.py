@@ -98,10 +98,49 @@ def main():
             raise SystemExit(1)
 
 
-if __name__ == '__main__':
+def error_category(exc):
+    """Inspect driver errors privately; return only fixed, non-sensitive labels.
+
+    These are diagnostic classifications, not proof of a particular bad setting.
+    Unrecognized failures remain unknown rather than guessing a credential issue.
+    """
+    try:
+        import psycopg
+    except ImportError:
+        return 'unclassified_error'
+    if not isinstance(exc, psycopg.OperationalError):
+        return 'unclassified_error'
+    message = str(exc).lower()
+    state = getattr(exc, 'sqlstate', None)
+    if state in ('28P01', '28000') or any(marker in message for marker in (
+            'password authentication failed', 'authentication failed',
+            'wrong password', 'sasl authentication failed')):
+        return 'authentication_failure'
+    if any(marker in message for marker in (
+            'could not translate host name', 'name or service not known',
+            'temporary failure in name resolution', 'nodename nor servname',
+            'getaddrinfo failed', 'failed to resolve host')):
+        return 'dns_failure'
+    if any(marker in message for marker in (
+            'timeout expired', 'connection timeout', 'timed out')):
+        return 'timeout'
+    if any(marker in message for marker in (
+            'tenant or user not found', 'invalid port number',
+            'invalid integer value')):
+        # Includes an invalid pooler routing username/project, not just its host.
+        return 'invalid_pooler_address_or_routing'
+    return 'unclassified_operational_error'
+
+
+def cli():
     try:
         main()
     except Exception as exc:
         # Never dump DSNs, tokens or provider response bodies into CI logs.
-        print(json.dumps({'status': 'FAILED', 'error_type': type(exc).__name__}))
+        print(json.dumps({'status': 'FAILED', 'error_type': type(exc).__name__,
+                          'error_category': error_category(exc)}))
         raise SystemExit(1) from None
+
+
+if __name__ == '__main__':
+    cli()
