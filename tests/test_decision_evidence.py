@@ -20,6 +20,23 @@ UTC = dt.timezone.utc
 NOW = dt.datetime(2026, 9, 7, 10, 0, tzinfo=UTC)
 
 
+def test_raw_equity_capture_survives_missing_lineage_without_certifying_it(tmp_path):
+    from dataclasses import replace
+    _, _, spine = services(tmp_path)
+    kwargs = capture_kwargs()
+    bundle = kwargs['evidence']
+    kwargs['evidence'] = replace(bundle, feature_lineage={},
+                                context=replace(bundle.context, feature_schema_hash=feature_schema_digest({})),
+                                quote_observed_at=None)
+    kwargs['input_values'] = {'equity_capture': {'scanner_composite_score': 72, 'source_feature_available_at': None}}
+    row = spine.capture(**kwargs)['record']
+    assert row['features']['status'] == 'UNAVAILABLE'
+    assert row['features']['values'] == {}
+    assert row['features']['raw_values_used'] == kwargs['input_values']
+    assert row['quote']['observed_at'] is None
+    assert row['action'] == 'No Trade'
+
+
 def connect(path):
     conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
