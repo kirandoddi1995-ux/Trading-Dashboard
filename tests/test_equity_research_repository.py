@@ -105,6 +105,64 @@ def test_permission_verifier_issues_only_selects():
     ResearchRepository(ReadOnlyConnection())
 
 
+@pytest.mark.parametrize('ordinary_privileged_function', [False, True])
+def test_event_trigger_excluded_but_ordinary_privileged_function_blocks(ordinary_privileged_function):
+    class FunctionConnection(Connection):
+        def execute(self, sql, params=None):
+            if 'FROM pg_proc' in sql:
+                assert "p.prorettype <> 'pg_catalog.event_trigger'::regtype" in sql
+                assert 'p.prosecdef' in sql
+                assert 'has_schema_privilege' in sql
+                assert 'has_function_privilege' in sql
+                return SimpleNamespace(fetchall=lambda: [('dangerous',)] if ordinary_privileged_function else [])
+            return super().execute(sql, params)
+    if ordinary_privileged_function:
+        with pytest.raises(PermissionError, match='privileged function access'):
+            ResearchRepository(FunctionConnection())
+    else:
+        ResearchRepository(FunctionConnection())
+
+
+def test_function_filter_on_real_postgres():
+    import json
+    import os
+    import subprocess
+    module = os.environ.get('EQUITY_TEST_PGLITE_MODULE')
+    if not module:
+        pytest.skip('PostgreSQL-engine test harness not configured')
+    queries = []
+    class CaptureConnection(Connection):
+        def execute(self, sql, params=None):
+            if 'FROM pg_proc' in sql:
+                queries.append(sql)
+            return super().execute(sql, params)
+    ResearchRepository(CaptureConnection())
+    script = r'''
+const {PGlite} = require(process.argv[1]);
+const fs = require('fs');
+(async () => {
+  const db = new PGlite();
+  await db.exec(`CREATE ROLE equity_research_collector;
+    CREATE FUNCTION public.test_event_helper() RETURNS event_trigger
+      LANGUAGE plpgsql SECURITY DEFINER AS $$ BEGIN RETURN; END $$;
+    CREATE FUNCTION public.test_privileged_helper() RETURNS integer
+      LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$;
+    GRANT USAGE ON SCHEMA public TO equity_research_collector;
+    GRANT EXECUTE ON FUNCTION public.test_event_helper(), public.test_privileged_helper()
+      TO equity_research_collector;
+    SET ROLE equity_research_collector;`);
+  const result = await db.query(fs.readFileSync(0, 'utf8'));
+  console.log(JSON.stringify(result.rows));
+  await db.close();
+})().catch(() => {process.exitCode = 1;});
+'''
+    result = subprocess.run(['node', '-e', script, module], input=queries[0],
+                            text=True, capture_output=True, timeout=60, check=True)
+    names = {row['proname'] for row in json.loads(result.stdout)}
+    assert 'test_event_helper' not in names
+    assert 'test_privileged_helper' in names
+
+
 def test_workflow_check_job_has_no_collection_secrets_or_enable_gate():
     workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/equity-research-observations.yml').read_text()
     check_job = workflow.split('  check:\n')[1].split('  research:\n')[0]
