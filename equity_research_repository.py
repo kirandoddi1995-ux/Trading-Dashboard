@@ -33,6 +33,8 @@ class ResearchRepository:
         dangerous_functions = self.connection.execute("""
             SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
             WHERE p.prosecdef AND n.nspname NOT IN ('pg_catalog','information_schema')
+              -- Event-trigger functions cannot be called as ordinary SQL functions.
+              AND p.prorettype <> 'pg_catalog.event_trigger'::regtype
               AND has_schema_privilege(current_user,n.oid,'USAGE')
               AND has_function_privilege(current_user,p.oid,'EXECUTE')
         """).fetchall()
