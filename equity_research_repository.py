@@ -54,11 +54,13 @@ class ResearchRepository:
 
     def sources(self):
         rows = self.connection.execute(
-            'SELECT event_id,event_hash,payload FROM equity_research.source_decisions ORDER BY decision_id'
+            'SELECT event_id,event_hash,payload,verified_payload_sha256 '
+            'FROM equity_research.source_decisions ORDER BY decision_id'
         ).fetchall()
         if len(rows) != len(COHORT):
             raise ValueError('Research source snapshot must contain exactly 89 decisions')
-        return [dict(event_id=str(r[0]), event_hash=r[1], payload=r[2]) for r in rows]
+        return [dict(event_id=str(r[0]), event_hash=r[1], payload=r[2],
+                     verified_payload_sha256=r[3]) for r in rows]
 
     def register(self, observation):
         identifier = observation['decision_id']

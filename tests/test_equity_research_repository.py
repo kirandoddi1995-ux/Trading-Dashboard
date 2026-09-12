@@ -30,6 +30,24 @@ def test_requires_real_restricted_login():
         ResearchRepository(Connection(unsafe=True))
 
 
+def test_sources_forward_original_database_pins_without_writes():
+    from equity_research_observations import COHORT
+    rows = [(v['event_id'], 'event-hash', {'decision_id': k}, v['payload_sha256'])
+            for k, v in COHORT.items()]
+    class SourceConnection(Connection):
+        def execute(self, sql, params=None):
+            assert sql.strip().upper().startswith('SELECT ')
+            if 'FROM equity_research.source_decisions' in sql:
+                assert 'verified_payload_sha256' in sql
+                return SimpleNamespace(fetchall=lambda: rows)
+            return super().execute(sql, params)
+    sources = ResearchRepository(SourceConnection()).sources()
+    assert len(sources) == 89
+    for source, row in zip(sources, rows):
+        assert source['verified_payload_sha256'] == row[3]
+        assert source['payload'] == row[2]
+
+
 def test_no_production_credentials_or_migration_runner():
     source = (Path(__file__).resolve().parents[1] / 'equity_research_collector.py').read_text()
     assert "os.environ.get('DATABASE_URL')" not in source
