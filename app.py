@@ -14,7 +14,15 @@ from prediction_validation import (
 )
 from market_data_gateway import get_market_data_gateway
 from reliable_charts import render_chart
-from scan_jobs import ScanJobs, ScanBusy
+from scan_jobs import ScanJobs, ScanBusy, CheckpointUnavailable
+from equity_scan_repository import EquityScanRepository
+from equity_manual_review import (
+    POLICY as EQUITY_MANUAL_QUOTE_POLICY,
+    ManualReviewError,
+    build_manual_review,
+    decision_snapshot as equity_review_snapshot,
+    review_status as equity_review_status,
+)
 from provider_contracts import OptionGreeks, OptionMarketData, ProviderContractError, ProviderErrorKind
 from quantitative_services import estimate_execution_cost, cross_sectional_scores
 from iv_surface import normalize_iv_surface
@@ -153,6 +161,7 @@ def evaluate_live_governance_contract(
     cost_breakdown=None, universe_lineage=None, equity_capture_inputs=None,
     decision_id=None,
     secondary_quote=None, tick_size=None,
+    quote_verification_policy="automated",
 ):
     """Thin Streamlit adapter around the UI-independent governance service.
 
@@ -257,6 +266,7 @@ def evaluate_live_governance_contract(
         decision_id=decision_id,
         secondary_quote=secondary_quote,
         tick_size=tick_size,
+        quote_verification_policy=quote_verification_policy,
         evidence=evidence_bundle,
         services=GovernanceServices(
             control_plane=RESILIENCE_CONTROL_PLANE,
@@ -1040,26 +1050,43 @@ def _flush_evidence_outbox(limit=50):
 
 
 def _record_trade_evidence(*, aggregate_id, event_type, payload, effective_at,
-                           idempotency_key, source="quant-terminal-ui"):
+                           idempotency_key, source="quant-terminal-ui", asset_class=None):
     """Write locally and durably, retaining failed deliveries in a local outbox."""
     delivery = {
         "aggregate_id": aggregate_id, "event_type": event_type, "payload": payload,
         "effective_at": effective_at, "source": source, "actor_id": "single-user-session",
         "idempotency_key": idempotency_key,
     }
+    identifiers = payload.get("identifiers") if isinstance(payload, dict) else {}
+    identified_asset = asset_class or (payload.get("asset_class") if isinstance(payload, dict) else None) or (identifiers or {}).get("asset_class")
+    atomic_equity_delivery = (
+        DURABLE_REPOSITORY.configured and str(identified_asset or "").casefold() == "equity"
+    )
     try:
-        local_event = EVIDENCE_LEDGER.append(**delivery)
+        local_event = EVIDENCE_LEDGER.append(
+            **delivery, queue_remote_delivery=atomic_equity_delivery,
+        )
     except Exception as exc:
         LOGGER.error("Local evidence ledger append failed: %s", type(exc).__name__)
         return None
     if DURABLE_REPOSITORY.configured:
-        try:
-            _flush_evidence_outbox()
-            _append_durable_with_retry(delivery)
-            EVIDENCE_LEDGER.mark_delivered(idempotency_key)
-        except Exception as exc:
-            LOGGER.error("Durable evidence ledger append failed: %s", type(exc).__name__)
-            EVIDENCE_LEDGER.queue_delivery(delivery, type(exc).__name__)
+        if atomic_equity_delivery:
+            # The event and outbox row were committed together. The outbox is
+            # now the only remote-delivery path, avoiding a redundant direct
+            # submission after the same event has already been delivered.
+            try:
+                _flush_evidence_outbox()
+            except Exception as exc:
+                # The committed queue row remains available for a later retry.
+                LOGGER.error("Equity evidence outbox flush failed: %s", type(exc).__name__)
+        else:
+            try:
+                _flush_evidence_outbox()
+                _append_durable_with_retry(delivery)
+                EVIDENCE_LEDGER.mark_delivered(idempotency_key)
+            except Exception as exc:
+                LOGGER.error("Durable evidence ledger append failed: %s", type(exc).__name__)
+                EVIDENCE_LEDGER.queue_delivery(delivery, type(exc).__name__)
     return local_event
 
 
@@ -2685,8 +2712,14 @@ def get_scan_coordinator():
 
 
 @st.cache_resource
+def get_equity_scan_repository():
+    connect = DURABLE_REPOSITORY.connect if DURABLE_REPOSITORY.configured else None
+    return EquityScanRepository(connect)
+
+
+@st.cache_resource
 def get_scan_jobs():
-    return ScanJobs(DEFAULT_DB_PATH)
+    return ScanJobs(DEFAULT_DB_PATH, checkpoint_store=get_equity_scan_repository())
 
 
 class PerUserQuota:
@@ -7764,10 +7797,22 @@ elif selected_tab == "Equities Screener & Risk":
         scan_progress()
 
     _job = _jobs.snapshot(CURRENT_USER_ID, _signature)
+    _recovery_source = None
+    if not (_job and not _job.get("complete")):
+        try:
+            _recovery_source = _jobs.recoverable(CURRENT_USER_ID, _signature)
+        except Exception as recovery_lookup_exc:
+            LOGGER.error("Equity recovery lookup failed: %s", type(recovery_lookup_exc).__name__)
+        if _recovery_source and st.button(
+            f"Recover interrupted scan ({len(_recovery_source.get('unfinished', []))} unfinished)",
+            key=f"recover_equity_scan_{_diag_suffix}",
+        ):
+            run_scan_now = True
+            st.session_state[f"recover_equity_scan_request_{_diag_suffix}"] = _recovery_source["id"]
     if _job and not _job["complete"]:
         _show_running_scan()
         _stop_with_metrics()
-    if _job and _job["complete"] and st.session_state.get(f"applied_job_{_diag_suffix}") != _job["id"]:
+    if _job and _job["complete"] and st.session_state.get(f"applied_job_{_diag_suffix}") != _job.get("application_id", _job["id"]):
         valid_signals = _job["signals"]
         rejection_counts = _job["rejections"]
         funnel_stats = dict(_job["metadata"]["funnel"])
@@ -7783,7 +7828,7 @@ elif selected_tab == "Equities Screener & Risk":
         st.session_state[f"last_scan_issues_{_diag_suffix}"] = _job.get("issues", _job["examples"])
         st.session_state[f"last_funnel_stats_{_diag_suffix}"] = funnel_stats
         st.session_state[f"last_scan_timing_{_diag_suffix}"] = scan_timing
-        st.session_state[f"applied_job_{_diag_suffix}"] = _job["id"]
+        st.session_state[f"applied_job_{_diag_suffix}"] = _job.get("application_id", _job["id"])
         try:
             _durable_sync_local_scanner(
                 _job["metadata"].get("as_of_date"), _job["metadata"].get("strategy_version"),
@@ -7797,13 +7842,22 @@ elif selected_tab == "Equities Screener & Risk":
         st.warning("Timed-out requests are still finishing. Another scan can start after they drain.")
 
     if run_scan_now:
+        _recover_run_id = st.session_state.pop(
+            f"recover_equity_scan_request_{_diag_suffix}", None,
+        )
+        _recovering = bool(_recover_run_id and _recovery_source and
+                           _recover_run_id == _recovery_source.get("id"))
+        _run_universe_tickers = (
+            list(_recovery_source.get("unfinished") or []) if _recovering
+            else list(universe_tickers)
+        )
         scan_timing = {}
         _scan_as_of_date = datetime.datetime.now(IST).date().isoformat()
         _scan_run_id = uuid.uuid4().hex
         _scanner_strategy_version = f"{STRATEGY_VERSION}:{'full' if scan_mode.startswith('Full') else 'quick'}"
         scan_stage_status = st.empty()
         _t0 = time.perf_counter()
-        active_scan_keys = [instrument_dict.get(t) for t in universe_tickers if instrument_dict.get(t)]
+        active_scan_keys = [instrument_dict.get(t) for t in _run_universe_tickers if instrument_dict.get(t)]
         scan_stage_status.info(
             f"Stage 1 of 2 — retrieving live quotes for all {len(active_scan_keys):,} "
             f"{'NSE equities' if scan_mode.startswith('Full') else 'Quick Scan equities'}…"
@@ -7824,7 +7878,7 @@ elif selected_tab == "Equities Screener & Risk":
 
         _t1 = time.perf_counter()
         stage1_shortlist, funnel_stats = stage1_multi_bucket_prefilter(
-            universe_tickers,
+            _run_universe_tickers,
             instrument_dict,
             live_quote_data,
             technical_candidate_limit,
@@ -7918,9 +7972,9 @@ elif selected_tab == "Equities Screener & Risk":
         )
         scan_timing["funnel_secs"] = round(time.perf_counter() - _t1, 2)
         funnel_stats = dict(funnel_stats or {})
-        funnel_stats.setdefault("universe_size", len(universe_tickers))
+        funnel_stats.setdefault("universe_size", len(_run_universe_tickers))
         funnel_stats.setdefault("quoted", 0)
-        funnel_stats.setdefault("no_quote", max(len(universe_tickers) - funnel_stats.get("quoted", 0), 0))
+        funnel_stats.setdefault("no_quote", max(len(_run_universe_tickers) - funnel_stats.get("quoted", 0), 0))
         funnel_stats.setdefault("shortlisted", len(stage1_shortlist))
         funnel_stats.setdefault("session_fraction", _session_elapsed_fraction())
         funnel_stats.setdefault("bucket_counts", {})
@@ -8411,6 +8465,7 @@ elif selected_tab == "Equities Screener & Risk":
                     universe_lineage=(equity_universe or {
                         "unavailable_reason": "PIT equity-universe membership is unavailable",
                     }),
+                    quote_verification_policy=EQUITY_MANUAL_QUOTE_POLICY,
                 )
                 if not equity_governance["allow_trade"]:
                     return _reject("Governance", "; ".join(equity_governance["blocking_reasons"][:3]))
@@ -8459,6 +8514,12 @@ elif selected_tab == "Equities Screener & Risk":
                         "N/A — insufficient calibrated outcome evidence"
                     ),
                     "_governance": equity_governance,
+                    "_decision_id": (equity_governance.get("decision_evidence") or {}).get("decision_id"),
+                    "_scan_run_id": _scan_run_id,
+                    "_quote_observed_at": (
+                        equity_observed_at.isoformat() if equity_observed_at is not None else None
+                    ),
+                    "_system_action": action,
                     "Target Move (scenario)": f"+{exp_return_pct:.2f}%",
                     "Historical Win Rate": f"{historical_win_prob:.1f}%" if historical_win_prob is not None else "N/A",
                     "Probability 95% CI": probability_ci,
@@ -8506,14 +8567,37 @@ elif selected_tab == "Equities Screener & Risk":
 
         funnel_stats["live_quote_data_count"] = len(live_quote_data)
         try:
-            _jobs.start(CURRENT_USER_ID, _signature, stage1_shortlist, evaluate_stock,
-                        workers=scan_workers, timeout=180 if scan_mode.startswith("Full") else 90,
-                        metadata={
-                            "funnel": funnel_stats, "timing": scan_timing, "quote_at": time.time(),
-                            "as_of_date": _scan_as_of_date, "strategy_version": _scanner_strategy_version,
-                        })
+            _job_metadata = {
+                "funnel": funnel_stats, "timing": scan_timing, "quote_at": time.time(),
+                "as_of_date": _scan_as_of_date, "strategy_version": _scanner_strategy_version,
+                "scan_mode": scan_mode, "horizon_sessions": custom_days,
+                "scan_run_id": _scan_run_id,
+            }
+            if _recovering:
+                _fresh_stage1_candidates = set(stage1_shortlist)
+
+                def _evaluate_recovered_stock(ticker):
+                    if ticker not in _fresh_stage1_candidates:
+                        return None, {
+                            "category": "Recovery",
+                            "reason": "Candidate did not pass the refreshed Stage-1 evaluation",
+                        }
+                    return evaluate_stock(ticker)
+
+                _jobs.recover(
+                    CURRENT_USER_ID, _signature, _evaluate_recovered_stock,
+                    workers=scan_workers, timeout=180 if scan_mode.startswith("Full") else 90,
+                    metadata=_job_metadata,
+                )
+            else:
+                _jobs.start(CURRENT_USER_ID, _signature, stage1_shortlist, evaluate_stock,
+                    workers=scan_workers, timeout=180 if scan_mode.startswith("Full") else 90,
+                    metadata=_job_metadata,
+                )
         except ScanBusy:
             st.warning("A scan is active or its timed-out requests are draining. Wait for it to finish, then retry.")
+        except CheckpointUnavailable:
+            st.error("The equity scan was not started because its durable recovery checkpoint could not be created.")
         else:
             _show_running_scan()
             _stop_with_metrics()
@@ -8553,6 +8637,25 @@ elif selected_tab == "Equities Screener & Risk":
         return signals
 
     valid_signals = attach_shadow_cross_sectional_scores(valid_signals)
+
+    # A governance PASS is necessary but not sufficient for an actionable
+    # equity Buy. The separate manual review is tied to the immutable decision
+    # identity; reviews for older/superseded decisions cannot carry forward.
+    _equity_ops = get_equity_scan_repository()
+    for _signal in valid_signals:
+        _signal.setdefault("_system_action", _signal.get("Action"))
+        _manual_review = None
+        _decision = equity_review_snapshot(_signal)
+        if _equity_ops.configured and _decision.get("decision_id"):
+            try:
+                _manual_review = _equity_ops.latest_manual_review(_decision["decision_id"])
+            except Exception as manual_read_exc:
+                LOGGER.error("Manual equity review lookup failed: %s", type(manual_read_exc).__name__)
+        _manual_state = equity_review_status(_signal, _manual_review)
+        _signal["_manual_review"] = _manual_review
+        _signal["_manual_review_state"] = _manual_state
+        if str(_signal.get("_system_action")).casefold() == "buy":
+            _signal["Action"] = "Buy" if _manual_state["actionable"] else "Manual review required"
 
     _rank_started = time.perf_counter()
     display_signals = select_diversified_top_n(valid_signals, n=10, corr_threshold=0.75, max_sector_pct=30.0)
@@ -8671,6 +8774,53 @@ elif selected_tab == "Equities Screener & Risk":
             st.warning("Some industries are unclassified. Unknown names share one capped bucket; verified sector diversification cannot be claimed.")
         st.markdown(f"##### {len(valid_signals)} Screened Equities — {custom_days}-Day Horizon (Under ₹{max_stock_price:,.0f})")
 
+        _review_required = [
+            signal for signal in valid_signals
+            if signal.get("_system_action") == "Buy"
+            and not (signal.get("_manual_review_state") or {}).get("actionable")
+        ]
+        if _review_required:
+            st.warning(
+                "These candidates passed the system gates but are not actionable yet. "
+                "Open only a trade you intend to act on and confirm its current price in a second trading platform."
+            )
+            for _review_signal in _review_required:
+                _review_decision = equity_review_snapshot(_review_signal)
+                with st.expander(f"Manual quote check — {_review_signal['Ticker']}"):
+                    st.caption(
+                        "This check cannot override a rejection. It applies only to this exact decision "
+                        "and expires with its quote/governance freshness window."
+                    )
+                    with st.form(f"manual_equity_review_{_review_decision['decision_id']}"):
+                        _platform = st.text_input("Second trading app/platform")
+                        _secondary_price_text = st.text_input("Price currently shown there (₹)")
+                        _confirmed = st.checkbox(
+                            "I personally checked this price now and intend to consider this specific trade"
+                        )
+                        _submit_review = st.form_submit_button("Record manual quote check")
+                    if _submit_review:
+                        try:
+                            if not _equity_ops.configured:
+                                raise ManualReviewError("Operational review storage is not configured")
+                            _review = build_manual_review(
+                                _review_signal,
+                                secondary_platform=_platform,
+                                secondary_price=_secondary_price_text,
+                                reviewer=CURRENT_USER_ID,
+                                attested_at=datetime.datetime.now(datetime.timezone.utc),
+                                source_quote_observed_at=None,
+                                confirmed=_confirmed,
+                            )
+                            if not _equity_ops.save_manual_review(_review):
+                                raise ManualReviewError("The manual review was not stored")
+                            st.success("Manual quote check stored for this exact decision.")
+                            _rerun_with_metrics(scope="app")
+                        except (ManualReviewError, ValueError) as review_exc:
+                            st.error(str(review_exc))
+                        except Exception as review_exc:
+                            LOGGER.error("Manual equity review save failed: %s", type(review_exc).__name__)
+                            st.error("The manual quote check could not be stored; this candidate remains non-actionable.")
+
         trade_summary_rows = []
         for sig in valid_signals:
             is_actionable = sig.get("Action") == "Buy"
@@ -8698,7 +8848,7 @@ elif selected_tab == "Equities Screener & Risk":
             equity_aggregate = f"equity:{sig['Ticker']}:{sig.get('Timestamp', 'unknown')}"
             _record_trade_evidence(
                 aggregate_id=equity_aggregate,
-                event_type="SIGNAL_CREATED" if sig.get("Action") == "Buy" else "SIGNAL_REJECTED",
+                event_type="SIGNAL_CREATED" if sig.get("Action") == "Buy" else "SIGNAL_AMENDED",
                 effective_at=datetime.datetime.now(IST),
                 idempotency_key=f"{APP_BUILD}:{equity_aggregate}:{sig.get('Action', 'watch')}",
                 payload={
@@ -8713,9 +8863,13 @@ elif selected_tab == "Equities Screener & Risk":
                     "indicators": sig.get("Indicators Used"),
                     "rule_confidence": sig.get("Conviction"),
                     "calibrated_probability": None, "model_version": STRATEGY_VERSION,
-                    "thresholds": {"minimum_net_reward_risk": 2.0},
+                    "thresholds": {
+                        "minimum_net_reward_risk": trade_contracts.EQUITY_MIN_NET_REWARD_RISK,
+                    },
                     "governance": sig.get("_governance"),
+                    "manual_quote_review": sig.get("_manual_review_state"),
                 },
+                asset_class="equity",
             )
         st.caption(
             "An actionable entry is valid for 15 minutes from its timestamp while quotes remain fresh. "

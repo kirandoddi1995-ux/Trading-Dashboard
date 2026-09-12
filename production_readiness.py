@@ -15,6 +15,7 @@ from resilience_control_plane import SafetyFinding, SafetyState
 
 
 UTC = dt.timezone.utc
+EQUITY_MANUAL_QUOTE_POLICY = "equity-intent-manual-quote-v1"
 
 
 @dataclass(frozen=True)
@@ -133,17 +134,29 @@ def runtime_controls(environ=None, *, now=None) -> list[ReadinessControl]:
     ) for name, ok, detail, state in checks]
 
 
-def runtime_readiness_findings(environ=None, *, now=None) -> list[SafetyFinding]:
+def runtime_readiness_findings(environ=None, *, now=None,
+                               quote_verification_policy="automated") -> list[SafetyFinding]:
     state = {
         "DEGRADED": SafetyState.DEGRADED,
         "NO_TRADE": SafetyState.NO_TRADE,
         "READ_ONLY": SafetyState.READ_ONLY,
         "EMERGENCY_STOP": SafetyState.EMERGENCY_STOP,
     }
+    policy = str(quote_verification_policy or "automated")
+    if policy not in {"automated", EQUITY_MANUAL_QUOTE_POLICY}:
+        return [SafetyFinding(
+            "production_readiness", "INVALID_QUOTE_VERIFICATION_POLICY",
+            "Quote-verification policy is not recognized", SafetyState.NO_TRADE,
+        )]
+    controls = runtime_controls(environ, now=now)
+    if policy == EQUITY_MANUAL_QUOTE_POLICY:
+        # The equity UI supplies a separate, decision-bound confirmation after
+        # governance passes. No other readiness control is relaxed here.
+        controls = [control for control in controls if control.name != "independent_quote_source"]
     return [SafetyFinding(
         "production_readiness", f"EXTERNAL_{control.name.upper()}",
         control.detail, state[control.state],
-    ) for control in runtime_controls(environ, now=now) if not control.configured]
+    ) for control in controls if not control.configured]
 
 
 def repository_controls(root) -> list[ReadinessControl]:

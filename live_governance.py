@@ -80,6 +80,7 @@ def evaluate_live_governance(
     decision_id: str | None = None,
     secondary_quote: Mapping[str, Any] | None = None,
     tick_size: float | None = None,
+    quote_verification_policy: str = "automated",
 ) -> dict[str, Any]:
     """Evaluate all controls from genuine, context-bound evidence."""
     if str(instrument) != evidence.context.instrument:
@@ -227,7 +228,10 @@ def evaluate_live_governance(
         SafetyFinding("evidence_contract", "EVIDENCE_CONTEXT_MISMATCH", reason, SafetyState.NO_TRADE)
         for reason in contract_failures
     )
-    readiness_findings = runtime_readiness_findings(services.readiness_environment)
+    readiness_findings = runtime_readiness_findings(
+        services.readiness_environment,
+        quote_verification_policy=quote_verification_policy,
+    )
     advanced_findings.extend(readiness_findings)
     resilience = services.control_plane.evaluate_recommendation(
         price=entry,
@@ -329,10 +333,14 @@ def evaluate_live_governance(
             ),
         ):
             try:
+                event_payload = payload
+                if evidence.context.asset_class == "equity":
+                    event_payload = dict(payload)
+                    event_payload.setdefault("asset_class", "equity")
                 event = services.evidence_recorder(
                     aggregate_id=aggregate_id,
                     event_type=event_type,
-                    payload=payload,
+                    payload=event_payload,
                     effective_at=decision_at,
                     idempotency_key=f"{services.app_build}:{key_suffix}",
                     source=source,
@@ -367,6 +375,7 @@ def evaluate_live_governance(
         "predictive_correctness": correctness,
         "evidence_bundle": evidence_bundle,
         "resilience": resilience_public,
+        "quote_verification_policy": str(quote_verification_policy),
     }
     decision["presentation"] = evidence_tier_decision(decision)
     if services.decision_spine is not None:
@@ -399,6 +408,7 @@ def evaluate_live_governance(
                     "gates": controls,
                     "safety": resilience_public,
                     "presentation": decision["presentation"],
+                    "quote_verification_policy": str(quote_verification_policy),
                 },
                 quote=dict(quote_snapshot or {}),
                 universe=universe,
