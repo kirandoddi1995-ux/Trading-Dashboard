@@ -202,7 +202,14 @@ class ImmutableEvidenceLedger:
         source="quant-terminal",
         actor_id="system",
         idempotency_key: str | None = None,
+        queue_remote_delivery: bool = False,
     ) -> dict:
+        # Opt-in only: existing callers retain their local-only append behavior.
+        if queue_remote_delivery:
+            identifiers = payload.get("identifiers") or {}
+            asset_class = payload.get("asset_class") or identifiers.get("asset_class")
+            if str(asset_class).casefold() != "equity":
+                raise ValueError("Atomic delivery is restricted to explicit equity evidence")
         aggregate_id = str(aggregate_id).strip()
         event_type = str(event_type).strip().upper()
         if not aggregate_id:
@@ -226,7 +233,6 @@ class ImmutableEvidenceLedger:
                     (idempotency_key,),
                 ).fetchone()
                 if existing:
-                    conn.rollback()
                     existing_event = self._row(existing, duplicate=True)
                     same_request = (
                         existing_event["aggregate_id"] == aggregate_id
@@ -237,6 +243,11 @@ class ImmutableEvidenceLedger:
                     )
                     if not same_request:
                         raise ValueError("Idempotency key is already bound to different evidence")
+                    if queue_remote_delivery:
+                        self._queue_committed_event(conn, existing_event)
+                        conn.commit()
+                    else:
+                        conn.rollback()
                     return existing_event
                 preceding = conn.execute(
                     "SELECT sequence_no,event_hash FROM evidence_ledger_events "
@@ -266,16 +277,47 @@ class ImmutableEvidenceLedger:
                     source, actor_id, idempotency_key, payload_json, previous_hash, event_hash,
                     algorithm, LEDGER_SCHEMA_VERSION, self._key_id,
                 ))
-                conn.commit()
                 row = conn.execute(
                     "SELECT * FROM evidence_ledger_events WHERE event_id=?", (event_id,)
                 ).fetchone()
-                return self._row(row, duplicate=False)
+                result = self._row(row, duplicate=False)
+                if queue_remote_delivery:
+                    self._queue_committed_event(conn, result)
+                conn.commit()
+                return result
             except Exception:
                 conn.rollback()
                 raise
             finally:
                 conn.close()
+
+    @staticmethod
+    def _queue_committed_event(conn, event):
+        """Queue exact immutable bytes inside the caller's append transaction.
+
+        The queue is at-least-once. A crash after remote acceptance but before
+        acknowledgment safely retries the original remote idempotency key.
+        An already acknowledged row is never reset by a duplicate append.
+        """
+        delivery = {key: event[key] for key in (
+            "aggregate_id", "event_type", "payload", "effective_at", "source",
+            "actor_id", "idempotency_key",
+        )}
+        encoded = canonical_json(delivery)
+        existing = conn.execute(
+            "SELECT event_json FROM evidence_delivery_outbox WHERE idempotency_key=?",
+            (event["idempotency_key"],),
+        ).fetchone()
+        if existing:
+            if canonical_json(json.loads(existing[0])) != encoded:
+                raise ValueError("Delivery key is already bound to different evidence")
+            return
+        conn.execute("""
+            INSERT INTO evidence_delivery_outbox(
+                idempotency_key,event_json,attempts,last_error,next_attempt_at,
+                created_at,delivered_at
+            ) VALUES (?,?,0,NULL,?,?,NULL)
+        """, (event["idempotency_key"], encoded, event["recorded_at"], event["recorded_at"]))
 
     @staticmethod
     def _row(row, *, duplicate=False) -> dict:
