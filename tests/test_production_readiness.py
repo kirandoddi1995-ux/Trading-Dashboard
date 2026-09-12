@@ -1,11 +1,15 @@
 import datetime as dt
 import json
+from pathlib import Path
 
 import pytest
 
 from artifact_security import ApprovalAuthority, ArtifactSigner
 from managed_secrets import InMemorySecretProvider
-from production_readiness import readiness_report, runtime_controls, runtime_readiness_findings
+from production_readiness import (
+    EQUITY_MANUAL_QUOTE_POLICY, readiness_report, runtime_controls,
+    runtime_readiness_findings,
+)
 from resilience_control_plane import SafetyState
 from verify_promotion_request import verify_request
 
@@ -45,6 +49,46 @@ def test_owner_database_and_stale_recovery_drill_fail_closed():
     findings = runtime_readiness_findings(env, now=now)
     assert any(finding.code == "EXTERNAL_RESTRICTED_DATABASE_ROLE" for finding in findings)
     assert any(finding.state == SafetyState.READ_ONLY for finding in findings)
+
+
+def test_equity_manual_quote_policy_replaces_only_independent_feed_prerequisite():
+    now = dt.datetime(2026, 9, 13, tzinfo=dt.timezone.utc)
+    env = complete_environment(now)
+    env.pop("SECONDARY_QUOTE_PROVIDER_URL")
+    default_codes = {finding.code for finding in runtime_readiness_findings(env, now=now)}
+    assert "EXTERNAL_INDEPENDENT_QUOTE_SOURCE" in default_codes
+    assert runtime_readiness_findings(
+        env, now=now, quote_verification_policy=EQUITY_MANUAL_QUOTE_POLICY,
+    ) == []
+    env.pop("MODEL_ARTIFACT_SIGNING_KEY")
+    manual_codes = {finding.code for finding in runtime_readiness_findings(
+        env, now=now, quote_verification_policy=EQUITY_MANUAL_QUOTE_POLICY,
+    )}
+    assert manual_codes == {"EXTERNAL_MODEL_ARTIFACT_SIGNING"}
+
+
+def test_unknown_quote_policy_fails_closed():
+    findings = runtime_readiness_findings(
+        {}, quote_verification_policy="unrecognized-policy",
+    )
+    assert [finding.code for finding in findings] == ["INVALID_QUOTE_VERIFICATION_POLICY"]
+    assert findings[0].state == SafetyState.NO_TRADE
+
+
+def test_trade_thresholds_and_default_non_equity_policy_are_unchanged():
+    import inspect
+    import trade_contracts
+    import live_governance
+    assert trade_contracts.MIN_NET_REWARD_RISK == 2.0
+    assert trade_contracts.EQUITY_MIN_NET_REWARD_RISK == 1.30
+    signature = inspect.signature(live_governance.evaluate_live_governance)
+    assert signature.parameters["quote_verification_policy"].default == "automated"
+    source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
+    options_start = source.index('option_aggregate = (')
+    options_end = source.index('st.caption("Fresh proposal', options_start)
+    options_evidence = source[options_start:options_end]
+    assert '"minimum_net_reward_risk": 2.0' in options_evidence
+    assert "trade_contracts.EQUITY_MIN_NET_REWARD_RISK" not in options_evidence
 
 
 def test_repository_readiness_requires_promotion_workflow_and_runbook():

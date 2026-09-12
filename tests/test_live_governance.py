@@ -38,6 +38,7 @@ def test_continuous_decision_is_persisted_by_real_ledger(tmp_path):
 
     assert [event['event_type'] for event in events] == [
         'RISK_DECISION', 'CONTINUOUS_DECISION']
+    assert all(request['payload']['asset_class'] == 'equity' for request in requests)
     assert result['allow_trade'] is False
     assert result['blocking_reasons']
     assert not any('evidence append failed' in reason for reason in result['blocking_reasons'])
@@ -51,6 +52,35 @@ def test_continuous_decision_is_persisted_by_real_ledger(tmp_path):
         ledger.append(**{**requests[-1], 'payload': {'changed': True}})
     with pytest.raises(ValueError, match='Unsupported evidence event type'):
         ledger.append(aggregate_id='invalid', event_type='UNKNOWN_EVENT', payload={})
+
+
+def test_quote_verification_policy_is_forwarded_and_audited(monkeypatch):
+    import datetime as dt
+    import live_governance
+    from live_evidence import unavailable_bundle
+    from live_governance import GovernanceServices, evaluate_live_governance
+    from resilience_control_plane import ResilienceControlPlane
+
+    seen = []
+    monkeypatch.setattr(live_governance, 'runtime_readiness_findings',
+                        lambda environment, quote_verification_policy='automated':
+                        seen.append(quote_verification_policy) or [])
+    class Ledger:
+        def outbox_stats(self): return {'pending': 0, 'oldest_pending_seconds': 0}
+    class Metrics:
+        def record(self, *args, **kwargs): pass
+    bundle = unavailable_bundle(
+        strategy_id='equity-scanner-v19.0', asset_class='equity',
+        target_version='target-v1', horizon_sessions=15, instrument='FIXTURE',
+        decision_at=dt.datetime.now(dt.timezone.utc))
+    result = evaluate_live_governance(
+        instrument='FIXTURE', entry=100, stop=95, target=108, evidence=bundle,
+        quote_verification_policy='equity-intent-manual-quote-v1',
+        services=GovernanceServices(control_plane=ResilienceControlPlane(),
+                                    evidence_ledger=Ledger(), observability=Metrics(),
+                                    app_build='fixture'))
+    assert seen == ['equity-intent-manual-quote-v1']
+    assert result['quote_verification_policy'] == 'equity-intent-manual-quote-v1'
 
 
 def test_capture_does_not_change_governance_rejection():
