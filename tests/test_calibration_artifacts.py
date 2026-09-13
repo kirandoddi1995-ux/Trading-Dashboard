@@ -2,6 +2,7 @@ import datetime as dt
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from calibration_artifacts import build_equity_calibration_artifact, infer_equity_probability
 from prediction_validation import chronological_holdout_split
@@ -83,3 +84,30 @@ def test_artifact_rejects_unverified_pit_dataset():
         assert "point-in-time" in str(exc)
     else:
         raise AssertionError("unverified dataset produced an artifact")
+
+
+def test_equity_keyless_inference_preserves_integrity_context_and_activation():
+    frame = _dataset(800)
+    now = dt.datetime.now(dt.timezone.utc)
+    artifact = build_equity_calibration_artifact(
+        _validated_result(frame), frame, run_id="fixture", strategy_id="equity-v1",
+        target_version="target-v1", horizon_sessions=5, feature_schema_hash="schema",
+        created_at=now)
+    kwargs = dict(score=70, feature_at=now, inference_at=now,
+                  expected_context={"asset_class": "equity", "horizon_sessions": 5},
+                  registry_record={"model_id": artifact["model_id"], "role": "champion", "status": "ACTIVE"},
+                  verify_signature=None, require_signature=False, minimum_bin_samples=1)
+    result = infer_equity_probability(artifact, **kwargs)
+    assert result["status"] == "PASS"
+    assert result["model_prediction"]["artifact_signature_valid"] is False
+    assert result["model_prediction"]["artifact_integrity_valid"] is True
+    assert result["model_prediction"]["artifact_verification"] == "equity-content-hash"
+    tampered = {**artifact, "coefficients": {"intercept": 99, "slope": 1}}
+    assert "Calibration artifact hash mismatch" in infer_equity_probability(tampered, **kwargs)["failures"]
+    for replacement in (
+        {"expected_context": {"asset_class": "options"}},
+        {"expected_context": {"asset_class": "equity", "horizon_sessions": 15}},
+        {"registry_record": {"model_id": artifact["model_id"], "role": "challenger", "status": "SHADOW"}},
+        {"inference_at": now + dt.timedelta(days=1000)},
+    ):
+        assert infer_equity_probability(artifact, **{**kwargs, **replacement})["status"] == "UNAVAILABLE"

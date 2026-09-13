@@ -2,6 +2,8 @@ import datetime as dt
 from pathlib import Path
 
 import numpy as np
+import pytest
+import trade_contracts
 
 from continuous_evolution import (
     adaptive_conformal_interval,
@@ -91,6 +93,19 @@ def test_model_disagreement_abstains_even_when_models_are_individually_valid():
     assert any("disagreement" in failure for failure in result["failures"])
 
 
+@pytest.mark.parametrize("asset", ["equity", "options", "futures", "mcx", "equity_smc"])
+def test_keyless_model_evaluation_is_equity_only_and_retains_other_gates(asset):
+    kwargs = dict(weights={"baseline": 1}, selected_regime="TREND",
+                  expected_feature_schema_hash=SCHEMA_HASH, decision_at=NOW, asset_class=asset)
+    prediction = model(artifact_signature_valid=False, artifact_integrity_valid=True)
+    result = evaluate_model_ensemble([prediction], **kwargs)
+    assert result["status"] == ("PASS" if asset == "equity" else "ABSTAIN")
+    for bad in (dict(prediction, artifact_integrity_valid=False),
+                dict(prediction, feature_schema_hash="wrong"),
+                dict(prediction, calibrated=False), dict(prediction, status="SHADOW")):
+        assert evaluate_model_ensemble([bad], **kwargs)["status"] == "ABSTAIN"
+
+
 def test_calibration_requires_nested_holdout_reliability_and_ensemble_lineage():
     good = calibration("correct")
     assert validate_calibration_package(good, expected_ensemble_hash="correct")["status"] == "PASS"
@@ -153,6 +168,51 @@ def test_outcome_probabilities_must_sum_to_one():
         time_exit_probability=.1, time_exit_return_per_unit=0, fill_evidence=fill_evidence(),
     )
     assert result["status"] == "ABSTAIN"
+
+
+@pytest.mark.parametrize("ratio,expected", [(1.299, "NO_TRADE"), (1.30, "PASS"), (1.301, "PASS")])
+def test_equity_fill_ev_uses_unrounded_net_boundary(ratio, expected):
+    # Synthetic fixture: net risk 5.14 and cost 0.14 at entry 100.
+    result = executable_fill_adjusted_ev(
+        entry=100, stop=95, target=100 + .14 + ratio * 5.14,
+        direction="long", quantity=1, round_trip_cost_bps=14,
+        target_probability=.7, stop_probability=.2, time_exit_probability=.1,
+        time_exit_return_per_unit=0, fill_evidence=fill_evidence(),
+        minimum_ratio=trade_contracts.EQUITY_MIN_NET_REWARD_RISK,
+    )
+    assert result["status"] == expected
+    assert result["trade_math"]["minimum_ratio"] == 1.30
+    assert result["expected_value_per_order"] > 0
+    assert not any("EV is not positive" in reason for reason in result["failures"])
+
+
+def test_default_fill_ev_keeps_two_and_reports_ratio_failure_separately():
+    kwargs = dict(entry=100, stop=95, target=107, direction="long", quantity=1,
+                  round_trip_cost_bps=0, target_probability=.7, stop_probability=.2,
+                  time_exit_probability=.1, time_exit_return_per_unit=0,
+                  fill_evidence=fill_evidence())
+    default = executable_fill_adjusted_ev(**kwargs)
+    equity = executable_fill_adjusted_ev(**kwargs, minimum_ratio=1.30)
+    assert default["status"] == "NO_TRADE"
+    assert default["failures"] == ["Net reward/risk 1.40 is below the 2.00 threshold"]
+    assert equity["status"] == "PASS"
+    assert default["expected_value_per_order"] == equity["expected_value_per_order"]
+    negative = executable_fill_adjusted_ev(
+        **{**kwargs, "target_probability": .1, "stop_probability": .8}, minimum_ratio=1.30)
+    assert negative["status"] == "NO_TRADE"
+    assert negative["failures"] == ["Fill-adjusted executable EV is not positive"]
+
+
+def test_simple_ev_equity_override_preserves_shared_default():
+    from quant_foundation import executable_expected_value
+    kwargs = dict(entry=100, stop=95, target=107, round_trip_cost_bps=0,
+                  calibration_evidence=calibration())
+    default = executable_expected_value(**kwargs)
+    equity = executable_expected_value(**kwargs, minimum_ratio=1.30)
+    assert default["status"] == "NO_TRADE"
+    assert default["trade_math"]["minimum_ratio"] == 2.00
+    assert equity["status"] == "PASS"
+    assert equity["trade_math"]["minimum_ratio"] == 1.30
 
 
 def test_99_percent_claim_is_blocked_until_sample_coverage_and_wilson_gate_pass():

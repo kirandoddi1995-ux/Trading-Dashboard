@@ -3,6 +3,7 @@ import sqlite3
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from artifact_security import ApprovalAuthority, ArtifactSigner
 from calibration_artifacts import build_equity_calibration_artifact
@@ -17,7 +18,8 @@ def _connect(path):
     return sqlite3.connect(path)
 
 
-def test_equity_runtime_loads_real_signed_model_but_keeps_missing_controls_unavailable(tmp_path):
+@pytest.mark.parametrize("runtime_keys_present", [True, False])
+def test_equity_runtime_loads_real_signed_model_but_keeps_missing_controls_unavailable(tmp_path, runtime_keys_present):
     rows = 800
     dates = pd.bdate_range("2022-01-03", periods=rows)
     frame = pd.DataFrame({
@@ -79,9 +81,25 @@ def test_equity_runtime_loads_real_signed_model_but_keeps_missing_controls_unava
         quote_observed_at=now - dt.timedelta(seconds=1), quote_received_at=now,
         quote_source="Upstox", universe_observed_at=now - dt.timedelta(minutes=1),
         universe_effective_at=now - dt.timedelta(days=1), registry=registry,
-        runtime_store=evidence_store, model_artifact_signer=signer,
+        runtime_store=evidence_store, model_artifact_signer=signer if runtime_keys_present else None,
     )
     assert bundle.tier is EvidenceTier.VALIDATED
     assert bundle.calibration_evidence["ensemble_hash"]
     assert bundle.conformal_evidence is None
     assert "Conformal evidence is unavailable" in bundle.compatibility_failures()
+    assert bundle.model_predictions[0]["artifact_signature_valid"] is False
+    assert bundle.model_predictions[0]["artifact_integrity_valid"] is True
+
+    # The existing store verifies actual content through the supplied callback.
+    # No signing key is needed for equity runtime evidence retrieval.
+    from artifact_security import verify_equity_artifact_integrity
+    from resilience_control_plane import canonical_hash
+    package = {**context.compatibility_fields(), "created_at": now.isoformat(),
+               "valid_until": (now + dt.timedelta(days=1)).isoformat(), "status": "VALIDATED",
+               "point_estimate": .1, "calibration_residuals": [.01]}
+    package["artifact_hash"] = canonical_hash(package)
+    evidence_store.save("CONFORMAL", package, verify_signature=verify_equity_artifact_integrity)
+    assert evidence_store.latest("CONFORMAL", context.compatibility_fields(),
+                                 verify_signature=verify_equity_artifact_integrity, now=now) == package
+    assert not verify_equity_artifact_integrity({**package, "point_estimate": .9})
+    assert not verify_equity_artifact_integrity({**package, "asset_class": "options"})

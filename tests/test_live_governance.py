@@ -1,6 +1,49 @@
 """Capture plumbing must be equity-only and must not enter gate calculations."""
 import ast
+import pytest
 from pathlib import Path
+
+
+@pytest.mark.parametrize("asset,threshold", [
+    ("equity", 1.30), ("options", 2.00), ("futures", 2.00),
+    ("mcx", 2.00), ("equity_smc", 2.00),
+])
+def test_both_ev_calls_receive_asset_specific_threshold(monkeypatch, asset, threshold):
+    import datetime as dt
+    from dataclasses import replace
+    import live_governance
+    from live_evidence import unavailable_bundle
+    from resilience_control_plane import ResilienceControlPlane
+
+    class Ledger:
+        def outbox_stats(self): return {"pending": 0, "oldest_age_seconds": 0}
+    class Metrics:
+        def record(self, *args, **kwargs): pass
+
+    captured = {}
+    simple_ev = live_governance.executable_expected_value
+    def simple(**kwargs):
+        result = simple_ev(**kwargs)
+        captured["simple"] = result["trade_math"]["minimum_ratio"]
+        return result
+    def fill(**kwargs):
+        captured["fill"] = kwargs["minimum_ratio"]
+        return {"status": "ABSTAIN", "failures": ["fixture fill evidence missing"]}
+    monkeypatch.setattr(live_governance, "executable_expected_value", simple)
+    monkeypatch.setattr(live_governance, "executable_fill_adjusted_ev", fill)
+    monkeypatch.setattr(live_governance, "validate_calibration_package", lambda *a, **k: {
+        "usable": True, "status": "PASS", "probability": .7, "conservative_probability": .65})
+    bundle = replace(unavailable_bundle(
+        strategy_id="fixture", asset_class=asset, target_version="fixture", horizon_sessions=15,
+        instrument="FIXTURE", decision_at=dt.datetime.now(dt.timezone.utc)),
+        fill_evidence={"time_exit_probability": .1})
+    result = live_governance.evaluate_live_governance(
+        instrument="FIXTURE", entry=100, stop=95, target=107, evidence=bundle,
+        services=live_governance.GovernanceServices(
+            control_plane=ResilienceControlPlane(), evidence_ledger=Ledger(),
+            observability=Metrics(), app_build="fixture"))
+    assert captured == {"simple": threshold, "fill": threshold}
+    assert result["allow_trade"] is False  # Other missing evidence still blocks approval.
 
 
 def test_continuous_decision_is_persisted_by_real_ledger(tmp_path):
@@ -63,7 +106,7 @@ def test_quote_verification_policy_is_forwarded_and_audited(monkeypatch):
 
     seen = []
     monkeypatch.setattr(live_governance, 'runtime_readiness_findings',
-                        lambda environment, quote_verification_policy='automated':
+                        lambda environment, quote_verification_policy='automated', asset_class='unknown':
                         seen.append(quote_verification_policy) or [])
     class Ledger:
         def outbox_stats(self): return {'pending': 0, 'oldest_pending_seconds': 0}

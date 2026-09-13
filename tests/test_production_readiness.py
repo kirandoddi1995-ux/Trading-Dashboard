@@ -75,6 +75,22 @@ def test_unknown_quote_policy_fails_closed():
     assert findings[0].state == SafetyState.NO_TRADE
 
 
+@pytest.mark.parametrize("asset", ["equity", "options", "futures", "mcx", "equity_smc"])
+def test_solo_equity_removes_only_key_and_independent_reviewer_prerequisites(asset):
+    now = dt.datetime(2026, 9, 13, tzinfo=dt.timezone.utc)
+    env = complete_environment(now)
+    for key in ("MODEL_ARTIFACT_SIGNING_KEY", "RUNTIME_EVIDENCE_SIGNING_KEY",
+                "MODEL_APPROVER_KEYS_JSON", "PRODUCTION_ENVIRONMENT_PROTECTED"):
+        env.pop(key)
+    codes = {f.code for f in runtime_readiness_findings(env, now=now, asset_class=asset)}
+    expected = {"EXTERNAL_MODEL_ARTIFACT_SIGNING", "EXTERNAL_RUNTIME_EVIDENCE_SIGNING",
+                "EXTERNAL_INDEPENDENT_MODEL_APPROVERS", "EXTERNAL_PROTECTED_PROMOTION_ENVIRONMENT"}
+    assert codes == (set() if asset == "equity" else expected)
+    env.pop("DATABASE_URL")
+    assert "EXTERNAL_RESTRICTED_DATABASE_ROLE" in {
+        f.code for f in runtime_readiness_findings(env, now=now, asset_class=asset)}
+
+
 def test_trade_thresholds_and_default_non_equity_policy_are_unchanged():
     import inspect
     import trade_contracts
