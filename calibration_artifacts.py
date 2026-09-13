@@ -204,6 +204,7 @@ def infer_equity_probability(
     registry_record: Mapping[str, Any] | None,
     verify_signature: Callable[[Mapping[str, Any]], bool] | None,
     minimum_bin_samples: int = 30,
+    require_signature: bool = True,
 ) -> dict[str, Any]:
     """Compute a candidate probability only from a verified ACTIVE champion."""
     package = dict(artifact or {})
@@ -217,7 +218,11 @@ def infer_equity_probability(
     }
     if not artifact_hash or canonical_hash(unsigned) != artifact_hash:
         failures.append("Calibration artifact hash mismatch")
-    if verify_signature is None or not verify_signature(package):
+    if not require_signature and (expected_context.get("asset_class") != "equity"
+                                  or package.get("asset_class") != "equity"):
+        failures.append("Signature exemption is restricted to equity")
+    signature_valid = bool(verify_signature and verify_signature(package)) if require_signature else False
+    if require_signature and not signature_valid:
         failures.append("Calibration artifact signature is not cryptographically verified")
     record = dict(registry_record or {})
     if record.get("role") != "champion" or record.get("status") != "ACTIVE":
@@ -278,7 +283,9 @@ def infer_equity_probability(
         "model_id": package["model_id"], "model_family": package["model_family"],
         "version": package["version"], "role": "CHAMPION", "status": "ACTIVE",
         "deployment_mode": "PRODUCTION", "promotion_attested": True,
-        "artifact_signature_valid": True, "calibrated": True,
+        "artifact_signature_valid": signature_valid, "calibrated": True,
+        "artifact_integrity_valid": True,
+        "artifact_verification": "signature" if require_signature else "equity-content-hash",
         "feature_schema_hash": package["feature_schema_hash"], "regime": "GLOBAL",
         "probability": probability, "inference_at": now.isoformat(),
         "feature_at": feature_time.isoformat(), "maximum_feature_age_seconds": 120,

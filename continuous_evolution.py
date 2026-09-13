@@ -82,6 +82,7 @@ def evaluate_model_ensemble(
     weights: Mapping[str, float] | None = None,
     selected_regime: str,
     expected_feature_schema_hash: str,
+    asset_class: str = "unknown",
     decision_at=None,
     policy: ContinuousEvolutionPolicy = PRODUCTION_EVOLUTION_POLICY,
 ) -> dict:
@@ -121,7 +122,9 @@ def evaluate_model_ensemble(
             continue
         if not model_id:
             failures.append("Production model id is missing")
-        if not bool(row.get("artifact_signature_valid")):
+        if asset_class == "equity" and not bool(row.get("artifact_integrity_valid")):
+            failures.append(f"{model_id} artifact integrity is invalid")
+        elif asset_class != "equity" and not bool(row.get("artifact_signature_valid")):
             failures.append(f"{model_id} artifact signature is invalid")
         if not bool(row.get("calibrated")):
             failures.append(f"{model_id} output is not calibrated")
@@ -315,6 +318,7 @@ def executable_fill_adjusted_ev(
     target_probability, stop_probability, time_exit_probability,
     time_exit_return_per_unit, fill_evidence: Mapping | None,
     adverse_selection_bps=0.0,
+    minimum_ratio=trade_contracts.MIN_NET_REWARD_RISK,
     policy: ContinuousEvolutionPolicy = PRODUCTION_EVOLUTION_POLICY,
 ) -> dict:
     """Expected value over target, stop, time-exit and non-fill outcomes."""
@@ -324,6 +328,7 @@ def executable_fill_adjusted_ev(
     try:
         trade = trade_contracts.calculate_trade_math(
             entry, stop, target, direction=direction, round_trip_cost_bps=round_trip_cost_bps,
+            minimum_ratio=minimum_ratio,
         )
         probabilities = np.asarray([
             _finite(target_probability, name="target_probability", minimum=0, maximum=1),
@@ -347,6 +352,14 @@ def executable_fill_adjusted_ev(
     )
     fill_probability = float(fill["conservative_fill_probability"])
     per_order = fill_probability * conditional * qty
+    failures = []
+    if not trade["passes_gate"]:
+        failures.append(
+            f"Net reward/risk {trade['net_ratio']:.2f} is below the "
+            f"{trade['minimum_ratio']:.2f} threshold"
+        )
+    if per_order <= 0:
+        failures.append("Fill-adjusted executable EV is not positive")
     return {
         "status": "PASS" if per_order > 0 and trade["passes_gate"] else "NO_TRADE",
         "expected_value_per_filled_unit": conditional,
@@ -357,7 +370,7 @@ def executable_fill_adjusted_ev(
         "outcome_probabilities": {"target": probabilities[0], "stop": probabilities[1],
                                   "time_exit": probabilities[2]},
         "trade_math": trade,
-        "failures": [] if per_order > 0 and trade["passes_gate"] else ["Fill-adjusted executable EV is not positive"],
+        "failures": failures,
     }
 
 

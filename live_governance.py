@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 import pandas as pd
+import trade_contracts
 
 from continuous_evolution import (
     ContinuousEvolutionPolicy,
@@ -120,6 +121,7 @@ def evaluate_live_governance(
         weights=evidence.model_weights,
         selected_regime="UNKNOWN",
         expected_feature_schema_hash=evidence.context.feature_schema_hash,
+        asset_class=evidence.context.asset_class,
         decision_at=decision_at,
         policy=evolution_policy,
     )
@@ -137,6 +139,8 @@ def evaluate_live_governance(
         round_trip_cost_bps=cost_bps,
         calibration_evidence=evidence.calibration_evidence,
         config=PRODUCTION_QUANT_CONFIG,
+        minimum_ratio=(trade_contracts.EQUITY_MIN_NET_REWARD_RISK
+                       if evidence.context.asset_class == "equity" else None),
     )
     if expected_value.get("trade_math") and calibration.get("usable"):
         allocation = fractional_kelly_weight(
@@ -189,6 +193,9 @@ def evaluate_live_governance(
             time_exit_return_per_unit=fill_package.get("time_exit_return_per_unit"),
             fill_evidence=fill_package,
             adverse_selection_bps=fill_package.get("adverse_selection_bps", 0),
+            minimum_ratio=(trade_contracts.EQUITY_MIN_NET_REWARD_RISK
+                           if evidence.context.asset_class == "equity"
+                           else trade_contracts.MIN_NET_REWARD_RISK),
             policy=evolution_policy,
         )
     else:
@@ -231,6 +238,7 @@ def evaluate_live_governance(
     readiness_findings = runtime_readiness_findings(
         services.readiness_environment,
         quote_verification_policy=quote_verification_policy,
+        asset_class=evidence.context.asset_class,
     )
     advanced_findings.extend(readiness_findings)
     resilience = services.control_plane.evaluate_recommendation(

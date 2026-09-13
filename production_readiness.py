@@ -135,7 +135,8 @@ def runtime_controls(environ=None, *, now=None) -> list[ReadinessControl]:
 
 
 def runtime_readiness_findings(environ=None, *, now=None,
-                               quote_verification_policy="automated") -> list[SafetyFinding]:
+                               quote_verification_policy="automated",
+                               asset_class="unknown") -> list[SafetyFinding]:
     state = {
         "DEGRADED": SafetyState.DEGRADED,
         "NO_TRADE": SafetyState.NO_TRADE,
@@ -149,6 +150,12 @@ def runtime_readiness_findings(environ=None, *, now=None,
             "Quote-verification policy is not recognized", SafetyState.NO_TRADE,
         )]
     controls = runtime_controls(environ, now=now)
+    if asset_class == "equity":
+        # Solo equity policy: retain model validation and content hashes; keys
+        # and independent reviewers are not prerequisites for live evaluation.
+        excluded = {"model_artifact_signing", "runtime_evidence_signing",
+                    "independent_model_approvers", "protected_promotion_environment"}
+        controls = [control for control in controls if control.name not in excluded]
     if policy == EQUITY_MANUAL_QUOTE_POLICY:
         # The equity UI supplies a separate, decision-bound confirmation after
         # governance passes. No other readiness control is relaxed here.

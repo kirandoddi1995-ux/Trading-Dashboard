@@ -302,6 +302,7 @@ def executable_expected_value(
     calibration_evidence: Mapping | None = None,
     model_context: Mapping | None = None,
     residual_cost_bps=None,
+    minimum_ratio=None,
     config: AdvancedQuantConfig = PRODUCTION_QUANT_CONFIG,
 ) -> dict:
     """Cost-adjusted conservative EV; unavailable until calibration passes."""
@@ -309,7 +310,8 @@ def executable_expected_value(
         trade_math = trade_contracts.calculate_trade_math(
             entry, stop, target, direction=direction,
             round_trip_cost_bps=round_trip_cost_bps,
-            minimum_ratio=config.execution.minimum_net_reward_risk,
+            minimum_ratio=(config.execution.minimum_net_reward_risk
+                           if minimum_ratio is None else minimum_ratio),
         )
     except (TypeError, ValueError, OverflowError) as exc:
         return {

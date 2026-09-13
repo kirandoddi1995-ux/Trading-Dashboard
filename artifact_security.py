@@ -34,6 +34,18 @@ def _artifact_integrity_payload(artifact: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def verify_equity_artifact_integrity(artifact: Mapping[str, Any]) -> bool:
+    """Check equity content integrity, without claiming cryptographic authorship."""
+    source = dict(artifact or {})
+    if source.get("asset_class") != "equity":
+        return False
+    try:
+        expected = canonical_hash(_artifact_integrity_payload(source))
+        return hmac.compare_digest(str(source.get("artifact_hash") or ""), expected)
+    except (TypeError, ValueError):
+        return False
+
+
 class ArtifactSigner:
     def __init__(self, key: str | bytes, *, key_id: str | None = None):
         self._key = _key_bytes(key, name="artifact signing key")

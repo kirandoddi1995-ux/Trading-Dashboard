@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Mapping
+from artifact_security import verify_equity_artifact_integrity
 
 from calibration_artifacts import infer_equity_probability
 from continuous_evolution import evaluate_model_ensemble
@@ -28,7 +29,8 @@ def build_equity_live_evidence(
         universe_effective_at=universe_effective_at,
         correctness_evidence=correctness_evidence, ledger_status=ledger_status,
     )
-    if model_artifact_signer is None:
+    is_equity = context.asset_class == "equity"
+    if model_artifact_signer is None and not is_equity:
         return LiveEvidenceBundle(tier=EvidenceTier.OBSERVATION, **common)
     active = registry.active_champion(
         regime="GLOBAL", strategy_id=context.strategy_id,
@@ -40,7 +42,9 @@ def build_equity_live_evidence(
     inference = infer_equity_probability(
         active["artifact"], score=score, feature_at=feature_at,
         inference_at=context.decision_at, expected_context=context.compatibility_fields(),
-        registry_record=active, verify_signature=model_artifact_signer.verify,
+        registry_record=active,
+        verify_signature=(model_artifact_signer.verify if model_artifact_signer else None),
+        require_signature=not is_equity,
     )
     if inference.get("status") != "PASS":
         return LiveEvidenceBundle(tier=EvidenceTier.OBSERVATION, **common)
@@ -50,22 +54,25 @@ def build_equity_live_evidence(
         [prediction], weights=weights, selected_regime="GLOBAL",
         expected_feature_schema_hash=context.feature_schema_hash,
         decision_at=context.decision_at,
+        asset_class=context.asset_class,
     )
     calibration = dict(inference["calibration_evidence"])
     calibration["ensemble_hash"] = model_result["ensemble_hash"]
     exact = context.compatibility_fields()
     conformal = fill = portfolio = None
-    if runtime_evidence_signer is not None:
+    verifier = (verify_equity_artifact_integrity if is_equity else
+                runtime_evidence_signer.verify if runtime_evidence_signer else None)
+    if verifier is not None:
         conformal = runtime_store.latest(
-            "CONFORMAL", exact, verify_signature=runtime_evidence_signer.verify,
+            "CONFORMAL", exact, verify_signature=verifier,
             now=context.decision_at,
         )
         fill = runtime_store.latest(
-            "FILL", exact, verify_signature=runtime_evidence_signer.verify,
+            "FILL", exact, verify_signature=verifier,
             now=context.decision_at,
         )
         portfolio = runtime_store.portfolio(
-            exact, verify_signature=runtime_evidence_signer.verify,
+            exact, verify_signature=verifier,
             now=context.decision_at,
         )
     return LiveEvidenceBundle(
