@@ -18,6 +18,33 @@ def _connect(path):
     return sqlite3.connect(path)
 
 
+def test_equity_runtime_requests_only_new_outcomes_not_legacy_fill_or_conformal(monkeypatch):
+    import equity_runtime_evidence
+    now = dt.datetime.now(dt.timezone.utc)
+    context = LiveEvidenceContext("s", "equity", "t", 15, "ABC", now, "hash")
+    monkeypatch.setattr(equity_runtime_evidence, "infer_equity_probability", lambda *a, **k: {
+        "status": "PASS", "model_prediction": {"model_id": "fixture"}, "calibration_evidence": {}})
+    monkeypatch.setattr(equity_runtime_evidence, "evaluate_model_ensemble", lambda *a, **k: {"ensemble_hash": "fixture"})
+    class Registry:
+        def active_champion(self, **kwargs): return {"artifact": {}}
+    class Store:
+        def __init__(self): self.calls = []
+        def latest(self, kind, exact, **kwargs):
+            self.calls.append((kind, exact))
+            return None
+        def portfolio(self, *a, **k): return None
+    store = Store()
+    bundle = build_equity_live_evidence(
+        context=context, score=70, feature_lineage={"score": {"available_at": now}},
+        quote_observed_at=now, quote_received_at=now, quote_source="fixture",
+        universe_observed_at=now, universe_effective_at=now,
+        registry=Registry(), runtime_store=store)
+    assert [kind for kind, _ in store.calls] == ["EQUITY_EXECUTION_OUTCOMES"]
+    assert store.calls[0][1]["instrument"] == "ABC"
+    assert bundle.equity_execution_evidence is None
+    assert bundle.fill_evidence is None and bundle.conformal_evidence is None
+
+
 @pytest.mark.parametrize("runtime_keys_present", [True, False])
 def test_equity_runtime_loads_real_signed_model_but_keeps_missing_controls_unavailable(tmp_path, runtime_keys_present):
     rows = 800
@@ -86,7 +113,9 @@ def test_equity_runtime_loads_real_signed_model_but_keeps_missing_controls_unava
     assert bundle.tier is EvidenceTier.VALIDATED
     assert bundle.calibration_evidence["ensemble_hash"]
     assert bundle.conformal_evidence is None
-    assert "Conformal evidence is unavailable" in bundle.compatibility_failures()
+    assert "Execution outcome evidence is unavailable" in bundle.compatibility_failures()
+    assert "Conformal evidence is unavailable" not in bundle.compatibility_failures()
+    assert bundle.equity_execution_evidence is None
     assert bundle.model_predictions[0]["artifact_signature_valid"] is False
     assert bundle.model_predictions[0]["artifact_integrity_valid"] is True
 

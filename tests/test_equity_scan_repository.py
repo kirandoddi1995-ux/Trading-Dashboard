@@ -57,6 +57,105 @@ def repository(connection):
     return EquityScanRepository(connect)
 
 
+def test_order_intent_requires_stored_review_and_serializes_owner():
+    from test_equity_order_records import reviewed
+    from test_equity_execution_policy import NOW
+    signal, review = reviewed()
+    conn = Connection(fetchone=[None, (review,)])
+    record = repository(conn).save_order_intent(signal, review, owner_id="owner", now=NOW)
+    assert record["production_evidence_eligible"] is False
+    assert "pg_advisory_xact_lock" in conn.calls[0][0]
+    assert "INSERT INTO equity_operations.order_intents" in conn.calls[-1][0]
+    assert conn.commits == 1
+    for rows in ([(1,)], [None, None]):
+        blocked = Connection(fetchone=rows)
+        with pytest.raises(ValueError):
+            repository(blocked).save_order_intent(signal, review, owner_id="owner", now=NOW)
+        assert not any("INSERT INTO" in sql for sql, _ in blocked.calls)
+
+
+def test_reconciliation_retry_is_idempotent_and_conflicting_actuals_are_rejected():
+    from test_equity_order_records import intent
+    from test_equity_execution_policy import NOW
+    from equity_order_records import build_order_result
+    order = intent()
+    kwargs = dict(status="FILLED", filled_quantity=1, average_fill_price=100,
+                  broker_order_id="fixture", broker_event_at=NOW, confirmed=True, now=NOW)
+    prior = build_order_result(order, **kwargs)
+    conn = Connection(fetchone=[(order,), (prior,)])
+    assert repository(conn).reconcile_order(order["intent_id"], owner_id="owner", **kwargs) == prior
+    assert not any("INSERT INTO" in sql for sql, _ in conn.calls)
+    with pytest.raises(ValueError, match="immutable"):
+        repository(Connection(fetchone=[(order,), (prior,)])).reconcile_order(
+            order["intent_id"], owner_id="owner", **{**kwargs, "average_fill_price": 101})
+
+
+@pytest.mark.skipif(not os.environ.get("EQUITY_TEST_PGLITE_MODULE"), reason="Local PostgreSQL harness not configured")
+def test_order_migration_enforces_real_database_isolation_and_immutability():
+    root = Path(__file__).resolve().parents[1]
+    migrations = "\n".join((root / "sql" / name).read_text(encoding="utf-8") for name in (
+        "equity_scan_recovery_and_manual_review.sql", "equity_order_reconciliation_draft.sql"))
+    script = r"""
+const {PGlite} = require(process.argv[1]);
+let input=''; process.stdin.on('data', d=>input+=d);
+process.stdin.on('end',async()=>{
+ const db = new PGlite();
+ try {
+  await db.exec(`CREATE ROLE quant_app_runtime LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS;
+   CREATE ROLE equity_research_collector LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS;
+   CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role;`);
+  await db.exec(input);
+  await db.exec('SET ROLE quant_app_runtime');
+  const now = new Date().toISOString();
+  const reviewId='00000000-0000-0000-0000-000000000001';
+  const intentId='00000000-0000-0000-0000-000000000002';
+  const resultId='00000000-0000-0000-0000-000000000003';
+  const review={purpose:'LIVE_EQUITY_MANUAL_QUOTE_CHECK',decision_id:'d',decision_digest:'a'.repeat(64),
+   instrument:'ABC',status:'CONFIRMED',system_allow_trade:true,reviewer:'owner',attested_at:now,
+   primary_quote_observed_at:now,governance_decision_at:now,
+   execution_plan:{order_type:'LIMIT',quantity:1,limit_price:100}};
+  await db.query(`INSERT INTO equity_operations.manual_quote_reviews
+   (review_id,decision_id,decision_digest,instrument,reviewer,attested_at,secondary_platform,
+    secondary_price,primary_price,difference_bps,status,payload)
+   VALUES ($1,'d',$2,'ABC','owner',$3,'fixture',100,100,0,'CONFIRMED',$4)`,
+   [reviewId,review.decision_digest,now,JSON.stringify(review)]);
+  const intent={purpose:'USER_REPORTED_ORDER_INTENT',production_evidence_eligible:false,intent_id:intentId,
+    owner_id:'owner',review_id:reviewId,quantity:1,limit_price:100,decision_id:'d',
+    decision_digest:review.decision_digest,created_at:now};
+  await db.query(`INSERT INTO equity_operations.order_intents VALUES($1,'owner',$2,$3,$4)`,
+   [intentId,reviewId,now,JSON.stringify(intent)]);
+  let blocked=0;
+  const deny=async(sql,params=[])=>{try {await db.query(sql,params);} catch(e){blocked++;return;}
+    throw Error('Unexpectedly allowed: '+sql);};
+  await deny(`INSERT INTO equity_operations.order_intents VALUES($1,'owner',$2,$3,$4)`,
+   ['00000000-0000-0000-0000-000000000004',reviewId,now,JSON.stringify({...intent,intent_id:'00000000-0000-0000-0000-000000000004'})]);
+  const result={purpose:'USER_REPORTED_BROKER_RESULT',production_evidence_eligible:false,result_id:resultId,
+   intent_id:intentId,owner_id:'owner',confirmed:true,status:'FILLED',filled_quantity:1,average_fill_price:100,
+   broker_order_id:'fixture',broker_event_at:now};
+  await deny(`INSERT INTO equity_operations.order_results(result_id,intent_id,owner_id,payload) VALUES($1,$2,'owner',$3)`,
+   [resultId,intentId,JSON.stringify({...result,production_evidence_eligible:true})]);
+  await db.query(`INSERT INTO equity_operations.order_results(result_id,intent_id,owner_id,payload) VALUES($1,$2,'owner',$3)`,
+   [resultId,intentId,JSON.stringify(result)]);
+  await deny('UPDATE equity_operations.order_results SET owner_id=owner_id');
+  await deny('DELETE FROM equity_operations.order_results');
+  await db.exec('RESET ROLE; SET ROLE equity_research_collector');
+  await deny('SELECT * FROM equity_operations.order_intents');
+  await deny('SELECT * FROM equity_operations.order_results');
+  await deny(`INSERT INTO equity_operations.order_results(result_id,intent_id,owner_id,payload) VALUES($1,$2,'owner',$3)`,
+   [resultId,intentId,JSON.stringify(result)]);
+  await db.exec('RESET ROLE');
+  await deny('UPDATE equity_operations.order_intents SET owner_id=owner_id');
+  if(blocked!==8) throw Error('Missing isolation assertion');
+  console.log('ORDER_ISOLATION_PASS');
+ } catch(e) {console.error(e.message);process.exitCode=1;} finally {await db.close();}
+});
+"""
+    result = subprocess.run(["node", "-e", script, os.environ["EQUITY_TEST_PGLITE_MODULE"]],
+                            input=migrations, text=True, capture_output=True, timeout=90)
+    assert result.returncode == 0, result.stderr
+    assert "ORDER_ISOLATION_PASS" in result.stdout
+
+
 def test_candidate_checkpoint_is_fenced_by_current_run_token():
     conn = Connection(rowcount=1)
     repo = repository(conn)

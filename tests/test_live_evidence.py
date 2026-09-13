@@ -72,11 +72,12 @@ def test_bundle_computes_quote_age_and_detects_context_mismatch():
         calibration_evidence=package,
         conformal_evidence=package,
         fill_evidence={**package, "asset_class": "options"},
+        equity_execution_evidence={**package, "asset_class": "options"},
         portfolio_returns=[[0.01]], portfolio_weights={"NSE:ABC": 0.1},
         stress_scenarios={"down": {"NSE:ABC": -0.1}},
     )
     assert bundle.quote_age_seconds == 3.0
-    assert "Fill evidence context mismatch: asset_class" in bundle.compatibility_failures()
+    assert "Execution outcome evidence context mismatch: asset_class" in bundle.compatibility_failures()
 
 
 def test_developing_evidence_cannot_be_production_eligible():

@@ -4,6 +4,39 @@ import pytest
 from pathlib import Path
 
 
+@pytest.mark.parametrize("package", [None, {"purpose": "RESEARCH_OBSERVATION"},
+    {"purpose": "LIVE_EQUITY_MANUAL_QUOTE_CHECK", "confirmed": True},
+    {"purpose": "USER_REPORTED_BROKER_RESULT", "status": "FILLED"}])
+def test_real_governance_new_equity_route_refuses_non_execution_evidence(monkeypatch, package):
+    import datetime as dt
+    from dataclasses import replace
+    import live_governance
+    from live_evidence import unavailable_bundle
+    from resilience_control_plane import ResilienceControlPlane
+
+    def legacy_must_not_run(**kwargs):
+        raise AssertionError("Equity must not use the statistical fill-model route")
+    monkeypatch.setattr(live_governance, "executable_fill_adjusted_ev", legacy_must_not_run)
+    class Ledger:
+        def outbox_stats(self): return {"pending": 0, "oldest_age_seconds": 0}
+    class Metrics:
+        def record(self, *a, **k): pass
+    bundle = replace(unavailable_bundle(
+        strategy_id="fixture", asset_class="equity", target_version="fixture", horizon_sessions=15,
+        instrument="ABC", decision_at=dt.datetime.now(dt.timezone.utc)),
+        equity_execution_evidence=package,
+        fill_evidence={"status": "VALIDATED", "fill_probability": 1, "fill_probability_low": 1})
+    result = live_governance.evaluate_live_governance(
+        instrument="ABC", entry=100, stop=95, target=108, evidence=bundle,
+        services=live_governance.GovernanceServices(control_plane=ResilienceControlPlane(),
+            evidence_ledger=Ledger(), observability=Metrics(), app_build="fixture"))
+    assert not result["allow_trade"]
+    assert result["fill_adjusted_expected_value"]["expected_value_per_order"] is None
+    assert any("execution/outcome evidence" in reason for reason in result["blocking_reasons"])
+    assert result["conformal"]["status"] == "DEFERRED"
+    assert "calibration_uncertainty" in result
+
+
 @pytest.mark.parametrize("asset,threshold", [
     ("equity", 1.30), ("options", 2.00), ("futures", 2.00),
     ("mcx", 2.00), ("equity_smc", 2.00),
@@ -31,6 +64,7 @@ def test_both_ev_calls_receive_asset_specific_threshold(monkeypatch, asset, thre
         return {"status": "ABSTAIN", "failures": ["fixture fill evidence missing"]}
     monkeypatch.setattr(live_governance, "executable_expected_value", simple)
     monkeypatch.setattr(live_governance, "executable_fill_adjusted_ev", fill)
+    monkeypatch.setattr(live_governance, "equity_execution_ev", fill)
     monkeypatch.setattr(live_governance, "validate_calibration_package", lambda *a, **k: {
         "usable": True, "status": "PASS", "probability": .7, "conservative_probability": .65})
     bundle = replace(unavailable_bundle(

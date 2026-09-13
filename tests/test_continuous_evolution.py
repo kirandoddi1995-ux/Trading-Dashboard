@@ -1,4 +1,9 @@
 import datetime as dt
+import ast
+import hashlib
+import inspect
+import json
+import copy
 from pathlib import Path
 
 import numpy as np
@@ -6,6 +11,7 @@ import pytest
 import trade_contracts
 
 from continuous_evolution import (
+    _execution_outcome_ev,
     adaptive_conformal_interval,
     decision_evidence_bundle,
     evaluate_model_ensemble,
@@ -20,6 +26,96 @@ from resilience_control_plane import ResilienceControlPlane, ResiliencePolicy, S
 
 NOW = dt.datetime.now(dt.timezone.utc)
 SCHEMA_HASH = "f" * 64
+
+
+def test_shared_ev_arithmetic_is_identical_to_pre_refactor_body():
+    # Pin the AST of the original arithmetic, including its validation,
+    # rounding, failures and result fields. Only the evidence validator moves.
+    function = ast.parse(inspect.getsource(_execution_outcome_ev)).body[0]
+    body = ast.Module(body=function.body[1:], type_ignores=[])
+    digest = hashlib.sha256(ast.dump(body, include_attributes=False).encode()).hexdigest()
+    assert digest == "3292adf9e0c30f88efda33704f07e32bfddfc224795e19d686c1f2287c19612e"
+
+
+def test_non_equity_serialized_ev_result_is_unchanged():
+    result = executable_fill_adjusted_ev(
+        entry=100, stop=95, target=110, direction="long", quantity=2,
+        round_trip_cost_bps=0, target_probability=.70, stop_probability=.20,
+        time_exit_probability=.10, time_exit_return_per_unit=0,
+        fill_evidence=fill_evidence(), adverse_selection_bps=5,
+    )
+    expected = {
+        "status": "PASS", "expected_value_per_filled_unit": 5.95,
+        "expected_value_per_order": 8.925,
+        "expected_value_bps_per_order": 446.25000000000006,
+        "conservative_fill_probability": .75, "non_fill_probability": .25,
+        "outcome_probabilities": {"target": .7, "stop": .2, "time_exit": .1},
+        "trade_math": {"gross_risk": 5.0, "gross_reward": 10.0,
+                       "cost_per_unit": 0.0, "net_risk": 5.0, "net_reward": 10.0,
+                       "net_ratio": 2.0, "minimum_ratio": 2.0, "passes_gate": True},
+        "failures": [],
+    }
+    assert json.dumps(result, sort_keys=True) == json.dumps(expected, sort_keys=True)
+
+
+@pytest.mark.parametrize("change", [
+    {}, {"target": 107}, {"target_probability": .1, "stop_probability": .8},
+    {"direction": "short", "stop": 105, "target": 90},
+    {"entry": None}, {"quantity": None}, {"round_trip_cost_bps": 14},
+    {"time_exit_probability": None}, {"time_exit_return_per_unit": None},
+    {"target_probability": .9}, {"adverse_selection_bps": None},
+    {"fill_evidence": None}, {"fill_evidence": {}},
+])
+def test_non_equity_legacy_inline_path_matches_byte_for_byte(change):
+    # Reconstitute the old inline function from the pinned original arithmetic.
+    # The oracle does not call the extracted helper. The hash test above guards
+    # against changing both paths together and accidentally blessing a regression.
+    wrapper = ast.parse(inspect.getsource(executable_fill_adjusted_ev)).body[0]
+    arithmetic = ast.parse(inspect.getsource(_execution_outcome_ev)).body[0]
+    legacy = copy.deepcopy(wrapper)
+    legacy.name = "legacy_inline_ev"
+    legacy.body = legacy.body[:3] + copy.deepcopy(arithmetic.body[1:])
+    namespace = dict(executable_fill_adjusted_ev.__globals__)
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[legacy], type_ignores=[])),
+                 "<pinned-pre-refactor-ev>", "exec"), namespace)
+    arguments = dict(
+        entry=100, stop=95, target=110, direction="long", quantity=2,
+        round_trip_cost_bps=0, target_probability=.7, stop_probability=.2,
+        time_exit_probability=.1, time_exit_return_per_unit=0,
+        fill_evidence=fill_evidence(), adverse_selection_bps=5,
+    )
+    arguments.update(change)
+    before = namespace["legacy_inline_ev"](**arguments)
+    after = executable_fill_adjusted_ev(**arguments)
+    assert json.dumps(after, sort_keys=True).encode() == json.dumps(before, sort_keys=True).encode()
+
+
+@pytest.mark.parametrize("missing", ["time_exit_probability", "time_exit_return_per_unit"])
+def test_shared_ev_never_defaults_missing_outcomes(missing):
+    arguments = dict(
+        entry=100, stop=95, target=110, direction="long", quantity=1,
+        round_trip_cost_bps=0, target_probability=.7, stop_probability=.2,
+        time_exit_probability=.1, time_exit_return_per_unit=0,
+        fill_evidence=fill_evidence(), minimum_ratio=1.30,
+    )
+    arguments[missing] = None
+    result = executable_fill_adjusted_ev(**arguments)
+    assert result["status"] == "ABSTAIN"
+    assert result["expected_value_per_order"] is None
+
+
+@pytest.mark.parametrize("evidence", [None, {},
+    {"purpose": "RESEARCH_OBSERVATION"},
+    {"purpose": "LIVE_EQUITY_MANUAL_QUOTE_CHECK", "confirmed": True}])
+def test_equity_threshold_does_not_replace_missing_execution_evidence(evidence):
+    result = executable_fill_adjusted_ev(
+        entry=100, stop=95, target=110, direction="long", quantity=1,
+        round_trip_cost_bps=0, target_probability=.7, stop_probability=.2,
+        time_exit_probability=.1, time_exit_return_per_unit=0,
+        fill_evidence=evidence, minimum_ratio=1.30,
+    )
+    assert result["status"] == "ABSTAIN"
+    assert result["expected_value_per_order"] is None
 
 
 def model(model_id="baseline", family="logistic", probability=.72, **overrides):

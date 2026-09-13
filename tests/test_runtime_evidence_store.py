@@ -13,6 +13,21 @@ def _connect(path):
     return sqlite3.connect(path)
 
 
+def test_equity_execution_store_revalidates_source_context_and_provenance(tmp_path):
+    from test_equity_execution_policy import artifact, seal, CONTEXT, NOW
+    from artifact_security import verify_equity_artifact_integrity
+    store = RuntimeEvidenceStore(_connect, str(tmp_path / "execution.sqlite3"))
+    package = artifact()
+    store.save("EQUITY_EXECUTION_OUTCOMES", package, verify_signature=verify_equity_artifact_integrity)
+    assert store.latest("EQUITY_EXECUTION_OUTCOMES", CONTEXT,
+                        verify_signature=verify_equity_artifact_integrity, now=NOW) == package
+    assert store.latest("EQUITY_EXECUTION_OUTCOMES", {**CONTEXT, "instrument": "OTHER"},
+                        verify_signature=verify_equity_artifact_integrity, now=NOW) is None
+    package["purpose"] = "USER_REPORTED_BROKER_RESULT"
+    with pytest.raises(ValueError, match="Invalid equity execution"):
+        store.save("EQUITY_EXECUTION_OUTCOMES", seal(package), verify_signature=verify_equity_artifact_integrity)
+
+
 def _signed(signer, kind="FILL", *, expired=False):
     now = dt.datetime.now(dt.timezone.utc)
     payload = {
