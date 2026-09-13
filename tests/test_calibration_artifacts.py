@@ -2,7 +2,6 @@ import datetime as dt
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from calibration_artifacts import build_equity_calibration_artifact, infer_equity_probability
 from prediction_validation import chronological_holdout_split
