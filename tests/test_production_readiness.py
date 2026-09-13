@@ -14,6 +14,35 @@ from resilience_control_plane import SafetyState
 from verify_promotion_request import verify_request
 
 
+def test_equity_reporting_aligns_runtime_without_relaxing_lifecycle_defaults():
+    from test_equity_runtime_health import NOW, measured, recovered
+    env = complete_environment(NOW)
+    for key in list(env):
+        if key.startswith(('RECOVERY_DRILL', 'MODEL_', 'RUNTIME_EVIDENCE_')) or key in {
+                'PRODUCTION_ENVIRONMENT_PROTECTED', 'NTP_MONITOR_ENDPOINT'}:
+            env.pop(key)
+    controls = runtime_controls(env, now=NOW, asset_class='equity',
+                                clock_evidence=measured(), recovery_evidence=recovered())
+    assert all(control.configured for control in controls)
+    names = {c.name for c in controls}
+    assert not names.intersection({'recovery_drill', 'model_artifact_signing', 'independent_model_approvers'})
+    assert {'recovery_health', 'measured_clock'} <= names
+    legacy = {c.name: c.configured for c in runtime_controls(env, now=NOW)}
+    assert legacy['recovery_drill'] is False
+    assert legacy['model_artifact_signing'] is False
+    assert legacy['independent_model_approvers'] is False
+    report = readiness_report('.', environ=env, now=NOW, asset_class='equity',
+                              clock_evidence=measured(), recovery_evidence=recovered())
+    assert report['ready']
+
+
+def test_equity_recovery_flag_cannot_substitute_for_readback():
+    from test_equity_runtime_health import NOW, measured
+    env = complete_environment(NOW)
+    findings = runtime_readiness_findings(env, now=NOW, asset_class='equity', clock_evidence=measured())
+    assert any(f.code == 'EXTERNAL_RECOVERY_HEALTH' for f in findings)
+
+
 def complete_environment(now):
     return {
         "DATABASE_URL": "postgresql://quant_app_runtime:secret@db.example.com:5432/postgres",
@@ -85,7 +114,7 @@ def test_solo_equity_removes_only_key_and_independent_reviewer_prerequisites(ass
     codes = {f.code for f in runtime_readiness_findings(env, now=now, asset_class=asset)}
     expected = {"EXTERNAL_MODEL_ARTIFACT_SIGNING", "EXTERNAL_RUNTIME_EVIDENCE_SIGNING",
                 "EXTERNAL_INDEPENDENT_MODEL_APPROVERS", "EXTERNAL_PROTECTED_PROMOTION_ENVIRONMENT"}
-    assert codes == (set() if asset == "equity" else expected)
+    assert codes == ({"EXTERNAL_MEASURED_CLOCK", "EXTERNAL_RECOVERY_HEALTH"} if asset == "equity" else expected)
     env.pop("DATABASE_URL")
     assert "EXTERNAL_RESTRICTED_DATABASE_ROLE" in {
         f.code for f in runtime_readiness_findings(env, now=now, asset_class=asset)}

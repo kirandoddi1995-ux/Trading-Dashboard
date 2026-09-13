@@ -57,6 +57,70 @@ def repository(connection):
     return EquityScanRepository(connect)
 
 
+@pytest.mark.parametrize('storage,checkpoint,expected', [
+    ((True,) * 5, ('run', 'ABC', {'score': 1}, None), 'PASS'),
+    ((True,) * 5, None, 'UNAVAILABLE'),
+    ((False, True, True, True, True), ('run', 'ABC', {}, None), 'UNAVAILABLE'),
+    ((True, True, True, False, True), ('run', 'ABC', {}, None), 'UNAVAILABLE'),
+    ((True,) * 5, ('run', 'ABC', 'not an object', None), 'UNAVAILABLE'),
+])
+def test_recovery_health_reads_only_existing_committed_data(storage, checkpoint, expected):
+    conn = Connection(fetchone=[storage, checkpoint])
+    assert repository(conn).recovery_health()['status'] == expected
+    assert all(sql.startswith('SELECT') for sql, _ in conn.calls)
+    assert conn.commits == 0
+    assert 'bool_and(has_table_privilege' in conn.calls[0][0]
+    assert "c.status='COMPLETE'" in conn.calls[1][0]
+
+
+@pytest.mark.skipif(not os.environ.get('EQUITY_TEST_PGLITE_MODULE'), reason='Local PostgreSQL harness not configured')
+def test_recovery_health_sql_on_postgres_requires_every_privilege_and_reads_checkpoint():
+    conn = Connection(fetchone=[(True,) * 5, None])
+    repository(conn).recovery_health()
+    migration = (Path(__file__).resolve().parents[1] / 'sql' /
+                 'equity_scan_recovery_and_manual_review.sql').read_text(encoding='utf-8')
+    script = r"""
+const {PGlite} = require(process.argv[1]);
+let input='';
+process.stdin.on('data', c => input += c);
+process.stdin.on('end', async () => {
+ const db = new PGlite();
+ try {
+  const config=JSON.parse(input);
+  await db.exec(`CREATE ROLE quant_app_runtime LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS;
+    CREATE ROLE equity_research_collector LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS;
+    CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role;`);
+  await db.exec(config.migration);
+  await db.exec('SET ROLE quant_app_runtime');
+  if ((await db.query(config.queries[1])).rows.length !== 0) throw Error('Invented checkpoint');
+  await db.exec(`INSERT INTO equity_operations.scan_runs
+    (run_id,owner_id,signature,scan_mode,horizon_sessions,status,fencing_token,started_at,heartbeat_at,metadata)
+    VALUES ('fixture','owner','sig','Quick',15,'RUNNING',1,now(),now(),'{}');
+    INSERT INTO equity_operations.scan_candidates
+    (run_id,instrument,item,status,attempt_no,result,updated_at)
+    VALUES ('fixture','ABC','{}','COMPLETE',1,'{"score":1}',now());`);
+  const saved=await db.query(config.queries[1]);
+  if(saved.rows.length !== 1 || saved.rows[0].result.score !== 1) throw Error('Readback failed');
+  // PGlite can report fsync=false because this test database is in memory.
+  const before=await db.query(config.queries[0]);
+  const values=Object.values(before.rows[0]);
+  // Query column aliases are supplied below so no duplicate names are lost.
+  if(before.rows[0].run_permissions !== true) throw Error('Expected runtime grants');
+  await db.exec('RESET ROLE; REVOKE UPDATE ON equity_operations.scan_runs FROM quant_app_runtime; SET ROLE quant_app_runtime');
+  const after=await db.query(config.queries[0]);
+  if(after.rows[0].run_permissions !== false) throw Error('SELECT masked missing UPDATE');
+  console.log('RECOVERY_READBACK_SQL_PASS');
+ } catch(e) { console.error(e.message); process.exitCode=1; }
+ finally { await db.close(); }
+});
+"""
+    result = subprocess.run(['node', '-e', script, os.environ['EQUITY_TEST_PGLITE_MODULE']],
+        input=json.dumps({'migration': migration, 'queries': [sql for sql, _ in conn.calls]}),
+        capture_output=True, text=True, timeout=90)
+    assert result.returncode == 0, result.stderr
+    assert 'RECOVERY_READBACK_SQL_PASS' in result.stdout
+
+
 def test_order_intent_requires_stored_review_and_serializes_owner():
     from test_equity_order_records import reviewed
     from test_equity_execution_policy import NOW

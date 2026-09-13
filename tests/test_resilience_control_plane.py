@@ -284,3 +284,30 @@ def test_operational_controls_share_the_same_state_machine():
     }])
     assert result.state == SafetyState.EMERGENCY_STOP
     assert result.allow_exits and result.allow_audit_reads
+def test_measured_equity_clock_missing_blocks_but_legacy_contract_is_unchanged():
+    from resilience_control_plane import ResiliencePolicy, ClockSessionGuard, SafetyState
+    from test_equity_runtime_health import NOW, measured
+    guard = ClockSessionGuard(ResiliencePolicy.load())
+    assert guard.evaluate(now=NOW, exchange_open=True) == []
+    findings = guard.evaluate(now=NOW, exchange_open=True, require_measurement=True)
+    assert any(f.state == SafetyState.NO_TRADE for f in findings)
+    assert guard.evaluate(now=NOW, exchange_open=True, require_measurement=True,
+                          measured_clock=measured()) == []
+    assert any(f.code == 'SESSION_CLOSED' for f in guard.evaluate(
+        now=NOW, exchange_open=False, require_measurement=True, measured_clock=measured()))
+
+
+def test_required_release_expectations_cannot_self_compare():
+    from resilience_control_plane import RuntimeAttestor, SafetyState
+    guard = RuntimeAttestor()
+    actual = {'build': 'release', 'policy_hash': 'policy', 'code_hash': 'code'}
+    required = tuple(actual)
+    for expected in ({}, {**actual, 'code_hash': None}, {**actual, 'build': ' '}):
+        findings = guard.evaluate(expected=expected, actual=actual, required_keys=required)
+        assert findings[0].code == 'RELEASE_EXPECTATION_MISSING'
+        assert findings[0].state == SafetyState.NO_TRADE
+    assert guard.evaluate(expected=actual, actual=actual, required_keys=required) == []
+    for key in actual:
+        assert guard.evaluate(expected=actual, actual={**actual, key: 'changed'},
+                              required_keys=required)[0].code == 'CONFIG_DRIFT'
+    assert guard.evaluate(expected={}, actual=actual) == []  # Legacy contract untouched.

@@ -4,6 +4,56 @@ import pytest
 from pathlib import Path
 
 
+@pytest.mark.parametrize('asset', ['equity', 'options', 'futures', 'mcx', 'equity_smc'])
+def test_runtime_health_routes_only_to_equity_and_never_self_defaults(monkeypatch, asset):
+    import datetime as dt
+    import live_governance as live
+    from live_evidence import unavailable_bundle
+    from resilience_control_plane import ResilienceControlPlane
+    class Ledger:
+        def outbox_stats(self): return {'pending': 0, 'oldest_pending_seconds': 0}
+    class Metrics:
+        def record(self, *a, **k): pass
+    plane = ResilienceControlPlane()
+    original = plane.evaluate_recommendation
+    calls = []
+    def evaluate(**kwargs):
+        calls.append(kwargs)
+        return original(**kwargs)
+    monkeypatch.setattr(plane, 'evaluate_recommendation', evaluate)
+    for key in ('EXPECTED_APP_BUILD', 'RESILIENCE_POLICY_SHA256', 'EXPECTED_EQUITY_CODE_SHA256'):
+        monkeypatch.delenv(key, raising=False)
+    bundle = unavailable_bundle(strategy_id='fixture', asset_class=asset, target_version='v1',
+                                horizon_sessions=15, instrument='ABC',
+                                decision_at=dt.datetime.now(dt.timezone.utc))
+    result = live.evaluate_live_governance(instrument='ABC', entry=100, stop=95, target=108,
+        evidence=bundle, services=live.GovernanceServices(control_plane=plane, evidence_ledger=Ledger(),
+            observability=Metrics(), app_build='fixture', readiness_environment={}))
+    call = calls[0]
+    if asset == 'equity':
+        assert all(value is None for value in call['runtime_expected'].values())
+        assert call['require_measured_clock'] is True
+        assert call['measured_clock'] is None
+        assert 'code_hash' in call['runtime_required_keys']
+        assert any('Release expectation not configured' in r for r in result['blocking_reasons'])
+        assert any('clock measurement' in r.lower() for r in result['blocking_reasons'])
+    else:
+        assert call['runtime_expected'] == call['runtime_actual'] == {
+            'build': 'fixture', 'policy_hash': plane.policy.digest}
+        assert call['require_measured_clock'] is False
+        assert call['runtime_required_keys'] == ()
+
+
+def test_app_supplies_health_and_reads_expectations_from_server_settings():
+    tree = ast.parse(Path('app.py').read_text(encoding='utf-8'))
+    function = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                    and node.name == 'evaluate_live_governance_contract')
+    source = ast.unparse(function)
+    assert 'get_equity_runtime_health()' in source
+    for key in ('EXPECTED_APP_BUILD', 'EXPECTED_EQUITY_CODE_SHA256', 'RESILIENCE_POLICY_SHA256'):
+        assert key in source
+
+
 @pytest.mark.parametrize("package", [None, {"purpose": "RESEARCH_OBSERVATION"},
     {"purpose": "LIVE_EQUITY_MANUAL_QUOTE_CHECK", "confirmed": True},
     {"purpose": "USER_REPORTED_BROKER_RESULT", "status": "FILLED"}])
@@ -140,7 +190,7 @@ def test_quote_verification_policy_is_forwarded_and_audited(monkeypatch):
 
     seen = []
     monkeypatch.setattr(live_governance, 'runtime_readiness_findings',
-                        lambda environment, quote_verification_policy='automated', asset_class='unknown':
+                        lambda environment, quote_verification_policy='automated', asset_class='unknown', **kwargs:
                         seen.append(quote_verification_policy) or [])
     class Ledger:
         def outbox_stats(self): return {'pending': 0, 'oldest_pending_seconds': 0}
