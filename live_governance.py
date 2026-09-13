@@ -53,6 +53,7 @@ class GovernanceServices:
     decision_spine: Any | None = None
     code_hash: str = ""
     config_hash: str = ""
+    equity_runtime_health: Mapping[str, Any] | None = None
 
 
 def _status(result: Mapping[str, Any] | None) -> str:
@@ -279,8 +280,24 @@ def evaluate_live_governance(
         services.readiness_environment,
         quote_verification_policy=quote_verification_policy,
         asset_class=evidence.context.asset_class,
+        clock_evidence=(services.equity_runtime_health or {}).get("clock") if is_equity else None,
+        recovery_evidence=(services.equity_runtime_health or {}).get("recovery") if is_equity else None,
     )
     advanced_findings.extend(readiness_findings)
+    health = services.equity_runtime_health or {}
+    environment = os.environ if services.readiness_environment is None else services.readiness_environment
+    if is_equity:
+        runtime_expected = {"build": environment.get("EXPECTED_APP_BUILD"),
+                            "policy_hash": environment.get("RESILIENCE_POLICY_SHA256"),
+                            "code_hash": environment.get("EXPECTED_EQUITY_CODE_SHA256")}
+        runtime_actual = {"build": services.app_build,
+                          "policy_hash": services.control_plane.policy.digest,
+                          "code_hash": health.get("code_hash")}
+    else:
+        # Preserve the existing non-equity contract, including its defaults.
+        runtime_expected = {"build": os.environ.get("EXPECTED_APP_BUILD", services.app_build),
+                            "policy_hash": os.environ.get("RESILIENCE_POLICY_SHA256", services.control_plane.policy.digest)}
+        runtime_actual = {"build": services.app_build, "policy_hash": services.control_plane.policy.digest}
     resilience = services.control_plane.evaluate_recommendation(
         price=entry,
         quote_at=evidence.quote_observed_at or decision_at,
@@ -292,16 +309,11 @@ def evaluate_live_governance(
         tick_size=tick_size,
         calibration_evidence=evidence.calibration_evidence,
         outbox_stats=outbox_stats,
-        runtime_expected={
-            "build": os.environ.get("EXPECTED_APP_BUILD", services.app_build),
-            "policy_hash": os.environ.get(
-                "RESILIENCE_POLICY_SHA256", services.control_plane.policy.digest
-            ),
-        },
-        runtime_actual={
-            "build": services.app_build,
-            "policy_hash": services.control_plane.policy.digest,
-        },
+        runtime_expected=runtime_expected,
+        runtime_actual=runtime_actual,
+        runtime_required_keys=("build", "policy_hash", "code_hash") if is_equity else (),
+        measured_clock=health.get("clock") if is_equity else None,
+        require_measured_clock=is_equity,
         control_findings=advanced_findings,
     )
     resilience_public = resilience.public_dict()
@@ -323,6 +335,11 @@ def evaluate_live_governance(
     }
     if is_equity:
         controls["calibration_uncertainty"] = uncertainty
+        controls["equity_runtime_health"] = {
+            "status": "ABSTAIN" if readiness_findings else "OBSERVED",
+            "clock": health.get("clock"), "recovery": health.get("recovery"),
+            "actual_release": runtime_actual,
+        }
     for control_name, control_result in controls.items():
         control_status = _status(control_result)
         services.observability.record(

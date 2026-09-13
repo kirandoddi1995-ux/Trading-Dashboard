@@ -314,8 +314,25 @@ class ClockSessionGuard:
         self.policy = policy.section("clock")
 
     def evaluate(self, *, now, exchange_open, ntp_offset_seconds=0, calendar_version=None,
-                 expected_calendar_version=None) -> list[SafetyFinding]:
+                 expected_calendar_version=None, measured_clock=None,
+                 require_measurement=False) -> list[SafetyFinding]:
         findings = []
+        if require_measurement:
+            from equity_runtime_health import clock_error
+            error = clock_error(measured_clock, now=now,
+                                maximum_offset=float(self.policy['maximum_ntp_offset_seconds']))
+            if error:
+                findings.append(SafetyFinding("clock_session", error,
+                    "Equity clock measurement missing, stale, failed or outside tolerance: " + error,
+                    SafetyState.NO_TRADE))
+            # Session checks still run even when measurement is unavailable.
+            if not exchange_open:
+                findings.append(SafetyFinding("clock_session", "SESSION_CLOSED",
+                    "Exchange session is not open", SafetyState.NO_TRADE))
+            if expected_calendar_version and calendar_version != expected_calendar_version:
+                findings.append(SafetyFinding("clock_session", "CALENDAR_DRIFT",
+                    "Runtime exchange calendar differs from approved version", SafetyState.NO_TRADE))
+            return findings
         try:
             aware_datetime(now, name="clock timestamp")
             offset = abs(finite(ntp_offset_seconds, name="NTP offset"))
@@ -411,9 +428,13 @@ class SLOMonitor:
 
 
 class RuntimeAttestor:
-    def evaluate(self, *, expected: Mapping, actual: Mapping, signature_valid=True):
+    def evaluate(self, *, expected: Mapping, actual: Mapping, signature_valid=True, required_keys=()):
         if not signature_valid:
             return [SafetyFinding("configuration", "SIGNATURE_INVALID", "Runtime attestation signature failed", SafetyState.EMERGENCY_STOP)]
+        missing = [key for key in required_keys if not str(expected.get(key) or "").strip()]
+        if missing:
+            return [SafetyFinding("configuration", "RELEASE_EXPECTATION_MISSING",
+                "Release expectation not configured: " + ", ".join(missing), SafetyState.NO_TRADE)]
         mismatches = [key for key, expected_value in expected.items() if actual.get(key) != expected_value]
         if mismatches:
             return [SafetyFinding("configuration", "CONFIG_DRIFT", "Mismatch: " + ", ".join(sorted(mismatches)), SafetyState.NO_TRADE)]
@@ -643,7 +664,9 @@ class ResilienceControlPlane:
                                 secondary_quote=None, tick_size=None, heartbeat_age_seconds=0,
                                 ntp_offset_seconds=0, runtime_expected=None, runtime_actual=None,
                                 outbox_stats=None, capacity_sample=None, authorized_recovery=False,
-                                correlation_id=None, control_findings=None):
+                                correlation_id=None, control_findings=None,
+                                measured_clock=None, require_measured_clock=False,
+                                runtime_required_keys=()):
         _CORRELATION_ID.set(str(correlation_id or new_correlation_id()))
         started = time.perf_counter()
         now = utcnow()
@@ -676,10 +699,13 @@ class ResilienceControlPlane:
             heartbeat_age_seconds=heartbeat_age_seconds, provider_available=provider_available,
         ))
         findings.extend(self.clock.evaluate(now=now, exchange_open=exchange_open,
-                                            ntp_offset_seconds=ntp_offset_seconds))
+                                            ntp_offset_seconds=ntp_offset_seconds,
+                                            measured_clock=measured_clock,
+                                            require_measurement=require_measured_clock))
         findings.extend(self.calibration.evaluate(calibration_evidence, now=now))
-        if runtime_expected is not None:
-            findings.extend(self.attestor.evaluate(expected=runtime_expected, actual=runtime_actual or {}))
+        if runtime_expected is not None or runtime_required_keys:
+            findings.extend(self.attestor.evaluate(expected=runtime_expected or {}, actual=runtime_actual or {},
+                                                  required_keys=runtime_required_keys))
         if outbox_stats is not None:
             findings.extend(self.operations.outbox(outbox_stats))
         if capacity_sample is not None:

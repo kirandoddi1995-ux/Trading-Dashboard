@@ -27,6 +27,41 @@ class EquityScanRepository:
             raise RuntimeError("Equity operational repository is not configured")
         return self._connect()
 
+    def recovery_health(self):
+        """Read-only inspection of durable tables and a real committed checkpoint."""
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT current_setting('synchronous_commit') <> 'off' AS synchronous_commit,
+                           current_setting('fsync') = 'on' AS fsync,
+                           (SELECT count(*) = 2 AND bool_and(c.relpersistence = 'p')
+                            FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n
+                              ON n.oid=c.relnamespace
+                            WHERE n.nspname='equity_operations'
+                              AND c.relname IN ('scan_runs','scan_candidates')) AS logged_tables,
+                           (SELECT bool_and(has_table_privilege(current_user,'equity_operations.scan_runs',p))
+                            FROM unnest(ARRAY['SELECT','INSERT','UPDATE']) p) AS run_permissions,
+                           (SELECT bool_and(has_table_privilege(current_user,'equity_operations.scan_candidates',p))
+                            FROM unnest(ARRAY['SELECT','INSERT','UPDATE']) p) AS candidate_permissions
+                """)
+                storage = cur.fetchone()
+                cur.execute("""
+                    SELECT c.run_id,c.instrument,c.result,c.rejection
+                    FROM equity_operations.scan_candidates c
+                    JOIN equity_operations.scan_runs r ON r.run_id=c.run_id
+                    WHERE c.status='COMPLETE' AND c.attempt_no > 0
+                      AND (c.result IS NOT NULL OR c.rejection IS NOT NULL)
+                    ORDER BY c.updated_at DESC LIMIT 1
+                """)
+                checkpoint = cur.fetchone()
+        valid = bool(storage and len(storage) == 5 and all(value is True for value in storage)
+                     and checkpoint and (isinstance(checkpoint[2], Mapping)
+                                         or isinstance(checkpoint[3], Mapping)))
+        return {"status": "PASS" if valid else "UNAVAILABLE",
+                "durable_tables_verified": bool(storage and all(value is True for value in storage)),
+                "committed_checkpoint_read": bool(checkpoint),
+                "scope": "existing_checkpoint_readback_not_disaster_recovery"}
+
     def create_run(self, run: Mapping, items):
         with self._connection() as conn:
             with conn.cursor() as cur:

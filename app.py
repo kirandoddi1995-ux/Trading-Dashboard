@@ -16,6 +16,7 @@ from market_data_gateway import get_market_data_gateway
 from reliable_charts import render_chart
 from scan_jobs import ScanJobs, ScanBusy, CheckpointUnavailable
 from equity_scan_repository import EquityScanRepository
+from equity_runtime_health import clock_error, measure_clock, recovery_health, release_fingerprint
 from equity_manual_review import (
     POLICY as EQUITY_MANUAL_QUOTE_POLICY,
     ManualReviewError,
@@ -220,6 +221,7 @@ def evaluate_live_governance_contract(
             "RECOVERY_DRILL_LEDGER_VERIFIED", "RECOVERY_DRILL_RUNTIME_ROLE_VERIFIED",
             "PRODUCTION_ENVIRONMENT_PROTECTED", "SECONDARY_QUOTE_PROVIDER",
             "KITE_API_KEY", "KITE_ACCESS_TOKEN", "SECONDARY_QUOTE_SYMBOL_MAP_JSON",
+            "EXPECTED_APP_BUILD", "EXPECTED_EQUITY_CODE_SHA256", "RESILIENCE_POLICY_SHA256",
         ):
             secret_value = secret_reader(secret_name)
             if secret_value:
@@ -281,6 +283,8 @@ def evaluate_live_governance_contract(
             decision_spine=globals().get("DECISION_EVIDENCE_SPINE"),
             code_hash=globals().get("RUNTIME_CODE_HASH", ""),
             config_hash=globals().get("RUNTIME_QUANT_CONFIG_HASH", ""),
+            equity_runtime_health=(get_equity_runtime_health()
+                                   if evidence_bundle.context.asset_class == "equity" else None),
         ),
     )
 
@@ -1093,6 +1097,7 @@ def _record_trade_evidence(*, aggregate_id, event_type, payload, effective_at,
 
 
 RUNTIME_CODE_HASH = _runtime_code_hash()
+EQUITY_RELEASE_FINGERPRINT = release_fingerprint(os.path.dirname(os.path.abspath(__file__)))
 RUNTIME_QUANT_CONFIG_HASH = hashlib.sha256(
     json.dumps(
         PRODUCTION_QUANT_CONFIG.public_dict(), sort_keys=True,
@@ -2763,6 +2768,17 @@ def get_scan_coordinator():
 def get_equity_scan_repository():
     connect = DURABLE_REPOSITORY.connect if DURABLE_REPOSITORY.configured else None
     return EquityScanRepository(connect)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_equity_runtime_health():
+    # Cache measured evidence briefly; validators also independently enforce age.
+    clock = measure_clock()
+    failure = clock_error(clock, now=datetime.datetime.now(datetime.timezone.utc),
+                          maximum_offset=float(RESILIENCE_CONTROL_PLANE.policy.section('clock')['maximum_ntp_offset_seconds']))
+    return {"clock": clock, "clock_check": failure or "PASS",
+            "recovery": recovery_health(get_equity_scan_repository(), EVIDENCE_LEDGER),
+            "code_hash": EQUITY_RELEASE_FINGERPRINT}
 
 
 @st.cache_resource
@@ -8705,6 +8721,13 @@ elif selected_tab == "Equities Screener & Risk":
     # equity Buy. The separate manual review is tied to the immutable decision
     # identity; reviews for older/superseded decisions cannot carry forward.
     _equity_ops = get_equity_scan_repository()
+    with st.expander("Equity runtime health (read-only)"):
+        st.caption("Measured hosting diagnostics, not trade approval. Missing evidence blocks equity action. "
+                   "Expected hashes must come from your reviewed local release, not this display.")
+        if st.button("Refresh equity runtime health"):
+            get_equity_runtime_health.clear()
+        st.json({"actual_build": APP_BUILD, "actual_policy_hash": RESILIENCE_CONTROL_PLANE.policy.digest,
+                 **get_equity_runtime_health()})
     _pending_orders = []
     _order_log_available = False
     if _equity_ops.configured:

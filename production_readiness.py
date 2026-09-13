@@ -94,8 +94,9 @@ def _recovery_drill_ok(environ: Mapping[str, str], now: dt.datetime):
         return False
 
 
-def runtime_controls(environ=None, *, now=None) -> list[ReadinessControl]:
-    environ = environ or os.environ
+def runtime_controls(environ=None, *, now=None, asset_class="unknown",
+                     clock_evidence=None, recovery_evidence=None) -> list[ReadinessControl]:
+    environ = (os.environ if environ is None else environ) if asset_class == "equity" else (environ or os.environ)
     now = now or dt.datetime.now(UTC)
     managed_keys = _managed_promotion_refs_ok(environ)
     require_managed = str(environ.get("REQUIRE_MANAGED_PROMOTION_KEYS") or "").casefold() == "true"
@@ -128,6 +129,20 @@ def runtime_controls(environ=None, *, now=None) -> list[ReadinessControl]:
          str(environ.get("PRODUCTION_ENVIRONMENT_PROTECTED", "")).casefold() == "true",
          "Protect the GitHub production environment with independent reviewers", "NO_TRADE"),
     ]
+    if asset_class == "equity":
+        from equity_runtime_health import clock_error, recovery_error
+        excluded = {"model_artifact_signing", "runtime_evidence_signing",
+                    "independent_model_approvers", "protected_promotion_environment",
+                    "clock_monitor", "recovery_drill"}
+        checks = [check for check in checks if check[0] not in excluded]
+        clock_failure = clock_error(clock_evidence, now=now, maximum_offset=float('inf'))
+        recovery_failure = recovery_error(recovery_evidence, now=now)
+        checks.extend([
+            ("measured_clock", clock_failure is None,
+             clock_failure or "Measured clock available; offset tolerance checked separately", "NO_TRADE"),
+            ("recovery_health", recovery_failure is None,
+             recovery_failure or "Existing checkpoint and ledger read-back verified", "READ_ONLY"),
+        ])
     return [ReadinessControl(
         name=name, configured=bool(ok), code_complete=True,
         external_action_required=not bool(ok), detail=("Configured" if ok else detail), state=state,
@@ -136,7 +151,8 @@ def runtime_controls(environ=None, *, now=None) -> list[ReadinessControl]:
 
 def runtime_readiness_findings(environ=None, *, now=None,
                                quote_verification_policy="automated",
-                               asset_class="unknown") -> list[SafetyFinding]:
+                               asset_class="unknown", clock_evidence=None,
+                               recovery_evidence=None) -> list[SafetyFinding]:
     state = {
         "DEGRADED": SafetyState.DEGRADED,
         "NO_TRADE": SafetyState.NO_TRADE,
@@ -149,13 +165,8 @@ def runtime_readiness_findings(environ=None, *, now=None,
             "production_readiness", "INVALID_QUOTE_VERIFICATION_POLICY",
             "Quote-verification policy is not recognized", SafetyState.NO_TRADE,
         )]
-    controls = runtime_controls(environ, now=now)
-    if asset_class == "equity":
-        # Solo equity policy: retain model validation and content hashes; keys
-        # and independent reviewers are not prerequisites for live evaluation.
-        excluded = {"model_artifact_signing", "runtime_evidence_signing",
-                    "independent_model_approvers", "protected_promotion_environment"}
-        controls = [control for control in controls if control.name not in excluded]
+    controls = runtime_controls(environ, now=now, asset_class=asset_class,
+                                clock_evidence=clock_evidence, recovery_evidence=recovery_evidence)
     if policy == EQUITY_MANUAL_QUOTE_POLICY:
         # The equity UI supplies a separate, decision-bound confirmation after
         # governance passes. No other readiness control is relaxed here.
@@ -196,10 +207,12 @@ def repository_controls(root) -> list[ReadinessControl]:
     return controls
 
 
-def readiness_report(root, *, include_external=True, environ=None, now=None):
+def readiness_report(root, *, include_external=True, environ=None, now=None,
+                     asset_class="unknown", clock_evidence=None, recovery_evidence=None):
     controls = repository_controls(root)
     if include_external:
-        controls.extend(runtime_controls(environ, now=now))
+        controls.extend(runtime_controls(environ, now=now, asset_class=asset_class,
+                                        clock_evidence=clock_evidence, recovery_evidence=recovery_evidence))
     return {
         "ready": all(control.configured for control in controls),
         "repository_code_complete": all(control.code_complete for control in controls),
@@ -212,8 +225,9 @@ def main(argv=None):
     parser.add_argument("--repository-only", action="store_true")
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--root", default=str(pathlib.Path(__file__).resolve().parent))
+    parser.add_argument("--asset-class", default="unknown", choices=("unknown", "equity"))
     args = parser.parse_args(argv)
-    report = readiness_report(args.root, include_external=not args.repository_only)
+    report = readiness_report(args.root, include_external=not args.repository_only, asset_class=args.asset_class)
     print(json.dumps(report, indent=2))
     return 1 if args.strict and not report["ready"] else 0
 
