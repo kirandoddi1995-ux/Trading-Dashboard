@@ -27,6 +27,7 @@ from continuous_evolution import (
 )
 from evidence_tiers import evidence_tier_decision
 from live_evidence import LiveEvidenceBundle
+from equity_execution_policy import calibration_uncertainty, pretrade_execution, equity_execution_ev
 from quant_foundation import (
     PRODUCTION_QUANT_CONFIG,
     executable_expected_value,
@@ -82,6 +83,7 @@ def evaluate_live_governance(
     secondary_quote: Mapping[str, Any] | None = None,
     tick_size: float | None = None,
     quote_verification_policy: str = "automated",
+    equity_execution_plan: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate all controls from genuine, context-bound evidence."""
     if str(instrument) != evidence.context.instrument:
@@ -130,13 +132,34 @@ def evaluate_live_governance(
         expected_ensemble_hash=model.get("ensemble_hash"),
         policy=evolution_policy,
     )
+    is_equity = evidence.context.asset_class == "equity"
+    uncertainty = None
+    if is_equity:
+        uncertainty = calibration_uncertainty(evidence.calibration_evidence, calibration)
+        conservative_execution = pretrade_execution(
+            plan=equity_execution_plan, stop=stop, target=target, decision_at=decision_at,
+            quote_observed_at=evidence.quote_observed_at, quote_received_at=evidence.quote_received_at,
+            costs=cost_breakdown,
+        )
+        if direction != "long":
+            conservative_execution = {"status": "ABSTAIN", "failures": ["Equity execution policy supports long limit orders only"]}
+        plan = dict(equity_execution_plan or {})
+        quote = dict(quote_snapshot or {})
+        if (plan.get("quantity") != quantity or plan.get("ask") != quote.get("ask")
+                or plan.get("bid") != quote.get("bid")):
+            conservative_execution = {"status": "ABSTAIN", "failures": ["Execution plan is not bound to this quantity and quote"]}
+        if execution["status"] != "PASS":
+            conservative_execution = {**conservative_execution, "status": "ABSTAIN",
+                                      "failures": list(conservative_execution.get("failures", [])) +
+                                      list(execution.get("failures", ["Existing execution quality gate blocked"]))}
+        execution = conservative_execution
     expected_value = executable_expected_value(
-        entry=entry,
-        stop=stop,
-        target=target,
+        entry=(execution["entry"] if is_equity and execution.get("status") == "PASS" else entry),
+        stop=(execution["stop"] if is_equity and execution.get("status") == "PASS" else stop),
+        target=(execution["target"] if is_equity and execution.get("status") == "PASS" else target),
         direction=direction,
         quantity=quantity,
-        round_trip_cost_bps=cost_bps,
+        round_trip_cost_bps=(execution["cost_bps"] if is_equity and execution.get("status") == "PASS" else cost_bps),
         calibration_evidence=evidence.calibration_evidence,
         config=PRODUCTION_QUANT_CONFIG,
         minimum_ratio=(trade_contracts.EQUITY_MIN_NET_REWARD_RISK
@@ -158,7 +181,9 @@ def evaluate_live_governance(
         }
 
     conformal_package = dict(evidence.conformal_evidence or {})
-    if conformal_package:
+    if is_equity:
+        conformal = {"status": "DEFERRED", "reason": "Return prediction target is not defined; calibration group uncertainty is checked separately"}
+    elif conformal_package:
         conformal = adaptive_conformal_interval(
             conformal_package.get("point_estimate"),
             conformal_package.get("calibration_residuals", ()),
@@ -173,7 +198,14 @@ def evaluate_live_governance(
         conformal = {"status": "ABSTAIN", "failures": ["Conformal uncertainty evidence is unavailable"]}
 
     fill_package = dict(evidence.fill_evidence or {})
-    if fill_package and calibration.get("usable"):
+    if is_equity:
+        fill_adjusted_ev = equity_execution_ev(
+            evidence=evidence.equity_execution_evidence,
+            context={**evidence.context.compatibility_fields(), "instrument": instrument},
+            decision_at=decision_at, calibration=calibration, execution=execution,
+            minimum_ratio=trade_contracts.EQUITY_MIN_NET_REWARD_RISK,
+        )
+    elif fill_package and calibration.get("usable"):
         target_probability = float(calibration["conservative_probability"])
         time_exit_probability = fill_package.get("time_exit_probability")
         try:
@@ -231,6 +263,14 @@ def evaluate_live_governance(
         kill_switch=kill,
         ledger_status=evidence.ledger_status,
     )
+    if is_equity:
+        # Replace only the standalone conformal finding. All other controls,
+        # including Gate 10, retain their NO_TRADE findings.
+        advanced_findings = [finding for finding in advanced_findings if finding.control != "conformal"]
+        if uncertainty["status"] != "PASS":
+            advanced_findings.append(SafetyFinding(
+                "calibration_uncertainty", "CALIBRATION_UNCERTAINTY_ABSTAIN",
+                "; ".join(uncertainty["failures"]), SafetyState.NO_TRADE))
     advanced_findings.extend(
         SafetyFinding("evidence_contract", "EVIDENCE_CONTEXT_MISMATCH", reason, SafetyState.NO_TRADE)
         for reason in contract_failures
@@ -281,6 +321,8 @@ def evaluate_live_governance(
             "failures": [finding.detail for finding in readiness_findings],
         },
     }
+    if is_equity:
+        controls["calibration_uncertainty"] = uncertainty
     for control_name, control_result in controls.items():
         control_status = _status(control_result)
         services.observability.record(
@@ -386,6 +428,8 @@ def evaluate_live_governance(
         "quote_verification_policy": str(quote_verification_policy),
     }
     decision["presentation"] = evidence_tier_decision(decision)
+    if is_equity:
+        decision["calibration_uncertainty"] = uncertainty
     if services.decision_spine is not None:
         costs = dict(cost_breakdown or {})
         costs.setdefault("round_trip_bps", cost_bps)

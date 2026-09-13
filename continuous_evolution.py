@@ -325,6 +325,28 @@ def executable_fill_adjusted_ev(
     fill = validate_fill_model(fill_evidence, policy)
     if not fill["usable"]:
         return {"status": "ABSTAIN", "expected_value_per_order": None, "failures": fill["failures"]}
+    return _execution_outcome_ev(
+        entry=entry, stop=stop, target=target, direction=direction,
+        quantity=quantity, round_trip_cost_bps=round_trip_cost_bps,
+        target_probability=target_probability, stop_probability=stop_probability,
+        time_exit_probability=time_exit_probability,
+        time_exit_return_per_unit=time_exit_return_per_unit,
+        fill=fill, adverse_selection_bps=adverse_selection_bps,
+        minimum_ratio=minimum_ratio,
+    )
+
+
+def _execution_outcome_ev(
+    *, entry, stop, target, direction, quantity, round_trip_cost_bps,
+    target_probability, stop_probability, time_exit_probability,
+    time_exit_return_per_unit, fill, adverse_selection_bps, minimum_ratio,
+) -> dict:
+    """Shared arithmetic, called only after the caller validates evidence.
+
+    This is not an evidence validator or a governance approval entry point.
+    Deliberately require every argument: absent execution/outcome evidence
+    must never become a default probability or a zero time-exit return.
+    """
     try:
         trade = trade_contracts.calculate_trade_math(
             entry, stop, target, direction=direction, round_trip_cost_bps=round_trip_cost_bps,

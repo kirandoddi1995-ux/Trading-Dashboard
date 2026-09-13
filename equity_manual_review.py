@@ -62,6 +62,7 @@ def decision_snapshot(signal: Mapping) -> dict:
         "target": signal.get("_tgt"),
         "primary_quote_observed_at": signal.get("_quote_observed_at"),
         "governance_decision_at": governance.get("decision_at"),
+        "execution_plan": (governance.get("execution") or {}).get("plan"),
     }
     return snapshot
 
@@ -142,6 +143,9 @@ def build_manual_review(
         "status": status,
         "confirmed": status == "CONFIRMED",
         "system_allow_trade": True,
+        "execution_plan": snapshot["execution_plan"],
+        "primary_quote_observed_at": snapshot["primary_quote_observed_at"],
+        "governance_decision_at": snapshot["governance_decision_at"],
     }
 
 
@@ -171,6 +175,14 @@ def review_status(signal: Mapping, review: Mapping | None, *, now=None) -> dict:
         return {"actionable": False, "status": "STALE", "reason": str(exc)}
     ages = [(current - checked).total_seconds(), (current - primary_at).total_seconds(),
             (current - governance_at).total_seconds()]
+    execution = signal.get("_governance", {}).get("execution", {})
+    if execution.get("policy") == "equity-conservative-execution-v1":
+        # The new limit/depth check is valid only for the stricter live quote age.
+        from quant_foundation import PRODUCTION_QUANT_CONFIG
+        if execution.get("status") != "PASS" or any(
+            age < 0 or age > PRODUCTION_QUANT_CONFIG.execution.maximum_quote_age_seconds for age in ages
+        ):
+            return {"actionable": False, "status": "STALE", "reason": "Refresh the limit order and governance checks before acting."}
     if any(age < 0 or age > MAXIMUM_REVIEW_AGE_SECONDS for age in ages):
         return {
             "actionable": False, "status": "STALE",
@@ -180,4 +192,3 @@ def review_status(signal: Mapping, review: Mapping | None, *, now=None) -> dict:
         "actionable": True, "status": "CONFIRMED",
         "reason": "System approval and the decision-bound manual quote check are both current.",
     }
-

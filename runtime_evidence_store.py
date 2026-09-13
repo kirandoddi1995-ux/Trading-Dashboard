@@ -13,7 +13,7 @@ import pandas as pd
 from live_evidence import aware_utc
 
 
-EVIDENCE_KINDS = {"CONFORMAL", "FILL", "PORTFOLIO"}
+EVIDENCE_KINDS = {"CONFORMAL", "FILL", "PORTFOLIO", "EQUITY_EXECUTION_OUTCOMES"}
 
 
 class RuntimeEvidenceStore:
@@ -68,6 +68,11 @@ class RuntimeEvidenceStore:
             raise ValueError("Runtime evidence validity window is invalid")
         if str(row["status"]).upper() != "VALIDATED":
             raise ValueError("Only VALIDATED runtime evidence can be stored")
+        if evidence_kind == "EQUITY_EXECUTION_OUTCOMES":
+            from equity_execution_policy import validate_execution_outcomes
+            result = validate_execution_outcomes(row, context=row, decision_at=created)
+            if not result["usable"]:
+                raise ValueError("Invalid equity execution evidence: " + "; ".join(result["failures"]))
         evidence_id = str(uuid.uuid4())
         conn = self._connect()
         try:
@@ -110,6 +115,10 @@ class RuntimeEvidenceStore:
             except (KeyError, ValueError):
                 continue
             if unexpired and callable(verify_signature) and verify_signature(artifact):
+                if evidence_kind == "EQUITY_EXECUTION_OUTCOMES":
+                    from equity_execution_policy import validate_execution_outcomes
+                    if not validate_execution_outcomes(artifact, context=context, decision_at=current)["usable"]:
+                        continue
                 return artifact
         return None
 

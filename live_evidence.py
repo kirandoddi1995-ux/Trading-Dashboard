@@ -187,6 +187,7 @@ class LiveEvidenceBundle:
     calibration_evidence: Mapping[str, Any] | None = None
     conformal_evidence: Mapping[str, Any] | None = None
     fill_evidence: Mapping[str, Any] | None = None
+    equity_execution_evidence: Mapping[str, Any] | None = None
     portfolio_returns: Any = None
     portfolio_weights: Mapping[str, float] = field(default_factory=dict)
     stress_scenarios: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
@@ -228,11 +229,12 @@ class LiveEvidenceBundle:
             failures.append("Feature lineage does not match the declared schema hash")
         if self.universe_observed_at is None or self.universe_effective_at is None:
             failures.append("Point-in-time universe lineage is missing")
-        for package_name, package in (
-            ("calibration", self.calibration_evidence),
-            ("conformal", self.conformal_evidence),
-            ("fill", self.fill_evidence),
-        ):
+        packages = [("calibration", self.calibration_evidence)]
+        if self.context.asset_class == "equity":
+            packages.append(("execution outcome", self.equity_execution_evidence))
+        else:
+            packages.extend((("conformal", self.conformal_evidence), ("fill", self.fill_evidence)))
+        for package_name, package in packages:
             if not package:
                 failures.append(f"{package_name.capitalize()} evidence is unavailable")
                 continue
@@ -265,6 +267,8 @@ class LiveEvidenceBundle:
             "has_calibration": bool(self.calibration_evidence),
             "has_conformal": bool(self.conformal_evidence),
             "has_fill_model": bool(self.fill_evidence),
+            **({"has_equity_execution_outcomes": bool(self.equity_execution_evidence)}
+               if self.context.asset_class == "equity" else {}),
             "has_portfolio_history": self.portfolio_returns is not None,
             "compatibility_failures": self.compatibility_failures(),
         }

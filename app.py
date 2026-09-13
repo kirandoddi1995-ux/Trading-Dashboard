@@ -162,6 +162,7 @@ def evaluate_live_governance_contract(
     decision_id=None,
     secondary_quote=None, tick_size=None,
     quote_verification_policy="automated",
+    equity_execution_plan=None,
 ):
     """Thin Streamlit adapter around the UI-independent governance service.
 
@@ -261,6 +262,7 @@ def evaluate_live_governance_contract(
             "unavailable_reason": quote_unavailable_reason,
         },
         cost_breakdown=cost_breakdown,
+        equity_execution_plan=equity_execution_plan,
         universe_lineage=universe_lineage,
         equity_capture_inputs=equity_capture_inputs,
         decision_id=decision_id,
@@ -1145,6 +1147,52 @@ def _execution_cost_breakdown(estimate, *, assumptions):
         "breakdown_complete": True,
         "assumptions": str(assumptions),
     }
+
+
+def _refresh_equity_order(candidate, *, quantity, limit_price, token, governance_check):
+    """Fresh quote and full governance, keeping original barriers and PIT features.
+
+    Old features retain their original timestamps and can fail freshness. A
+    manual quote check never manufactures new feature or execution evidence.
+    """
+    packet = candidate["_execution_recheck"]
+    quotes = get_live_market_quotes([packet["instrument_key"]], token, scope="equity-order")
+    quote = quotes.get(packet["instrument_key"], {})
+    market = quote.get("market_data") or quote
+    observed, received, _ = _live_lineage_from_quote(quote, {}, definition_version="equity-order-quote-v1")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    context = LiveEvidenceContext(**packet["context"], decision_at=now)
+    bundle = build_equity_live_evidence(
+        context=context, score=packet["score"], feature_lineage=packet["feature_lineage"],
+        quote_observed_at=observed, quote_received_at=received,
+        quote_source=str(quote.get("_source") or ""),
+        universe_observed_at=packet["universe_observed_at"],
+        universe_effective_at=packet["universe_effective_at"],
+        registry=MODEL_REGISTRY, runtime_store=RUNTIME_EVIDENCE_STORE,
+        model_artifact_signer=MODEL_ARTIFACT_SIGNER, runtime_evidence_signer=RUNTIME_EVIDENCE_SIGNER,
+    )
+    plan = {"order_type": "LIMIT", "quantity": quantity, "limit_price": limit_price,
+            "ask": market.get("ask_price"), "bid": market.get("bid_price"),
+            "ask_quantity": market.get("ask_qty"), "bid_quantity": market.get("bid_qty"),
+            "average_daily_value": packet["average_daily_value"]}
+    bid, ask = plan["bid"], plan["ask"]
+    spread = ((float(ask)-float(bid))/((float(ask)+float(bid))/2)*10000) if bid and ask else None
+    result = governance_check(
+        "Equity",
+        instrument=candidate["Ticker"], entry=limit_price, stop=candidate["_sl"], target=candidate["_tgt"],
+        quantity=quantity, cost_bps=packet["costs"]["round_trip_bps"], cost_breakdown=packet["costs"],
+        evidence_bundle=bundle, equity_execution_plan=plan, spread_bps=spread,
+        order_value=limit_price*quantity, average_daily_value=packet["average_daily_value"],
+        provider_available=bool(quote), exchange_open=MARKET_OPEN,
+        quote_bid=bid, quote_ask=ask, quote_last=quote.get("last_price"),
+        quote_verification_policy=EQUITY_MANUAL_QUOTE_POLICY,
+    )
+    if result.get("allow_trade") is not True:
+        raise ManualReviewError("Fresh governance rejected this order: " + "; ".join(result["blocking_reasons"]))
+    return {**candidate, "_governance": result,
+            "_decision_id": (result.get("decision_evidence") or {}).get("decision_id"),
+            "_price_val": limit_price, "_qty": quantity,
+            "_quote_observed_at": observed.isoformat() if observed else None}
 
 
 try:
@@ -8439,6 +8487,13 @@ elif selected_tab == "Equities Screener & Risk":
                 observation.observe(locals(), now=datetime.datetime.now(datetime.timezone.utc))
                 equity_governance = _evaluate_governance_fail_closed(
                     "Equity",
+                    equity_execution_plan={
+                        "order_type": "LIMIT", "quantity": qty_to_buy,
+                        "limit_price": market_data.get("ask_price"),
+                        "ask": market_data.get("ask_price"), "bid": market_data.get("bid_price"),
+                        "ask_quantity": market_data.get("ask_qty"), "bid_quantity": market_data.get("bid_qty"),
+                        "average_daily_value": average_daily_value,
+                    },
                     equity_capture_inputs={"equity_capture": observation.snapshot()},
                     instrument=ticker, entry=price, stop=sl, target=tgt, direction="long",
                     quantity=qty_to_buy, cost_bps=cost_estimate.round_trip_bps,
@@ -8514,6 +8569,14 @@ elif selected_tab == "Equities Screener & Risk":
                         "N/A — insufficient calibrated outcome evidence"
                     ),
                     "_governance": equity_governance,
+                    "_execution_recheck": {
+                        "instrument_key": key, "context": {**equity_context.compatibility_fields(), "instrument": str(ticker)},
+                        "score": float(score), "feature_lineage": equity_lineage,
+                        "universe_observed_at": (equity_universe or {}).get("observed_at"),
+                        "universe_effective_at": (equity_universe or {}).get("effective_at"),
+                        "average_daily_value": average_daily_value,
+                        "costs": _execution_cost_breakdown(cost_estimate, assumptions="Decision-time cost estimates, not measured fills"),
+                    },
                     "_decision_id": (equity_governance.get("decision_evidence") or {}).get("decision_id"),
                     "_scan_run_id": _scan_run_id,
                     "_quote_observed_at": (
@@ -8642,6 +8705,41 @@ elif selected_tab == "Equities Screener & Risk":
     # equity Buy. The separate manual review is tied to the immutable decision
     # identity; reviews for older/superseded decisions cannot carry forward.
     _equity_ops = get_equity_scan_repository()
+    _pending_orders = []
+    _order_log_available = False
+    if _equity_ops.configured:
+        try:
+            _pending_orders = _equity_ops.unresolved_orders(CURRENT_USER_ID)
+            _order_log_available = True
+        except Exception as order_read_exc:
+            LOGGER.error("Equity order log unavailable: %s", type(order_read_exc).__name__)
+            st.warning("Equity order reconciliation is unavailable; new order confirmations are blocked.")
+    for _pending in _pending_orders:
+        with st.expander(f"Reconcile intended order — {_pending['instrument']}", expanded=True):
+            st.caption(f"Recorded limit: ₹{_pending['limit_price']}; quantity: {_pending['quantity']}. This is not a new recommendation.")
+            with st.form(f"equity_actual_result_{_pending['intent_id']}"):
+                _actual_status = st.selectbox("Final broker result", ["NOT_PLACED", "FILLED", "PARTIAL_FINAL", "CANCELLED", "REJECTED"])
+                _actual_quantity = st.text_input("Actual filled quantity (enter 0 if unfilled)")
+                _actual_price = st.text_input("Actual average fill price (leave blank if unfilled)")
+                _broker_id = st.text_input("Broker order ID (not needed if not placed)")
+                _broker_at = st.text_input("Broker result timestamp including timezone, e.g. 2026-09-13T10:00:00+05:30")
+                _actual_confirm = st.checkbox("I checked the actual final result; any unfilled remainder is cancelled")
+                _save_actual = st.form_submit_button("Record actual order result")
+            if _save_actual:
+                try:
+                    _equity_ops.reconcile_order(
+                        _pending["intent_id"], owner_id=CURRENT_USER_ID, status=_actual_status,
+                        filled_quantity=_actual_quantity, average_fill_price=_actual_price or None,
+                        broker_order_id=_broker_id or None, broker_event_at=_broker_at or None,
+                        confirmed=_actual_confirm,
+                    )
+                    st.success("User-reported result stored. It is not validated execution evidence for Gate 10.")
+                    _rerun_with_metrics(scope="app")
+                except ValueError as result_exc:
+                    st.error(str(result_exc))
+                except Exception as result_exc:
+                    LOGGER.error("Equity reconciliation failed: %s", type(result_exc).__name__)
+                    st.error("Result was not confirmed stored. The order remains unresolved; retry safely.")
     for _signal in valid_signals:
         _signal.setdefault("_system_action", _signal.get("Action"))
         _manual_review = None
@@ -8652,6 +8750,9 @@ elif selected_tab == "Equities Screener & Risk":
             except Exception as manual_read_exc:
                 LOGGER.error("Manual equity review lookup failed: %s", type(manual_read_exc).__name__)
         _manual_state = equity_review_status(_signal, _manual_review)
+        if _pending_orders or not _order_log_available:
+            _manual_state = {"actionable": False, "status": "RECONCILIATION_REQUIRED",
+                             "reason": "Resolve outstanding orders and order-log availability first."}
         _signal["_manual_review"] = _manual_review
         _signal["_manual_review_state"] = _manual_state
         if str(_signal.get("_system_action")).casefold() == "buy":
@@ -8792,18 +8893,26 @@ elif selected_tab == "Equities Screener & Risk":
                         "and expires with its quote/governance freshness window."
                     )
                     with st.form(f"manual_equity_review_{_review_decision['decision_id']}"):
+                        st.caption(f"Intended quantity: {_review_signal['_qty']} share(s). Original target/stop and horizon are retained; fresh governance must pass again.")
+                        _limit_text = st.text_input("Maximum buy limit price (₹)", value=str(
+                            (_review_signal.get("_governance", {}).get("execution", {}).get("plan") or {}).get("limit_price", "")))
                         _platform = st.text_input("Second trading app/platform")
                         _secondary_price_text = st.text_input("Price currently shown there (₹)")
                         _confirmed = st.checkbox(
                             "I personally checked this price now and intend to consider this specific trade"
                         )
-                        _submit_review = st.form_submit_button("Record manual quote check")
+                        _submit_review = st.form_submit_button("Recheck and record order intent", disabled=bool(_pending_orders) or not _order_log_available)
                     if _submit_review:
                         try:
                             if not _equity_ops.configured:
                                 raise ManualReviewError("Operational review storage is not configured")
+                            _fresh_candidate = _refresh_equity_order(
+                                _review_signal, quantity=int(_review_signal["_qty"]),
+                                limit_price=float(_limit_text), token=access_token,
+                                governance_check=_evaluate_governance_fail_closed,
+                            )
                             _review = build_manual_review(
-                                _review_signal,
+                                _fresh_candidate,
                                 secondary_platform=_platform,
                                 secondary_price=_secondary_price_text,
                                 reviewer=CURRENT_USER_ID,
@@ -8813,7 +8922,11 @@ elif selected_tab == "Equities Screener & Risk":
                             )
                             if not _equity_ops.save_manual_review(_review):
                                 raise ManualReviewError("The manual review was not stored")
-                            st.success("Manual quote check stored for this exact decision.")
+                            _equity_ops.save_order_intent(
+                                _fresh_candidate, _review, owner_id=CURRENT_USER_ID,
+                                now=datetime.datetime.now(datetime.timezone.utc),
+                            )
+                            st.success("Intent stored after fresh checks. Place only the recorded limit order if you choose, then record its actual result.")
                             _rerun_with_metrics(scope="app")
                         except (ManualReviewError, ValueError) as review_exc:
                             st.error(str(review_exc))

@@ -59,18 +59,24 @@ def build_equity_live_evidence(
     calibration = dict(inference["calibration_evidence"])
     calibration["ensemble_hash"] = model_result["ensemble_hash"]
     exact = context.compatibility_fields()
-    conformal = fill = portfolio = None
+    conformal = fill = portfolio = execution_outcomes = None
     verifier = (verify_equity_artifact_integrity if is_equity else
                 runtime_evidence_signer.verify if runtime_evidence_signer else None)
     if verifier is not None:
-        conformal = runtime_store.latest(
+        if is_equity:
+            execution_outcomes = runtime_store.latest(
+                "EQUITY_EXECUTION_OUTCOMES", {**exact, "instrument": context.instrument},
+                verify_signature=verifier, now=context.decision_at,
+            )
+        else:
+            conformal = runtime_store.latest(
             "CONFORMAL", exact, verify_signature=verifier,
             now=context.decision_at,
-        )
-        fill = runtime_store.latest(
+            )
+            fill = runtime_store.latest(
             "FILL", exact, verify_signature=verifier,
             now=context.decision_at,
-        )
+            )
         portfolio = runtime_store.portfolio(
             exact, verify_signature=verifier,
             now=context.decision_at,
@@ -80,6 +86,7 @@ def build_equity_live_evidence(
         model_predictions=(prediction,), model_weights=weights,
         calibration_evidence=calibration, conformal_evidence=conformal,
         fill_evidence=fill,
+        equity_execution_evidence=execution_outcomes,
         portfolio_returns=(portfolio or {}).get("returns"),
         portfolio_weights=(portfolio or {}).get("weights", {}),
         stress_scenarios=(portfolio or {}).get("stress_scenarios", {}),

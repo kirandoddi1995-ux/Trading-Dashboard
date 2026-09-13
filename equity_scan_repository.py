@@ -159,3 +159,63 @@ class EquityScanRepository:
                 """, (decision_id,))
                 row = cur.fetchone()
         return dict(row[0]) if row else None
+
+    def unresolved_orders(self, owner_id):
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT i.payload FROM {SCHEMA}.order_intents i
+                    WHERE i.owner_id=%s AND NOT EXISTS
+                      (SELECT 1 FROM {SCHEMA}.order_results r WHERE r.intent_id=i.intent_id)
+                    ORDER BY i.created_at,i.intent_id
+                """, (owner_id,))
+                return [dict(row[0]) for row in cur.fetchall()]
+
+    def save_order_intent(self, signal, review, *, owner_id, now):
+        from equity_order_records import build_order_intent
+        intent = build_order_intent(signal, review, owner_id=owner_id, now=now)
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                # Serialize all confirmations for this owner, not just one tab.
+                cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (owner_id,))
+                cur.execute(f"""SELECT 1 FROM {SCHEMA}.order_intents i WHERE owner_id=%s
+                    AND NOT EXISTS (SELECT 1 FROM {SCHEMA}.order_results r WHERE r.intent_id=i.intent_id)
+                    LIMIT 1""", (owner_id,))
+                if cur.fetchone():
+                    raise ValueError("Reconcile the previous order before confirming another")
+                cur.execute(f"SELECT payload FROM {SCHEMA}.manual_quote_reviews WHERE review_id=%s",
+                            (review["review_id"],))
+                stored = cur.fetchone()
+                if not stored or dict(stored[0]) != dict(review):
+                    raise ValueError("The exact manual review must be durably stored first")
+                cur.execute(f"""INSERT INTO {SCHEMA}.order_intents
+                    (intent_id,owner_id,review_id,created_at,payload) VALUES (%s,%s,%s,%s,%s::jsonb)""",
+                            (intent["intent_id"], owner_id, intent["review_id"], intent["created_at"], _json(intent)))
+            conn.commit()
+        return intent
+
+    def reconcile_order(self, intent_id, *, owner_id, **actuals):
+        from equity_order_records import build_order_result
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (owner_id,))
+                cur.execute(f"SELECT payload FROM {SCHEMA}.order_intents WHERE intent_id=%s AND owner_id=%s",
+                            (intent_id, owner_id))
+                stored = cur.fetchone()
+                if not stored:
+                    raise ValueError("Unknown order intent for this owner")
+                result = build_order_result(dict(stored[0]), **actuals)
+                cur.execute(f"SELECT payload FROM {SCHEMA}.order_results WHERE intent_id=%s", (intent_id,))
+                prior = cur.fetchone()
+                if prior:
+                    ignored = {"result_id", "recorded_at"}
+                    if {k:v for k,v in prior[0].items() if k not in ignored} != {
+                        k:v for k,v in result.items() if k not in ignored
+                    }:
+                        raise ValueError("Order already reconciled differently; existing record is immutable")
+                    return dict(prior[0])
+                cur.execute(f"""INSERT INTO {SCHEMA}.order_results
+                    (result_id,intent_id,owner_id,payload) VALUES (%s,%s,%s,%s::jsonb)""",
+                            (result["result_id"], intent_id, owner_id, _json(result)))
+            conn.commit()
+        return result
