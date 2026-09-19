@@ -2,10 +2,21 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager, nullcontext
+from enum import Enum
 from collections.abc import Mapping
 
 
 SCHEMA = "equity_operations"
+
+
+class CheckpointOutcome(Enum):
+    NEW = "NEW"
+    IDEMPOTENT_SUCCESS = "IDEMPOTENT_SUCCESS"
+    CONFLICT = "CONFLICT"
+
+    def __bool__(self):
+        return self is not CheckpointOutcome.CONFLICT
 
 
 def _json(value):
@@ -65,6 +76,9 @@ class EquityScanRepository:
     def create_run(self, run: Mapping, items):
         with self._connection() as conn:
             with conn.cursor() as cur:
+                # Fail initialization explicitly if the manually reviewed migration
+                # has not run. Never silently collect an undeliverable queue.
+                cur.execute(f"SELECT checkpoint_fencing_token FROM {SCHEMA}.scan_candidates LIMIT 0")
                 cur.execute(f"""
                     INSERT INTO {SCHEMA}.scan_runs
                       (run_id,owner_id,signature,scan_mode,horizon_sessions,status,
@@ -91,49 +105,103 @@ class EquityScanRepository:
             with conn.cursor() as cur:
                 cur.execute(f"""
                     UPDATE {SCHEMA}.scan_runs SET status=%s,heartbeat_at=clock_timestamp(),
-                      finished_at=CASE WHEN %s IS NULL THEN finished_at ELSE to_timestamp(%s) END,
+                      finished_at=CASE WHEN %s::double precision IS NULL THEN finished_at ELSE to_timestamp(%s) END,
                       error_kind=%s
                     WHERE run_id=%s AND fencing_token=%s
-                """, (status, finished_at, finished_at, error_kind, run_id, int(fencing_token)))
+                      AND (%s <> 'COMPLETE' OR NOT EXISTS (
+                        SELECT 1 FROM equity_operations.scan_candidates c
+                        WHERE c.run_id=scan_runs.run_id AND
+                          (c.status<>'COMPLETE' OR c.checkpoint_fencing_token IS NULL
+                           OR c.checkpoint_fencing_token > scan_runs.fencing_token)))
+                """, (status, finished_at, finished_at, error_kind, run_id, int(fencing_token), status))
                 updated = cur.rowcount
             conn.commit()
         return updated == 1
 
-    def checkpoint_candidate(self, *, run_id, instrument, fencing_token, result=None, rejection=None,
-                             quote_observed_at=None, governance_decision_at=None):
+    @contextmanager
+    def checkpoint_delivery_session(self):
+        """One connection per batch; checkpoint_candidate commits each receipt."""
         with self._connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(f"""
-                    UPDATE {SCHEMA}.scan_candidates c
-                    SET status='COMPLETE',attempt_no=attempt_no+1,result=%s::jsonb,
-                        rejection=%s::jsonb,quote_observed_at=%s,
-                        governance_decision_at=%s,updated_at=clock_timestamp()
-                    FROM {SCHEMA}.scan_runs r
-                    WHERE c.run_id=r.run_id AND c.run_id=%s AND c.instrument=%s
-                      AND r.fencing_token=%s AND c.status<>'COMPLETE'
-                """, (_json(result) if result is not None else None,
-                      _json(rejection) if rejection is not None else None,
-                      quote_observed_at, governance_decision_at,
-                      run_id, str(instrument), int(fencing_token)))
-                updated = cur.rowcount
+                cur.execute("SET statement_timeout = '30s'")
             conn.commit()
-        return updated == 1
+            yield lambda **kwargs: self.checkpoint_candidate(_connection=conn, **kwargs)
+
+    def checkpoint_candidate(self, *, run_id, instrument, fencing_token, result=None, rejection=None,
+                             quote_observed_at=None, governance_decision_at=None,
+                             item=None, _connection=None):
+        token = int(fencing_token)
+        payload = (_json(result) if result is not None else None,
+                   _json(rejection) if rejection is not None else None,
+                   quote_observed_at, governance_decision_at)
+        if token <= 0 or (result is None) == (rejection is None):
+            return CheckpointOutcome.CONFLICT
+        with (nullcontext(_connection) if _connection is not None else self._connection()) as conn:
+            try:
+                with conn.cursor() as cur:
+                    # Serialize delivery and recovery on the same run row. Never accept
+                    # an old fence, even when its old payload happens to match.
+                    cur.execute(f"SELECT fencing_token FROM {SCHEMA}.scan_runs WHERE run_id=%s FOR UPDATE", (run_id,))
+                    active = cur.fetchone()
+                    if not active or int(active[0]) != token:
+                        conn.rollback()
+                        return CheckpointOutcome.CONFLICT
+                    cur.execute(f"""SELECT checkpoint_fencing_token,status,
+                        (result IS NOT DISTINCT FROM %s::jsonb AND rejection IS NOT DISTINCT FROM %s::jsonb
+                         AND quote_observed_at IS NOT DISTINCT FROM %s::timestamptz
+                         AND governance_decision_at IS NOT DISTINCT FROM %s::timestamptz)
+                        FROM {SCHEMA}.scan_candidates WHERE run_id=%s AND instrument=%s FOR UPDATE""",
+                        (*payload, run_id, str(instrument)))
+                    prior = cur.fetchone()
+                    if prior and prior[0] == token:
+                        outcome = (CheckpointOutcome.IDEMPOTENT_SUCCESS
+                                   if prior[1] == 'COMPLETE' and prior[2] is True
+                                   else CheckpointOutcome.CONFLICT)
+                        conn.rollback()
+                        return outcome
+                    if prior and prior[0] is not None and int(prior[0]) > token:
+                        conn.rollback()
+                        return CheckpointOutcome.CONFLICT
+                    if prior:
+                        # A genuinely new evaluation under the active fence may
+                        # supersede an older receipt or an unverifiable legacy row.
+                        cur.execute(f"""UPDATE {SCHEMA}.scan_candidates SET
+                            result=%s::jsonb,rejection=%s::jsonb,quote_observed_at=%s,
+                            governance_decision_at=%s,status='COMPLETE',attempt_no=attempt_no+1,
+                            checkpoint_fencing_token=%s,updated_at=clock_timestamp()
+                            WHERE run_id=%s AND instrument=%s""", (*payload, token, run_id, str(instrument)))
+                    else:
+                        if item is None:
+                            conn.rollback()
+                            return CheckpointOutcome.CONFLICT
+                        cur.execute(f"""INSERT INTO {SCHEMA}.scan_candidates
+                            (result,rejection,quote_observed_at,governance_decision_at,
+                             checkpoint_fencing_token,run_id,instrument,item,status,attempt_no,updated_at)
+                            VALUES (%s::jsonb,%s::jsonb,%s,%s,%s,%s,%s,%s::jsonb,'COMPLETE',1,clock_timestamp())""",
+                            (*payload, token, run_id, str(instrument), _json(item)))
+                conn.commit()
+                return CheckpointOutcome.NEW
+            except Exception:
+                conn.rollback()
+                raise
 
     def latest_recoverable(self, owner_id, signature):
+        # Non-NULL completed receipts from prior fences remain archived completed
+        # work, not fresh/actionable results. Legacy NULL receipts require re-evaluation.
         with self._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(f"""
                     SELECT run_id,status,fencing_token,metadata,
                            ARRAY(SELECT c.instrument FROM {SCHEMA}.scan_candidates c
-                                 WHERE c.run_id=r.run_id AND c.status<>'COMPLETE'
+                                 WHERE c.run_id=r.run_id AND (c.status<>'COMPLETE' OR c.checkpoint_fencing_token IS NULL)
                                  ORDER BY c.instrument),
                            (SELECT count(*) FROM {SCHEMA}.scan_candidates c
-                            WHERE c.run_id=r.run_id AND c.status='COMPLETE')
+                            WHERE c.run_id=r.run_id AND c.status='COMPLETE' AND c.checkpoint_fencing_token IS NOT NULL)
                     FROM {SCHEMA}.scan_runs r
                     WHERE owner_id=%s AND signature=%s
-                      AND status IN ('RUNNING','INTERRUPTED','CANCELLED','RECOVERING')
+                      AND status IN ('RUNNING','INTERRUPTED','CANCELLED','RECOVERING','COMPLETE')
                       AND EXISTS (SELECT 1 FROM {SCHEMA}.scan_candidates c
-                                  WHERE c.run_id=r.run_id AND c.status<>'COMPLETE')
+                                  WHERE c.run_id=r.run_id AND (c.status<>'COMPLETE' OR c.checkpoint_fencing_token IS NULL))
                     ORDER BY started_at DESC LIMIT 1
                 """, (owner_id, signature))
                 row = cur.fetchone()
@@ -151,7 +219,10 @@ class EquityScanRepository:
                     SET fencing_token=fencing_token+1,status='RECOVERING',
                         heartbeat_at=clock_timestamp(),error_kind=NULL
                     WHERE run_id=%s AND owner_id=%s
-                      AND status IN ('RUNNING','INTERRUPTED','CANCELLED','RECOVERING')
+                      AND status IN ('RUNNING','INTERRUPTED','CANCELLED','RECOVERING','COMPLETE')
+                      AND EXISTS (SELECT 1 FROM equity_operations.scan_candidates c
+                        WHERE c.run_id=scan_runs.run_id
+                          AND (c.status<>'COMPLETE' OR c.checkpoint_fencing_token IS NULL))
                     RETURNING fencing_token,metadata
                 """, (run_id, owner_id))
                 row = cur.fetchone()
@@ -160,7 +231,7 @@ class EquityScanRepository:
                     return None
                 cur.execute(f"""
                     SELECT item FROM {SCHEMA}.scan_candidates
-                    WHERE run_id=%s AND status<>'COMPLETE' ORDER BY instrument
+                    WHERE run_id=%s AND (status<>'COMPLETE' OR checkpoint_fencing_token IS NULL) ORDER BY instrument
                 """, (run_id,))
                 items = [candidate[0] for candidate in cur.fetchall()]
             conn.commit()

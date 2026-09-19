@@ -13,8 +13,9 @@ import threading
 import time
 import uuid
 import datetime as dt
+from equity_checkpoint_delivery import ensure_schema, enqueue, get_sender, has_pending
 from equity_scan_profiling import (
-    call as profile_call, timed as profile_timed, profile_controller,
+    timed as profile_timed, profile_controller,
     run_candidate, milestone, candidate_context, span,
 )
 
@@ -34,8 +35,14 @@ class ScanJobs:
         self._busy = False
         self._db_path = db_path
         self._checkpoint_store = checkpoint_store
+        self._checkpoint_sender = None
         if db_path:
             self._ensure_schema()
+            if checkpoint_store is not None and checkpoint_store.configured:
+                self._checkpoint_sender = get_sender(db_path, checkpoint_store)
+                self._checkpoint_sender.notify()
+        elif checkpoint_store is not None and checkpoint_store.configured:
+            raise CheckpointUnavailable("Remote checkpoints require a durable local outbox")
 
     def _connect(self):
         conn = sqlite3.connect(self._db_path, timeout=30, check_same_thread=False)
@@ -66,6 +73,7 @@ class ScanJobs:
               updated_at REAL NOT NULL, PRIMARY KEY(job_id,instrument))""")
             conn.execute("UPDATE durable_scan_jobs SET status='INTERRUPTED', finished_at=COALESCE(finished_at,updated_at) WHERE status='RUNNING'")
             conn.execute("UPDATE durable_scan_candidates SET status='PENDING' WHERE status='RUNNING'")
+            ensure_schema(conn)
             conn.commit()
         finally: conn.close()
 
@@ -143,18 +151,16 @@ class ScanJobs:
         instrument = self._instrument(item)
         quote_at = (result or {}).get("_quote_observed_at")
         governance_at = ((result or {}).get("_governance") or {}).get("decision_at")
-        if self._checkpoint_store is not None and self._checkpoint_store.configured:
-            if not profile_call("checkpoint_postgres_candidate", self._checkpoint_store.checkpoint_candidate,
-                run_id=job["id"], instrument=instrument,
-                fencing_token=job["fencing_token"], result=self._safe_json(result),
-                rejection=self._safe_json(rejection), quote_observed_at=quote_at,
-                governance_decision_at=governance_at,
-            ):
-                return False
         if self._db_path:
             with span("checkpoint_sqlite_candidate"):
                 conn = self._connect()
                 try:
+                    conn.execute('BEGIN IMMEDIATE')
+                    active = conn.execute('SELECT fencing_token FROM durable_scan_jobs WHERE job_id=?',
+                                          (job['id'],)).fetchone()
+                    if not active or active[0] != int(job['fencing_token']):
+                        conn.rollback()
+                        return False
                     changed = conn.execute("""UPDATE durable_scan_candidates
                   SET status='COMPLETE',result_json=?,rejection_json=?,quote_observed_at=?,
                       governance_decision_at=?,updated_at=?
@@ -164,11 +170,21 @@ class ScanJobs:
                     json.dumps(self._safe_json(rejection), separators=(",", ":")) if rejection is not None else None,
                     quote_at, governance_at, time.time(), job["id"], instrument,
                     int(job["fencing_token"]))).rowcount
+                    if changed != 1:
+                        conn.rollback()
+                        return False
+                    if self._checkpoint_sender is not None:
+                        enqueue(conn, dict(run_id=job['id'], instrument=instrument,
+                            fencing_token=job['fencing_token'], result=self._safe_json(result),
+                            rejection=self._safe_json(rejection), quote_observed_at=quote_at,
+                            governance_decision_at=governance_at, item=self._safe_json(item)))
                     conn.commit()
                 finally:
                     conn.close()
             if changed != 1:
                 return False
+        if self._checkpoint_sender is not None:
+            self._checkpoint_sender.notify()
         return True
 
     @staticmethod
@@ -290,6 +306,9 @@ class ScanJobs:
             source = self.recoverable(owner, signature)
             if not source:
                 raise CheckpointUnavailable("No interrupted equity scan is available")
+            if self._checkpoint_sender is not None and has_pending(self._db_path, source['id']):
+                self._checkpoint_sender.notify()
+                raise CheckpointUnavailable("Checkpoint delivery is pending; recovery must wait for acknowledgment")
             if self._checkpoint_store is not None and self._checkpoint_store.configured:
                 claimed = self._checkpoint_store.claim_recovery(source["id"], owner)
                 if not claimed:
@@ -310,7 +329,15 @@ class ScanJobs:
                 conn = self._connect()
                 try:
                     conn.execute("UPDATE durable_scan_jobs SET fencing_token=?,status='RECOVERING',recovered=1 WHERE job_id=?", (token, source["id"]))
-                    conn.execute("UPDATE durable_scan_candidates SET fencing_token=?,status='PENDING' WHERE job_id=? AND status<>'COMPLETE'", (token, source["id"]))
+                    for item in items:
+                        # A recovery on a replacement host may have no local rows.
+                        # Restore only the original item, never invent a checkpoint.
+                        conn.execute("""INSERT INTO durable_scan_candidates
+                            (job_id,instrument,item_json,status,fencing_token,updated_at)
+                            VALUES(?,?,?,'PENDING',?,?) ON CONFLICT(job_id,instrument)
+                            DO UPDATE SET fencing_token=excluded.fencing_token,status='PENDING'""",
+                            (source['id'], self._instrument(item),
+                             json.dumps(self._safe_json(item), separators=(',', ':')), token, time.time()))
                     conn.commit()
                 finally:
                     conn.close()
@@ -418,12 +445,8 @@ class ScanJobs:
                     "COMPLETE"
                 )
                 self._persist(job["owner"],job["signature"],job,final_status)
-                if self._checkpoint_store is not None and self._checkpoint_store.configured:
-                    profile_call("checkpoint_postgres_heartbeat", self._checkpoint_store.heartbeat,
-                        job["id"], job["fencing_token"],
-                        status=final_status,
-                        finished_at=job["finished_at"], error_kind=job.get("error"),
-                    )
+                if self._checkpoint_sender is not None:
+                    self._checkpoint_sender.notify()
             try:
                 if executor:
                     executor.shutdown(wait=True, cancel_futures=True)

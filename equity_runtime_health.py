@@ -32,6 +32,7 @@ RELEASE_FILES = (
     "production_repository.py", "scan_jobs.py", "scanner_funnel.py", "technical_indicators.py",
     "equity_scan_profiling.py",
     "equity_evidence_delivery.py",
+    "equity_checkpoint_delivery.py",
 )
 
 
