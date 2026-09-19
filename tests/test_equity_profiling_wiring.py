@@ -1,4 +1,5 @@
 import ast
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import threading
@@ -10,6 +11,7 @@ import pytest
 import equity_scan_profiling as p
 from equity_runtime_health import recovery_health, RELEASE_FILES
 from scan_jobs import ScanJobs
+from equity_scan_repository import CheckpointOutcome
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,11 +32,15 @@ def test_actual_scan_records_checkpoint_stages_without_changing_results(tmp_path
         configured = True
         def create_run(self, job, items):
             calls.append("create")
-        def checkpoint_candidate(self, **kwargs):
-            calls.append("candidate")
-            return True
+        @contextmanager
+        def checkpoint_delivery_session(self):
+            def deliver(**kwargs):
+                calls.append("candidate")
+                return CheckpointOutcome.NEW
+            yield deliver
         def heartbeat(self, *args, **kwargs):
             calls.append("heartbeat")
+            return True
     jobs = ScanJobs(str(tmp_path / "scan.sqlite"), Store())
     def worker(item):
         p.call("history_retrieval", lambda: None)
@@ -44,9 +50,12 @@ def test_actual_scan_records_checkpoint_stages_without_changing_results(tmp_path
     result = jobs.snapshot("owner", "signature")
     assert result["processed"] == 2 and result["rejections"] == {"Trend": 2}
     assert result["timeouts"] == 0
+    wait_for(lambda: 'heartbeat' in calls)
+    jobs._checkpoint_sender.stop()
     assert calls == ["create", "candidate", "candidate", "heartbeat"]
     report = p.snapshot(scan_id)
-    for stage in ("history_retrieval", "candidate_total", "checkpoint_postgres_candidate", "checkpoint_sqlite_candidate"):
+    assert 'checkpoint_postgres_candidate' not in report['totals']
+    for stage in ("history_retrieval", "candidate_total", "checkpoint_sqlite_candidate"):
         assert report["totals"][stage]["count"] == 2
     assert "checkpoint_sqlite_job_summary" in report["totals"]
     assert "original rejection" not in json.dumps(report)

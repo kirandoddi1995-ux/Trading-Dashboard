@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from equity_scan_repository import EquityScanRepository
+from equity_scan_repository import EquityScanRepository, CheckpointOutcome
 
 
 class Cursor:
@@ -221,7 +221,7 @@ process.stdin.on('end',async()=>{
 
 
 def test_candidate_checkpoint_is_fenced_by_current_run_token():
-    conn = Connection(rowcount=1)
+    conn = Connection(fetchone=[(7,), (None, 'PENDING', False)])
     repo = repository(conn)
     assert repo.checkpoint_candidate(
         run_id="run", instrument="ABC", fencing_token=7,
@@ -229,9 +229,10 @@ def test_candidate_checkpoint_is_fenced_by_current_run_token():
         governance_decision_at="2026-09-13T04:00:01+00:00",
     )
     sql, params = conn.calls[0]
-    assert "r.fencing_token=%s" in sql
-    assert "c.status<>'COMPLETE'" in sql
-    assert params[-1] == 7
+    assert "FOR UPDATE" in sql
+    assert params == ('run',)
+    assert 'checkpoint_fencing_token=%s' in conn.calls[-1][0]
+    assert conn.calls[-1][1][-3] == 7
     assert conn.commits == 1
 
 
@@ -239,6 +240,109 @@ def test_failed_fence_is_reported_without_false_success():
     conn = Connection(rowcount=0)
     assert not repository(conn).checkpoint_candidate(
         run_id="run", instrument="ABC", fencing_token=1, rejection={"category": "Data"})
+
+
+@pytest.mark.parametrize('active,prior,expected', [
+    (2, (2, 'COMPLETE', True), CheckpointOutcome.IDEMPOTENT_SUCCESS),
+    (2, (2, 'COMPLETE', False), CheckpointOutcome.CONFLICT),
+    (2, (2, 'PENDING', True), CheckpointOutcome.CONFLICT),
+    (3, (2, 'COMPLETE', True), CheckpointOutcome.CONFLICT),
+    (1, (1, 'COMPLETE', True), CheckpointOutcome.CONFLICT),
+    (2, (3, 'COMPLETE', True), CheckpointOutcome.CONFLICT),
+    (2, (1, 'COMPLETE', False), CheckpointOutcome.NEW),
+    (2, (None, 'COMPLETE', True), CheckpointOutcome.NEW),
+    (2, (None, 'PENDING', False), CheckpointOutcome.NEW),
+    (2, None, CheckpointOutcome.NEW),
+])
+def test_checkpoint_tristate_and_authoritative_recovery(active, prior, expected):
+    conn = Connection(fetchone=[(active,), prior])
+    outcome = repository(conn).checkpoint_candidate(run_id='run', instrument='ABC',
+        fencing_token=2, result={'score': 1}, item='ABC')
+    assert outcome is expected
+    assert conn.commits == (1 if expected is CheckpointOutcome.NEW else 0)
+    if expected is not CheckpointOutcome.NEW:
+        assert all(sql.startswith('SELECT') for sql, _ in conn.calls)
+
+
+def test_checkpoint_batch_connection_commits_each_entry():
+    conn = Connection(fetchone=[(1,), (None, 'PENDING', False), (1,), (None, 'PENDING', False)])
+    with repository(conn).checkpoint_delivery_session() as send:
+        assert send(run_id='run', instrument='A', fencing_token=1, result={'score': 1}) is CheckpointOutcome.NEW
+        assert send(run_id='run', instrument='B', fencing_token=1, result={'score': 2}) is CheckpointOutcome.NEW
+    assert conn.commits == 3  # timeout setup, then one commit per checkpoint
+
+
+@pytest.mark.skipif(not os.environ.get('EQUITY_TEST_PGLITE_MODULE'), reason='Local PostgreSQL harness not configured')
+def test_checkpoint_sql_fencing_migration_equality_and_recovery_on_postgres():
+    root = Path(__file__).resolve().parents[1]
+    base = (root / 'sql/equity_scan_recovery_and_manual_review.sql').read_text(encoding='utf-8')
+    migration = (root / 'sql/equity_checkpoint_fencing_draft.sql').read_text(encoding='utf-8')
+    conn = Connection(fetchone=[(1,), (None, 'PENDING', False)])
+    repository(conn).checkpoint_candidate(run_id='run', instrument='ABC', fencing_token=1,
+        result={'score': 1}, quote_observed_at='2026-09-20T04:00:00Z')
+    heartbeat = Connection()
+    repository(heartbeat).heartbeat('run', 1, status='COMPLETE')
+    recover = Connection(fetchone=[('run', 'INTERRUPTED', 1, {}, ['ABC'], 0)])
+    repository(recover).latest_recoverable('owner', 'sig')
+    claim = Connection(fetchone=[(2, {})], fetchall=[[]])
+    repository(claim).claim_recovery('run', 'owner')
+    absent = Connection(fetchone=[(1,), None])
+    repository(absent).checkpoint_candidate(run_id='run', instrument='MISSING', fencing_token=1,
+        result={'score': 2}, item={'ticker': 'MISSING'})
+    script = r"""
+const {PGlite}=require(process.argv[1]);let input='';
+process.stdin.on('data',c=>input+=c);process.stdin.on('end',async()=>{
+ const db=new PGlite();try{
+ const c=JSON.parse(input);
+ const q=async pair=>{let n=0;return db.query(pair[0].replace(/%s/g,()=>'$'+(++n)),pair[1]);};
+ await db.exec(`CREATE ROLE quant_app_runtime LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS;
+ CREATE ROLE equity_research_collector LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS;
+ CREATE ROLE anon;CREATE ROLE authenticated;CREATE ROLE service_role;`);
+ await db.exec(c.base);
+ await db.exec(`INSERT INTO equity_operations.scan_runs
+ (run_id,owner_id,signature,scan_mode,horizon_sessions,status,fencing_token,started_at,heartbeat_at)
+ VALUES ('run','owner','sig','Quick',15,'INTERRUPTED',1,now(),now());
+ INSERT INTO equity_operations.scan_candidates(run_id,instrument,item,status,attempt_no,result,updated_at)
+ VALUES ('run','ABC','"ABC"','COMPLETE',1,'{"score":1}',now());`);
+ await db.exec(c.migration);await db.exec(c.migration);
+ let row=(await db.query('SELECT checkpoint_fencing_token FROM equity_operations.scan_candidates')).rows[0];
+ if(row.checkpoint_fencing_token!==null)throw Error('Migration backfilled legacy data');
+ const col=(await db.query(`SELECT is_nullable,column_default FROM information_schema.columns
+ WHERE table_schema='equity_operations' AND table_name='scan_candidates' AND column_name='checkpoint_fencing_token'`)).rows[0];
+ if(col.is_nullable!=='YES'||col.column_default!==null)throw Error('Migration constraints wrong');
+ await db.exec('SET ROLE equity_research_collector');
+ let denied=false;try{await db.query('SELECT * FROM equity_operations.scan_candidates');}catch(e){denied=true;}
+ if(!denied)throw Error('Research isolation lost');
+ await db.exec('RESET ROLE;SET ROLE quant_app_runtime');
+ if((await q(c.recover[0])).rows[0].array.length!==1)throw Error('NULL receipt skipped by recovery');
+ if((await q(c.heartbeat[0])).affectedRows!==0)throw Error('Unverifiable checkpoint completed run');
+ await db.exec('BEGIN');await q(c.checkpoint[0]);await q(c.checkpoint[2]);await db.exec('COMMIT');
+ const match=(await q(c.checkpoint[1])).rows[0];
+ if(match.checkpoint_fencing_token!==1||Object.values(match)[2]!==true)throw Error('Identical retry mismatch');
+ const changed=structuredClone(c.checkpoint[1]);changed[1][0]='{"score":2}';
+ if(Object.values((await q(changed)).rows[0])[2]!==false)throw Error('Tamper undetected');
+ const equivalent=structuredClone(c.checkpoint[1]);equivalent[1][2]='2026-09-20T09:30:00+05:30';
+ if(Object.values((await q(equivalent)).rows[0])[2]!==true)throw Error('Timestamp equivalence lost');
+ await q(c.absent[c.absent.length-1]);
+ if((await q(c.heartbeat[0])).affectedRows!==1)throw Error('Confirmed run not completed');
+ // A legacy NULL checkpoint becomes unfinished; earlier verified receipt is archived.
+ await db.exec(`UPDATE equity_operations.scan_candidates SET checkpoint_fencing_token=NULL WHERE instrument='ABC';`);
+ const claimed=(await q(c.claim[0])).rows[0];
+ if(claimed.fencing_token!==2)throw Error('Recovery did not advance fence');
+ const unfinished=(await q(c.claim[1])).rows;
+ if(unfinished.length!==1||unfinished[0].item!=='ABC')throw Error('Legacy recovery selection incorrect');
+ if((await q(c.checkpoint[0])).rows[0].fencing_token!==2)throw Error('Old fence not observable');
+ console.log('CHECKPOINT_POSTGRES_PASS');
+ }catch(e){console.error(e.message);process.exitCode=1;}finally{await db.close();}
+});
+"""
+    result = subprocess.run(['node', '-e', script, os.environ['EQUITY_TEST_PGLITE_MODULE']],
+        input=json.dumps(dict(base=base, migration=migration, checkpoint=conn.calls,
+                              heartbeat=heartbeat.calls, recover=recover.calls,
+                              claim=claim.calls, absent=absent.calls)),
+        capture_output=True, text=True, timeout=90)
+    assert result.returncode == 0, result.stderr
+    assert 'CHECKPOINT_POSTGRES_PASS' in result.stdout
 
 
 def test_recovery_claim_increments_fence_and_returns_only_unfinished_items():
