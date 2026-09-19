@@ -31,6 +31,7 @@ RELEASE_FILES = (
     "evidence_tiers.py", "point_in_time.py", "feature_store.py", "prediction_validation.py",
     "production_repository.py", "scan_jobs.py", "scanner_funnel.py", "technical_indicators.py",
     "equity_scan_profiling.py",
+    "equity_evidence_delivery.py",
 )
 
 

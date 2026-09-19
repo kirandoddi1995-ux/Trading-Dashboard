@@ -18,7 +18,7 @@ import threading
 import urllib.parse
 import uuid
 from numbers import Real
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from decimal import Decimal
 from typing import Iterable, Mapping
 
@@ -1267,9 +1267,22 @@ class ProductionRepository:
             conn.commit()
         return event_id
 
+    @contextmanager
+    def evidence_delivery_session(self):
+        """Sender-only connection reuse; each event keeps its own transaction.
+
+        The connection must never be shared across threads. Legacy callers of
+        append_evidence_event still open/close their own connections unchanged.
+        """
+        self.ensure_schema()
+        with self.connect() as conn:
+            conn.execute("SET statement_timeout = '30s'")
+            conn.commit()
+            yield lambda **event: self.append_evidence_event(**event, _connection=conn)
+
     def append_evidence_event(self, *, aggregate_id: str, event_type: str, payload: Mapping,
                               effective_at=None, source="quant-terminal", actor_id="system",
-                              idempotency_key=None) -> dict:
+                              idempotency_key=None, _connection=None) -> dict:
         """Append one durable event under a transaction-level aggregate lock."""
         self.ensure_schema()
         aggregate_id = str(aggregate_id).strip()
@@ -1283,7 +1296,7 @@ class ProductionRepository:
         payload_text = canonical_json(payload)
         algorithm = "HMAC-SHA256" if self._evidence_signing_key else "SHA256 hash chain"
         try:
-            with self.connect() as conn:
+            with (self.connect() if _connection is None else nullcontext(_connection)) as conn:
                 conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (aggregate_id,))
                 existing = conn.execute(
                     f"SELECT event_id,aggregate_id,sequence_no,event_type,recorded_at,effective_at,source,actor_id,idempotency_key,payload,previous_hash,event_hash,hash_algorithm,schema_version,key_id FROM {SCHEMA}.evidence_ledger_events WHERE idempotency_key=%s",
@@ -1346,6 +1359,11 @@ class ProductionRepository:
                               "duplicate": False}
             return result
         except Exception as exc:
+            if _connection is not None:
+                try:
+                    _connection.rollback()
+                except Exception:
+                    pass  # The sender discards this connection before retrying.
             from observability import get_registry
             get_registry().record(
                 "evidence_write", event_type, 0.0, ok=False,

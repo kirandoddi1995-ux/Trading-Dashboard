@@ -160,9 +160,17 @@ class ImmutableEvidenceLedger:
                     CREATE INDEX IF NOT EXISTS idx_evidence_outbox_pending
                         ON evidence_delivery_outbox(delivered_at,next_attempt_at);
                 """)
+                conn.execute("BEGIN IMMEDIATE")
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(evidence_ledger_events)")}
                 if "key_id" not in columns:
                     conn.execute("ALTER TABLE evidence_ledger_events ADD COLUMN key_id TEXT")
+                outbox_columns = {row[1] for row in conn.execute("PRAGMA table_info(evidence_delivery_outbox)")}
+                if "delivery_lane" not in outbox_columns:
+                    # Mutable transport metadata only; never rewrite ledger events.
+                    conn.execute("ALTER TABLE evidence_delivery_outbox ADD COLUMN delivery_lane TEXT NOT NULL DEFAULT 'legacy'")
+                    conn.execute("""UPDATE evidence_delivery_outbox SET delivery_lane='equity'
+                        WHERE json_extract(event_json, '$.payload.asset_class')='equity'
+                           OR json_extract(event_json, '$.payload.identifiers.asset_class')='equity'""")
                 conn.commit()
             finally:
                 conn.close()
@@ -203,12 +211,13 @@ class ImmutableEvidenceLedger:
         actor_id="system",
         idempotency_key: str | None = None,
         queue_remote_delivery: bool = False,
+        equity_scan_context: bool = False,
     ) -> dict:
         # Opt-in only: existing callers retain their local-only append behavior.
         if queue_remote_delivery:
             identifiers = payload.get("identifiers") or {}
             asset_class = payload.get("asset_class") or identifiers.get("asset_class")
-            if str(asset_class).casefold() != "equity":
+            if str(asset_class).casefold() != "equity" and not (equity_scan_context and asset_class is None):
                 raise ValueError("Atomic delivery is restricted to explicit equity evidence")
         aggregate_id = str(aggregate_id).strip()
         event_type = str(event_type).strip().upper()
@@ -311,12 +320,14 @@ class ImmutableEvidenceLedger:
         if existing:
             if canonical_json(json.loads(existing[0])) != encoded:
                 raise ValueError("Delivery key is already bound to different evidence")
+            conn.execute("UPDATE evidence_delivery_outbox SET delivery_lane='equity' WHERE idempotency_key=?",
+                         (event["idempotency_key"],))
             return
         conn.execute("""
             INSERT INTO evidence_delivery_outbox(
                 idempotency_key,event_json,attempts,last_error,next_attempt_at,
-                created_at,delivered_at
-            ) VALUES (?,?,0,NULL,?,?,NULL)
+                created_at,delivered_at,delivery_lane
+            ) VALUES (?,?,0,NULL,?,?,NULL,'equity')
         """, (event["idempotency_key"], encoded, event["recorded_at"], event["recorded_at"]))
 
     @staticmethod
@@ -444,17 +455,41 @@ class ImmutableEvidenceLedger:
             finally:
                 conn.close()
 
-    def pending_deliveries(self, limit=100) -> list[dict]:
+    def pending_deliveries(self, limit=100, *, delivery_lane=None) -> list[dict]:
         conn = self._connect()
         try:
-            rows = conn.execute("""
+            if delivery_lane == "equity":
+                # Ordered local ledger identity, not wall-clock timestamp order.
+                # A predecessor in backoff (or owned by legacy delivery) blocks
+                # later events for that aggregate, but not unrelated aggregates.
+                rows = conn.execute("""
+                    SELECT o.event_json FROM evidence_delivery_outbox o
+                    JOIN evidence_ledger_events e USING(idempotency_key)
+                    WHERE o.delivery_lane='equity' AND o.delivered_at IS NULL
+                      AND o.next_attempt_at<=?
+                      AND NOT EXISTS (
+                        SELECT 1 FROM evidence_delivery_outbox p
+                        JOIN evidence_ledger_events pe USING(idempotency_key)
+                        WHERE pe.aggregate_id=e.aggregate_id AND pe.sequence_no<e.sequence_no
+                          AND p.delivered_at IS NULL
+                          AND (p.next_attempt_at>? OR p.delivery_lane<>'equity'))
+                    ORDER BY e.rowid LIMIT ?
+                """, (_iso(), _iso(), max(int(limit), 1))).fetchall()
+            else:
+                rows = conn.execute("""
                 SELECT event_json FROM evidence_delivery_outbox
                 WHERE delivered_at IS NULL AND next_attempt_at<=?
+                  AND (? IS NULL OR delivery_lane=?)
                 ORDER BY created_at LIMIT ?
-            """, (_iso(), max(int(limit), 1))).fetchall()
+            """, (_iso(), delivery_lane, delivery_lane, max(int(limit), 1))).fetchall()
         finally:
             conn.close()
         return [json.loads(row[0]) for row in rows]
+
+    @property
+    def delivery_owner_path(self) -> str:
+        """Sidecar lock for transport ownership, separate from the write lock."""
+        return str(self._db_path) + ".equity-delivery.lock"
 
     def mark_delivered(self, idempotency_key: str) -> None:
         with self._lock:

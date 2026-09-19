@@ -21,6 +21,7 @@ from equity_scan_profiling import (
     call as profile_call, timed as profile_timed, observe_health_cache,
     snapshot as scan_profile_snapshot,
 )
+from equity_evidence_delivery import get_equity_sender, in_equity_worker, equity_evidence_worker
 from equity_manual_review import (
     POLICY as EQUITY_MANUAL_QUOTE_POLICY,
     ManualReviewError,
@@ -1050,7 +1051,7 @@ def _flush_evidence_outbox(limit=50):
     if not DURABLE_REPOSITORY.configured:
         return {"delivered": 0, "failed": 0}
     delivered = failed = 0
-    for pending in EVIDENCE_LEDGER.pending_deliveries(limit=limit):
+    for pending in EVIDENCE_LEDGER.pending_deliveries(limit=limit, delivery_lane="legacy"):
         try:
             _append_durable_with_retry(pending)
             EVIDENCE_LEDGER.mark_delivered(pending["idempotency_key"])
@@ -1071,26 +1072,28 @@ def _record_trade_evidence(*, aggregate_id, event_type, payload, effective_at,
     }
     identifiers = payload.get("identifiers") if isinstance(payload, dict) else {}
     identified_asset = asset_class or (payload.get("asset_class") if isinstance(payload, dict) else None) or (identifiers or {}).get("asset_class")
+    equity_context = in_equity_worker() and not identified_asset
     atomic_equity_delivery = (
-        DURABLE_REPOSITORY.configured and str(identified_asset or "").casefold() == "equity"
+        DURABLE_REPOSITORY.configured and
+        (str(identified_asset or "").casefold() == "equity" or equity_context)
     )
     try:
         local_event = EVIDENCE_LEDGER.append(
             **delivery, queue_remote_delivery=atomic_equity_delivery,
+            equity_scan_context=equity_context,
         )
     except Exception as exc:
         LOGGER.error("Local evidence ledger append failed: %s", type(exc).__name__)
         return None
     if DURABLE_REPOSITORY.configured:
         if atomic_equity_delivery:
-            # The event and outbox row were committed together. The outbox is
-            # now the only remote-delivery path, avoiding a redundant direct
-            # submission after the same event has already been delivered.
+            # Event and outbox row are already committed together. Wake the
+            # independent sender; never perform/wait for network I/O here.
             try:
-                _flush_evidence_outbox()
+                get_equity_sender(EVIDENCE_LEDGER, DURABLE_REPOSITORY).notify()
             except Exception as exc:
                 # The committed queue row remains available for a later retry.
-                LOGGER.error("Equity evidence outbox flush failed: %s", type(exc).__name__)
+                LOGGER.error("Equity evidence sender notification failed: %s", type(exc).__name__)
         else:
             try:
                 _flush_evidence_outbox()
@@ -1207,6 +1210,8 @@ def _refresh_equity_order(candidate, *, quantity, limit_price, token, governance
 
 
 try:
+    if DURABLE_REPOSITORY.configured:
+        get_equity_sender(EVIDENCE_LEDGER, DURABLE_REPOSITORY).notify()
     _EVIDENCE_OUTBOX_STARTUP = _flush_evidence_outbox()
 except Exception as exc:
     LOGGER.warning("Evidence outbox startup flush deferred: %s", type(exc).__name__)
@@ -8665,6 +8670,7 @@ elif selected_tab == "Equities Screener & Risk":
             if _recovering:
                 _fresh_stage1_candidates = set(stage1_shortlist)
 
+                @equity_evidence_worker
                 def _evaluate_recovered_stock(ticker):
                     if ticker not in _fresh_stage1_candidates:
                         return None, {
@@ -8679,7 +8685,7 @@ elif selected_tab == "Equities Screener & Risk":
                     metadata=_job_metadata,
                 )
             else:
-                _jobs.start(CURRENT_USER_ID, _signature, stage1_shortlist, evaluate_stock,
+                _jobs.start(CURRENT_USER_ID, _signature, stage1_shortlist, equity_evidence_worker(evaluate_stock),
                     workers=scan_workers, timeout=180 if scan_mode.startswith("Full") else 90,
                     metadata=_job_metadata,
                 )
@@ -8854,6 +8860,7 @@ elif selected_tab == "Equities Screener & Risk":
                     st.dataframe(pd.DataFrame(bd_rows), width='stretch', hide_index=True)
             _timing_profile = scan_profile_snapshot(_job['id']) if _job else None
             if _timing_profile:
+                _timing_profile["background_delivery"] = get_equity_sender(EVIDENCE_LEDGER, DURABLE_REPOSITORY).snapshot()
                 st.caption("Detailed timings include overlapping worker and nested stages; do not add them as wall time. Running stages have no completed duration yet. Available only while this server process retains the scan.")
                 st.download_button("Download scan timing diagnostics (JSON)",
                                    json.dumps(_timing_profile, indent=2),
