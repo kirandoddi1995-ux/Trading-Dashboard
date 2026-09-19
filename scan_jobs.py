@@ -13,6 +13,10 @@ import threading
 import time
 import uuid
 import datetime as dt
+from equity_scan_profiling import (
+    call as profile_call, timed as profile_timed, profile_controller,
+    run_candidate, milestone, candidate_context, span,
+)
 
 
 class ScanBusy(RuntimeError):
@@ -73,6 +77,7 @@ class ScanJobs:
                 "checkpoint_conflicts":job.get("checkpoint_conflicts",0),
                 "error":job.get("error")}
 
+    @profile_timed("checkpoint_sqlite_job_summary")
     def _persist(self, owner, signature, job, status=None):
         if not self._db_path: return
         elapsed=max(time.time()-job["started_at"],1e-6); rate=job["processed"]/elapsed
@@ -139,7 +144,7 @@ class ScanJobs:
         quote_at = (result or {}).get("_quote_observed_at")
         governance_at = ((result or {}).get("_governance") or {}).get("decision_at")
         if self._checkpoint_store is not None and self._checkpoint_store.configured:
-            if not self._checkpoint_store.checkpoint_candidate(
+            if not profile_call("checkpoint_postgres_candidate", self._checkpoint_store.checkpoint_candidate,
                 run_id=job["id"], instrument=instrument,
                 fencing_token=job["fencing_token"], result=self._safe_json(result),
                 rejection=self._safe_json(rejection), quote_observed_at=quote_at,
@@ -147,9 +152,10 @@ class ScanJobs:
             ):
                 return False
         if self._db_path:
-            conn = self._connect()
-            try:
-                changed = conn.execute("""UPDATE durable_scan_candidates
+            with span("checkpoint_sqlite_candidate"):
+                conn = self._connect()
+                try:
+                    changed = conn.execute("""UPDATE durable_scan_candidates
                   SET status='COMPLETE',result_json=?,rejection_json=?,quote_observed_at=?,
                       governance_decision_at=?,updated_at=?
                   WHERE job_id=? AND instrument=? AND fencing_token=?
@@ -158,9 +164,9 @@ class ScanJobs:
                     json.dumps(self._safe_json(rejection), separators=(",", ":")) if rejection is not None else None,
                     quote_at, governance_at, time.time(), job["id"], instrument,
                     int(job["fencing_token"]))).rowcount
-                conn.commit()
-            finally:
-                conn.close()
+                    conn.commit()
+                finally:
+                    conn.close()
             if changed != 1:
                 return False
         return True
@@ -342,13 +348,15 @@ class ScanJobs:
         if sum(x['Category'] == category for x in job['examples']) < 5:
             job['examples'].append(row)
 
+    @profile_controller
     def _run(self, job, items, worker, workers, timeout):
         executor = None
         started = time.monotonic()
         pending = set()
         try:
             executor = futures.ThreadPoolExecutor(max_workers=max(1, min(int(workers), 12)))
-            tasks = {executor.submit(worker, item): item for item in items}
+            tasks = {executor.submit(run_candidate, job['id'], self._instrument(item),
+                                     time.perf_counter(), worker, item): item for item in items}
             pending = set(tasks)
             deadline = started + max(float(timeout), .01)
             while pending and time.monotonic() < deadline:
@@ -370,7 +378,9 @@ class ScanJobs:
                                     'category': 'Recovery',
                                     'reason': 'Recovered candidate lacked a fresh quote and governance re-evaluation',
                                 }
-                            if not self._checkpoint_candidate(job, tasks[future], result, rejection):
+                            with candidate_context(job['id'], self._instrument(tasks[future])):
+                                checkpoint_ok = self._checkpoint_candidate(job, tasks[future], result, rejection)
+                            if not checkpoint_ok:
                                 job['checkpoint_conflicts'] += 1
                                 continue
                             if result is not None:
@@ -383,6 +393,7 @@ class ScanJobs:
                             self._checkpoint_candidate(job, tasks[future], None, rejection)
                             self._reject(job, tasks[future], 'Error', type(exc).__name__)
                     self._persist(job["owner"],job["signature"],job,"RUNNING")
+            milestone(job['id'], "result_collection_ended")
             with self._lock:
                 for future in pending:
                     future.cancel()
@@ -408,7 +419,7 @@ class ScanJobs:
                 )
                 self._persist(job["owner"],job["signature"],job,final_status)
                 if self._checkpoint_store is not None and self._checkpoint_store.configured:
-                    self._checkpoint_store.heartbeat(
+                    profile_call("checkpoint_postgres_heartbeat", self._checkpoint_store.heartbeat,
                         job["id"], job["fencing_token"],
                         status=final_status,
                         finished_at=job["finished_at"], error_kind=job.get("error"),

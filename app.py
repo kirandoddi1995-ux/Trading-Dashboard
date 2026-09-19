@@ -17,6 +17,10 @@ from reliable_charts import render_chart
 from scan_jobs import ScanJobs, ScanBusy, CheckpointUnavailable
 from equity_scan_repository import EquityScanRepository
 from equity_runtime_health import clock_error, measure_clock, recovery_health, release_fingerprint
+from equity_scan_profiling import (
+    call as profile_call, timed as profile_timed, observe_health_cache,
+    snapshot as scan_profile_snapshot,
+)
 from equity_manual_review import (
     POLICY as EQUITY_MANUAL_QUOTE_POLICY,
     ManualReviewError,
@@ -1027,12 +1031,13 @@ DURABLE_REPOSITORY = get_production_repository(
 )
 
 
+@profile_timed("remote_event_delivery_with_retries")
 def _append_durable_with_retry(event, attempts=3):
     """Idempotently deliver one ledger event with bounded exponential retry."""
     last_error = None
     for attempt in range(max(int(attempts), 1)):
         try:
-            return DURABLE_REPOSITORY.append_evidence_event(**event)
+            return profile_call("remote_event_delivery_attempt", DURABLE_REPOSITORY.append_evidence_event, **event)
         except Exception as exc:
             last_error = exc
             if attempt + 1 < attempts:
@@ -1040,6 +1045,7 @@ def _append_durable_with_retry(event, attempts=3):
     raise last_error
 
 
+@profile_timed("evidence_outbox_flush")
 def _flush_evidence_outbox(limit=50):
     if not DURABLE_REPOSITORY.configured:
         return {"delivered": 0, "failed": 0}
@@ -2770,10 +2776,12 @@ def get_equity_scan_repository():
     return EquityScanRepository(connect)
 
 
+@observe_health_cache
 @st.cache_data(ttl=30, show_spinner=False)
+@profile_timed("health_cache_refresh")
 def get_equity_runtime_health():
     # Cache measured evidence briefly; validators also independently enforce age.
-    clock = measure_clock()
+    clock = profile_call("clock_measurement", measure_clock)
     failure = clock_error(clock, now=datetime.datetime.now(datetime.timezone.utc),
                           maximum_offset=float(RESILIENCE_CONTROL_PLANE.policy.section('clock')['maximum_ntp_offset_seconds']))
     return {"clock": clock, "clock_check": failure or "PASS",
@@ -8079,6 +8087,7 @@ elif selected_tab == "Equities Screener & Risk":
 
         def evaluate_stock(ticker):
             from equity_observation_capture import EquityCapture
+            from equity_scan_profiling import call as profile_call, span as profile_span
             observation = EquityCapture(
                 identity={"strategy_id": STRATEGY_VERSION, "scanner_strategy_id": _scanner_strategy_version,
                           "target_version": TARGET_VERSION, "code_hash": RUNTIME_CODE_HASH,
@@ -8203,12 +8212,12 @@ elif selected_tab == "Equities Screener & Risk":
                 # meaningful non-overlapping sample after indicator warm-up. The
                 # estimator still returns N/A when evidence is insufficient.
                 _hist_t0 = time.perf_counter()
-                df = get_cached_history(key, access_token, days=1200, fetch_fn=fetch_upstox_history)
+                df = profile_call("history_retrieval", get_cached_history, key, access_token, days=1200, fetch_fn=fetch_upstox_history)
                 if df.empty or len(df) < 210:
                     analysis_timing_log.append(("history_retrieval", time.perf_counter() - _hist_t0))
                     return _reject("Data", "Insufficient price history (need 210+ trading days)")
 
-                df = prepare_live_daily_bar(df, raw_quote)
+                df = profile_call("history_live_bar", prepare_live_daily_bar, df, raw_quote)
                 analysis_timing_log.append(("history_retrieval", time.perf_counter() - _hist_t0))
                 if df.empty or len(df) < 210:
                     return _reject("Data", "Insufficient price history after live update")
@@ -8216,14 +8225,14 @@ elif selected_tab == "Equities Screener & Risk":
                 price = float(live_price) if live_price and float(live_price) > 0 else float(df['Close'].iloc[-1])
 
                 _indicators_t0 = time.perf_counter()
-                df, feature_cache_mode = TECHNICAL_FEATURE_STORE.enrich(
+                df, feature_cache_mode = profile_call("indicator_enrichment", TECHNICAL_FEATURE_STORE.enrich,
                     key, df, lambda source: compute_feature_frame(source, ta),
                 )
                 last_dir = df['ST_direction'].iloc[-1] if 'ST_direction' in df.columns else np.nan
                 supertrend_bullish = (last_dir == 1) if not pd.isna(last_dir) else None
 
-                weekly_trend = get_weekly_trend(df)
-                rs_vs_nifty = relative_strength_vs_nifty(df, lookback=min(20, len(df) - 1))
+                weekly_trend = profile_call("indicator_weekly_trend", get_weekly_trend, df)
+                rs_vs_nifty = profile_call("indicator_relative_strength", relative_strength_vs_nifty, df, lookback=min(20, len(df) - 1))
                 analysis_timing_log.append((f"indicators_{feature_cache_mode}", time.perf_counter() - _indicators_t0))
 
                 df_clean = df.dropna(subset=['EMA_20', 'EMA_50', 'EMA_200', 'ATR'])
@@ -8358,7 +8367,8 @@ elif selected_tab == "Equities Screener & Risk":
                 # EMA-200 warm-up period before this estimator performed its own
                 # EMA/ADX warm-up, making the sample minimum structurally
                 # unreachable for common 15-day horizons.
-                probability_result = compute_historical_setup_probability(df, horizon_days=custom_days)
+                with profile_span("historical_probability"):
+                    probability_result = compute_historical_setup_probability(df, horizon_days=custom_days)
                 analysis_timing_log.append(("historical_probability", time.perf_counter() - _prob_t0))
                 historical_win_prob = probability_result.get('win_probability') if probability_result else None
                 probability_ci = (
@@ -8451,15 +8461,15 @@ elif selected_tab == "Equities Screener & Risk":
                 # risk changing signal_strength/Conviction results in ways not
                 # yet tested. Shown side-by-side so you can compare, not replace.
                 _tq_t0 = time.perf_counter()
-                trend_quality = compute_trend_quality_score(df_clean)
+                trend_quality = profile_call("indicator_trend_quality", compute_trend_quality_score, df_clean)
                 analysis_timing_log.append(("trend_quality", time.perf_counter() - _tq_t0))
                 _vq_t0 = time.perf_counter()
-                volume_quality = compute_volume_quality_score(df_clean)
+                volume_quality = profile_call("indicator_volume_quality", compute_volume_quality_score, df_clean)
                 analysis_timing_log.append(("volume_quality", time.perf_counter() - _vq_t0))
                 # PHASE 3 — Breakout Quality Engine: composed from the two
                 # functions above (already computed, passed in — zero duplicate
                 # calculation) plus ATR expansion, ADX percentile, and RS.
-                breakout_quality = compute_breakout_quality_score(
+                breakout_quality = profile_call("indicator_breakout_quality", compute_breakout_quality_score,
                     df_clean, rs_vs_nifty=rs_vs_nifty,
                     trend_quality=trend_quality, volume_quality=volume_quality,
                 )
@@ -8842,6 +8852,13 @@ elif selected_tab == "Equities Screener & Risk":
                     st.markdown("**Analysis Stage Breakdown** (sum of per-candidate time across the whole scan — candidates run in parallel, so this total can exceed the wall-clock Analysis time above)")
                     bd_rows = [{"Stage": k, "Total (s)": v["total"], "Calls": v["count"], "Avg/call (s)": v["avg"]} for k, v in sorted(breakdown.items(), key=lambda x: -x[1]["total"])]
                     st.dataframe(pd.DataFrame(bd_rows), width='stretch', hide_index=True)
+            _timing_profile = scan_profile_snapshot(_job['id']) if _job else None
+            if _timing_profile:
+                st.caption("Detailed timings include overlapping worker and nested stages; do not add them as wall time. Running stages have no completed duration yet. Available only while this server process retains the scan.")
+                st.download_button("Download scan timing diagnostics (JSON)",
+                                   json.dumps(_timing_profile, indent=2),
+                                   file_name=f"equity-scan-timings-{_job['id']}.json",
+                                   mime="application/json", key=f"scan_profile_{_diag_suffix}")
             st.markdown("**Rejection/data issues** — count, % of submitted candidates, and a sample")
             if rejection_counts:
                 _total_analyzed_for_pct = max(analyzed, 1)

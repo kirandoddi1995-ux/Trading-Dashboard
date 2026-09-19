@@ -12,6 +12,7 @@ import socket
 import struct
 import threading
 import time
+from equity_scan_profiling import call as profile_call
 
 UTC = dt.timezone.utc
 MAX_AGE_SECONDS = 60
@@ -29,6 +30,7 @@ RELEASE_FILES = (
     "runtime_evidence_store.py", "evidence_ledger.py", "decision_evidence.py",
     "evidence_tiers.py", "point_in_time.py", "feature_store.py", "prediction_validation.py",
     "production_repository.py", "scan_jobs.py", "scanner_funnel.py", "technical_indicators.py",
+    "equity_scan_profiling.py",
 )
 
 
@@ -126,9 +128,9 @@ def clock_error(evidence, *, now, maximum_offset):
 def recovery_health(repository, ledger):
     """Read existing state only. A first empty installation is not proven healthy."""
     try:
-        checkpoint = repository.recovery_health()
-        integrity = ledger.verify()
-        outbox = ledger.outbox_stats()
+        checkpoint = profile_call("recovery_checkpoint_health", repository.recovery_health)
+        integrity = profile_call("ledger_verification", ledger.verify)
+        outbox = profile_call("ledger_outbox_health", ledger.outbox_stats)
         valid = (checkpoint.get("status") == "PASS" and integrity.get("valid") is True
                  and integrity.get("events_checked", 0) > 0)
         return {"status": "PASS" if valid else "UNAVAILABLE",
