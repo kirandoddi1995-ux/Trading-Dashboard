@@ -16,7 +16,7 @@ from market_data_gateway import get_market_data_gateway
 from reliable_charts import render_chart
 from scan_jobs import ScanJobs, ScanBusy, CheckpointUnavailable
 from equity_scan_repository import EquityScanRepository
-from equity_positions import PositionRepository, PositionError, portfolio_heat
+from equity_positions import PositionRepository, PositionError, portfolio_heat, trade_journal_summary
 from equity_runtime_health import clock_error, measure_clock, recovery_health, release_fingerprint
 from equity_scan_profiling import (
     call as profile_call, timed as profile_timed, observe_health_cache,
@@ -1299,6 +1299,37 @@ def load_persistent_positions(owner):
     return PositionRepository(DURABLE_REPOSITORY).list_open(owner)
 
 
+@st.cache_data(ttl=30)
+def load_closed_positions(owner):
+    return PositionRepository(DURABLE_REPOSITORY).list_closed(owner)
+
+
+def render_pnl_journal_panel():
+    st.subheader('P&L Journal — closed equity positions')
+    try:
+        rows = load_closed_positions(persistent_position_owner())
+        summary = trade_journal_summary(rows)
+    except Exception as exc:
+        _position_error(exc)
+        return
+    a, b, c, d = st.columns(4)
+    a.metric('Total P&L', f"₹{summary['total_pnl']:,.2f}" if summary['total_pnl'] is not None else 'N/A')
+    b.metric('Win Rate', f"{summary['win_rate']:.1f}%" if summary['win_rate'] is not None else 'N/A')
+    c.metric('Avg R', f"{summary['avg_r']:.2f}" if summary['avg_r'] is not None else 'N/A')
+    d.metric('Total Trades', summary['total_trades'])
+    st.caption('Gross P&L before fees/taxes. R uses the recorded initial stop. Holding days are whole elapsed days between journal timestamps, not verified broker fill times.')
+    unpriced = sum(r['pnl'] is None for r in rows)
+    if unpriced:
+        st.warning(f'{unpriced} closed trade(s) have no exit price. P&L, win rate and Avg R cover only priced trades; breakevens remain in the win-rate denominator.')
+    if rows:
+        columns = ['ticker', 'entry_price', 'stop_price', 'target_price', 'quantity',
+                   'exit_price', 'pnl', 'r_multiple', 'holding_days', 'outcome', 'closed_at']
+        st.dataframe(pd.DataFrame(rows).sort_values('closed_at', ascending=False)[columns],
+                     hide_index=True, width='stretch')
+    else:
+        st.info('No closed positions recorded.')
+
+
 def record_persistent_position(owner, request_id, **values):
     result = PositionRepository(DURABLE_REPOSITORY).record(owner, request_id, **values)
     load_persistent_positions.clear()
@@ -1308,6 +1339,7 @@ def record_persistent_position(owner, request_id, **values):
 def close_persistent_position(owner, position_id, **values):
     result = PositionRepository(DURABLE_REPOSITORY).close(owner, position_id, **values)
     load_persistent_positions.clear()
+    load_closed_positions.clear()
     return result
 
 
@@ -7648,6 +7680,7 @@ elif selected_tab == "Equities Screener & Risk":
     st.subheader("Equities Technical Screener & Position Sizing Engine")
     st.markdown("Rule-based research candidates, risk scenarios, and historical evidence—not a guarantee of future performance.")
     render_portfolio_heat_panel()
+    render_pnl_journal_panel()
 
     resolvable_quick_tickers = [t for t in LIQUID_CORE_TICKERS if instrument_dict.get(t)]
     quick_scan_available = len(resolvable_quick_tickers) >= 50

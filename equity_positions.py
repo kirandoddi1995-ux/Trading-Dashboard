@@ -1,6 +1,7 @@
 """Compact manual position journal. Never execution/model evidence or order routing."""
 from contextlib import contextmanager
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
+from datetime import timezone
 import hashlib
 import json
 import re
@@ -69,6 +70,26 @@ def portfolio_heat(rows, capital, max_sector_pct):
                  for s, v in sorted(sectors.items(), key=lambda pair: (-pair[1], pair[0]))])
 
 
+def trade_journal_summary(rows):
+    """Gross results; unpriced closes count as trades but not measured outcomes."""
+    priced = [r for r in rows if r['pnl'] is not None]
+    wins = sum(r['pnl'] > 0 for r in priced)
+    losses = sum(r['pnl'] < 0 for r in priced)
+    best = max(priced, key=lambda r: r['pnl']) if priced else None
+    worst = min(priced, key=lambda r: r['pnl']) if priced else None
+    with localcontext() as ctx:
+        ctx.prec = 50
+        total = sum((r['pnl'] for r in priced), Decimal(0))
+        rate = Decimal(wins) * 100 / len(priced) if priced else Decimal(0)
+        avg = sum((r['r_multiple'] for r in priced), Decimal(0)) / len(priced) if priced else Decimal(0)
+        return dict(total_trades=len(rows), wins=wins, losses=losses,
+            win_rate=rate.quantize(Decimal('.1'), rounding=ROUND_HALF_UP) if priced or not rows else None,
+            avg_r=avg.quantize(Decimal('.01'), rounding=ROUND_HALF_UP) if priced or not rows else None,
+            total_pnl=total if priced or not rows else None,
+            best_trade={k: best[k] for k in ('ticker', 'pnl')} if best else None,
+            worst_trade={k: worst[k] for k in ('ticker', 'pnl')} if worst else None)
+
+
 COLUMNS = ('position_id', 'ticker', 'sector', 'entry_price', 'stop_price', 'target_price',
            'quantity', 'recorded_at', 'closed_at', 'exit_price')
 
@@ -104,6 +125,31 @@ class PositionRepository:
             with conn.cursor() as cur:
                 cur.execute(f"SELECT {','.join(COLUMNS)} FROM equity_operations.positions WHERE owner_id=%s AND closed_at IS NULL ORDER BY recorded_at,position_id", (owner,))
                 return [dict(zip(COLUMNS, row)) for row in cur.fetchall()]
+
+    def list_closed(self, owner):
+        columns = (*COLUMNS, 'owner_id')
+        with self._connection(owner) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT {','.join(columns)} FROM equity_operations.positions WHERE owner_id=%s AND closed_at IS NOT NULL ORDER BY closed_at DESC,position_id", (owner,))
+                rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+        with localcontext() as ctx:
+            ctx.prec = 50
+            for row in rows:
+                # Whole elapsed 24-hour days, independent of database session timezone.
+                row['holding_days'] = (row['closed_at'].astimezone(timezone.utc)
+                                       - row['recorded_at'].astimezone(timezone.utc)).days
+                row.update(pnl=None, r_multiple=None, outcome='Unpriced')
+                if row['exit_price'] is None:
+                    continue  # Existing close() allows an unknown exit. Never invent one.
+                entry = money(row['entry_price'], 'Entry')
+                risk = entry - money(row['stop_price'], 'Stop')
+                if risk <= 0:
+                    raise PositionError('Closed position has invalid initial risk; R cannot be calculated')
+                change = money(row['exit_price'], 'Exit') - entry
+                row['pnl'] = change * Decimal(row['quantity'])
+                row['r_multiple'] = (change / risk).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+                row['outcome'] = 'Win' if row['pnl'] > 0 else 'Loss' if row['pnl'] < 0 else 'Breakeven'
+        return rows
 
     def record(self, owner, request_id, *, ticker, sector, entry, stop, target, quantity, confirmed):
         if confirmed is not True:
