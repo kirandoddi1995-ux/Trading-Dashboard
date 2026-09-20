@@ -46,6 +46,22 @@ jobs:
             requirements-archive.txt
             constraints.txt
       - run: python -m pip install -r requirements-archive.txt
+      - name: Test DB connection
+        env:
+          ARCHIVE_DATABASE_URL: ${{ secrets.ARCHIVE_DATABASE_URL }}
+        run: |
+          python - <<'PY'
+          import psycopg, os, re
+          url = os.environ.get('ARCHIVE_DATABASE_URL', 'NOT_SET')
+          masked = re.sub(r':[^:@]+@', ':***@', url)
+          print(f"URL: {masked}")
+          try:
+              with psycopg.connect(url) as conn:
+                  row = conn.execute("SELECT current_user, current_database()").fetchone()
+                  print(f"OK — user={row[0]}, db={row[1]}")
+          except Exception as e:
+              print(f"FAILED — {type(e).__name__}: {e}")
+          PY
       - name: Archive outside the dashboard and scan processes
         env:
           ARCHIVE_DATABASE_URL: ${{ secrets.ARCHIVE_DATABASE_URL }}
