@@ -1,5 +1,6 @@
 from contextlib import contextmanager
-from decimal import Decimal
+from decimal import Decimal, localcontext
+from datetime import datetime, timedelta, timezone
 import ast
 import os
 from pathlib import Path
@@ -8,13 +9,69 @@ import uuid
 
 import pytest
 
-from equity_positions import PositionRepository, PositionError, owner_identity, portfolio_heat, validate_position
+from equity_positions import PositionRepository, PositionError, owner_identity, portfolio_heat, validate_position, trade_journal_summary
 from test_equity_scan_repository import Connection
 
 
 OWNER = owner_identity('subject', 'issuer')
 ID = '00000000-0000-4000-8000-000000000001'
 VALUES = dict(ticker='ABC', sector='Unclassified', entry=100, stop=90, target=120, quantity=10)
+
+
+@pytest.mark.parametrize('exit_price,pnl,r_multiple,outcome', [
+    ('100.30', '.60', '2.00', 'Win'),
+    ('100.00', '-.30', '-1.00', 'Loss'),
+    ('100.10', '0', '0.00', 'Breakeven'),
+    ('100.2005', '.3015', '1.01', 'Win'),
+    (None, None, None, 'Unpriced'),
+])
+def test_list_closed_decimal_fields(exit_price, pnl, r_multiple, outcome):
+    journal, conn, backend = repo()
+    opened = datetime(2026, 9, 19, 9, tzinfo=timezone.utc)
+    conn.fetchall_values = [[(ID, 'ABC', 'Unclassified', Decimal('100.10'),
+        Decimal('100.00'), Decimal('120'), 3, opened, opened + timedelta(days=2, hours=3),
+        Decimal(exit_price) if exit_price is not None else None, OWNER)]]
+    with localcontext() as ctx:
+        ctx.prec = 6  # Computation must not inherit an insufficient caller precision.
+        row = journal.list_closed(OWNER)[0]
+        assert ctx.prec == 6
+    assert row['owner_id'] == OWNER and row['holding_days'] == 2
+    assert row['outcome'] == outcome
+    assert row['pnl'] == (Decimal(pnl) if pnl is not None else None)
+    assert row['r_multiple'] == (Decimal(r_multiple) if r_multiple is not None else None)
+    if pnl is not None:
+        assert isinstance(row['pnl'], Decimal) and isinstance(row['r_multiple'], Decimal)
+    sql, params = conn.calls[-1]
+    assert 'closed_at IS NOT NULL ORDER BY closed_at DESC' in sql
+    assert params == (OWNER,) and backend.closed
+
+
+def test_trade_journal_summary_decimal_and_empty():
+    rows = [dict(ticker='WIN', pnl=Decimal('20.10'), r_multiple=Decimal('2.01')),
+            dict(ticker='LOSS', pnl=Decimal('-10.05'), r_multiple=Decimal('-1.01')),
+            dict(ticker='EVEN', pnl=Decimal('0'), r_multiple=Decimal('0'))]
+    summary = trade_journal_summary(rows)
+    assert summary == dict(total_trades=3, wins=1, losses=1, win_rate=Decimal('33.3'),
+        avg_r=Decimal('.33'), total_pnl=Decimal('10.05'),
+        best_trade=dict(ticker='WIN', pnl=Decimal('20.10')),
+        worst_trade=dict(ticker='LOSS', pnl=Decimal('-10.05')))
+    assert all(isinstance(summary[k], Decimal) for k in ('total_pnl', 'avg_r', 'win_rate'))
+    assert trade_journal_summary([]) == dict(total_trades=0, wins=0, losses=0,
+        win_rate=Decimal('0.0'), avg_r=Decimal('0.00'), total_pnl=Decimal(0),
+        best_trade=None, worst_trade=None)
+    unknown = dict(ticker='UNKNOWN', pnl=None, r_multiple=None)
+    assert trade_journal_summary([unknown])['total_pnl'] is None
+    assert trade_journal_summary(rows + [unknown])['win_rate'] == Decimal('33.3')
+    assert trade_journal_summary(rows + [unknown])['total_trades'] == 4
+
+
+def test_journal_ui_cache_and_close_invalidation():
+    source = (Path(__file__).resolve().parents[1] / 'app.py').read_text(encoding='utf-8')
+    assert '@st.cache_data(ttl=30)\ndef load_closed_positions(owner):' in source
+    assert 'render_portfolio_heat_panel()\n    render_pnl_journal_panel()' in source
+    close = next(n for n in ast.parse(source).body
+                 if isinstance(n, ast.FunctionDef) and n.name == 'close_persistent_position')
+    assert 'load_closed_positions.clear()' in ast.unparse(close)
 
 
 class Backend:
@@ -209,7 +266,7 @@ def test_streamlit_position_form_and_heat_panel():
     from streamlit.testing.v1 import AppTest
     source = (Path(__file__).resolve().parents[1] / 'app.py').read_text(encoding='utf-8')
     names = {'_position_error', 'render_position_entry_form', 'render_portfolio_heat_panel',
-             'render_persistent_positions_sidebar'}
+             'render_persistent_positions_sidebar', 'render_pnl_journal_panel'}
     functions = '\n\n'.join(ast.unparse(n) for n in ast.parse(source).body
                             if isinstance(n, ast.FunctionDef) and n.name in names)
     script = '''
@@ -217,7 +274,7 @@ import streamlit as st
 import pandas as pd
 import uuid, logging
 from types import SimpleNamespace
-from equity_positions import PositionError, portfolio_heat, validate_position
+from equity_positions import PositionError, portfolio_heat, validate_position, trade_journal_summary
 LOGGER=logging.getLogger('ui-test')
 DURABLE_REPOSITORY=SimpleNamespace(configured=True)
 investment_capital=1000
@@ -227,6 +284,7 @@ persistent_position_owner=lambda: 'a'*64
 get_sector_bucket=lambda ticker:'Unclassified'
 get_positions_df=lambda owner:pd.DataFrame()
 _rerun_with_metrics=st.rerun
+load_closed_positions=lambda owner:st.session_state.get('closed_rows', [])
 def load_persistent_positions(owner):
     return st.session_state.setdefault('rows', [])
 def record_persistent_position(owner, request_id, **values):
@@ -239,13 +297,17 @@ def record_persistent_position(owner, request_id, **values):
     return request_id,True
 def close_persistent_position(owner, selected, **values):
     if not values.get('confirmed'):raise PositionError('Confirmation required')
+    row=next(r for r in st.session_state.rows if r['position_id']==selected)
+    st.session_state.setdefault('closed_rows', []).append(dict(row, closed_at='2026-09-21',
+        exit_price=None,pnl=None,r_multiple=None,holding_days=1,outcome='Unpriced'))
     st.session_state.rows=[r for r in st.session_state.rows if r['position_id']!=selected]
 '''+functions+'''
 with st.sidebar:
     render_persistent_positions_sidebar()
 render_portfolio_heat_panel()
+render_pnl_journal_panel()
 '''
-    at = AppTest.from_string(script).run()
+    at = AppTest.from_string(script, default_timeout=30).run()
     assert not at.exception
     at.text_input[0].set_value('ABC')
     for label, value in [('Actual average entry (₹)',100),('Planned stop (₹)',90),('Planned target (₹)',120)]:
@@ -258,3 +320,5 @@ render_portfolio_heat_panel()
     next(b for b in at.button if b.label == 'Mark fully closed').click().run()
     assert not at.exception
     assert at.metric[0].value == '₹0.00'
+    assert at.metric[-1].value == '1'
+    assert any('no exit price' in message.value for message in at.warning)
