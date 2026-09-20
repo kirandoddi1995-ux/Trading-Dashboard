@@ -16,6 +16,7 @@ from market_data_gateway import get_market_data_gateway
 from reliable_charts import render_chart
 from scan_jobs import ScanJobs, ScanBusy, CheckpointUnavailable
 from equity_scan_repository import EquityScanRepository
+from equity_positions import PositionRepository, PositionError, portfolio_heat
 from equity_runtime_health import clock_error, measure_clock, recovery_health, release_fingerprint
 from equity_scan_profiling import (
     call as profile_call, timed as profile_timed, observe_health_cache,
@@ -1282,6 +1283,138 @@ def get_sector_bucket(ticker):
 # ==========================================
 # PORTFOLIO POSITIONS & SECTOR EXPOSURE
 # ==========================================
+def persistent_position_owner():
+    """Stable single-user journal namespace; not an authentication mechanism."""
+    try:
+        key = st.secrets.get('positions', {}).get('owner_key')
+    except (FileNotFoundError, AttributeError, TypeError):
+        key = None
+    if not isinstance(key, str) or not key.strip():
+        raise PositionError('Set a non-empty string owner_key under [positions] in Streamlit Secrets. Keep it unchanged to retain access to your positions.')
+    return hashlib.sha256(key.strip().encode('utf-8')).hexdigest()
+
+
+@st.cache_data(ttl=5, show_spinner=False)
+def load_persistent_positions(owner):
+    return PositionRepository(DURABLE_REPOSITORY).list_open(owner)
+
+
+def record_persistent_position(owner, request_id, **values):
+    result = PositionRepository(DURABLE_REPOSITORY).record(owner, request_id, **values)
+    load_persistent_positions.clear()
+    return result
+
+
+def close_persistent_position(owner, position_id, **values):
+    result = PositionRepository(DURABLE_REPOSITORY).close(owner, position_id, **values)
+    load_persistent_positions.clear()
+    return result
+
+
+def _position_error(exc):
+    LOGGER.warning('Position journal unavailable: %s', type(exc).__name__)
+    st.error(str(exc) if isinstance(exc, PositionError) else
+             'Could not confirm the position operation. Check the database/migration, then retry the same request. No local fallback is used.')
+
+
+def render_position_entry_form(key, *, defaults=None, actionable=True):
+    """Manual journal only: proposed sizing is never silently asserted as a fill."""
+    values = defaults or {}
+    try:
+        owner = persistent_position_owner()
+        if not DURABLE_REPOSITORY.configured:
+            raise PositionError('Persistent database is not configured')
+    except Exception as exc:
+        _position_error(exc)
+        return
+    request_key = key + ':request'
+    if request_key not in st.session_state:
+        st.session_state[request_key] = str(uuid.uuid4())
+    with st.form(key, clear_on_submit=False):
+        ticker = st.text_input('Equity ticker', value=values.get('ticker', ''), disabled=bool(defaults))
+        entry = st.number_input('Actual average entry (₹)', min_value=0.0, value=float(values.get('entry', 0)), step=.01, format='%.4f')
+        quantity = st.number_input('Actual shares held', min_value=1, value=int(values.get('quantity', 1)), step=1)
+        stop = st.number_input('Planned stop (₹)', min_value=0.0, value=float(values.get('stop', 0)), step=.01, format='%.4f')
+        target = st.number_input('Planned target (₹)', min_value=0.0, value=float(values.get('target', 0)), step=.01, format='%.4f')
+        confirmed = st.checkbox('I already hold these shares and confirm the actual entry and quantity above.')
+        st.caption('Records a manually confirmed holding only. Does not place an order, verify a broker fill, or authorize a trade.')
+        submitted = st.form_submit_button('Track Position', disabled=not actionable)
+    if submitted:
+        try:
+            _, created = record_persistent_position(owner, st.session_state[request_key],
+                ticker=ticker, sector=get_sector_bucket(ticker), entry=entry, stop=stop,
+                target=target, quantity=quantity, confirmed=confirmed)
+            st.session_state.pop(request_key, None)
+            st.session_state['_position_notice'] = 'Position saved.' if created else 'Position was already saved; no duplicate added.'
+        except Exception as exc:
+            _position_error(exc)
+        else:
+            _rerun_with_metrics()
+
+
+def render_portfolio_heat_panel():
+    st.subheader('My equity portfolio — manual journal')
+    if st.session_state.get('_position_notice'):
+        st.success(st.session_state.pop('_position_notice'))
+    try:
+        positions = load_persistent_positions(persistent_position_owner())
+        heat = portfolio_heat(positions, investment_capital, max_sector_exposure_pct)
+    except Exception as exc:
+        _position_error(exc)
+        st.warning('Portfolio exposure is unavailable, not zero. Do not rely on this panel for sizing until restored.')
+        return
+    a, b, c, d = st.columns(4)
+    a.metric('Deployed (entry cost)', f"₹{heat['deployed']:,.2f}")
+    b.metric('Unallocated capital', f"₹{heat['unallocated']:,.2f}")
+    c.metric('Planned loss to stops', f"₹{heat['planned_risk']:,.2f}")
+    d.metric('Portfolio heat', f"{heat['heat_pct']:.2f}%" if heat['heat_pct'] is not None else 'N/A — capital is zero')
+    st.caption('Based on manually recorded long-equity holdings, not live valuations or broker cash. Entry cost excludes fees; stop-risk excludes fees, slippage and gaps and is not a maximum loss. Data may be cached for up to 5 seconds.')
+    if heat['unallocated'] < 0:
+        st.warning('Recorded positions exceed the configured capital. Negative unallocated capital is shown rather than hidden.')
+    if positions:
+        columns = ['ticker', 'sector', 'entry_price', 'stop_price', 'target_price', 'quantity', 'recorded_at']
+        st.dataframe(pd.DataFrame(positions)[columns], hide_index=True, width='stretch')
+        for sector in heat['sectors']:
+            percent = f"{sector['percent']:.1f}%" if sector['percent'] is not None else 'N/A'
+            text = f"{sector['sector']}: ₹{sector['deployed']:,.2f} ({percent} of configured capital)"
+            if sector['overweight']:
+                st.warning(text + f' — above your {max_sector_exposure_pct:.1f}% sector limit')
+            else:
+                st.caption(text)
+    else:
+        st.info('No open positions recorded for this authenticated account.')
+
+
+def render_persistent_positions_sidebar():
+    st.caption('Persistent, manually confirmed long-equity holdings. Close only after a full exit. Partial exits and scale-ins are not supported here.')
+    try:
+        owner = persistent_position_owner()
+        positions = load_persistent_positions(owner)
+    except Exception as exc:
+        _position_error(exc)
+        return
+    render_position_entry_form('sidebar_persistent_position')
+    if positions:
+        by_id = {str(p['position_id']): p for p in positions}
+        with st.form('close_persistent_position'):
+            selected = st.selectbox('Position to close', list(by_id), format_func=lambda key: f"{by_id[key]['ticker']} — {by_id[key]['quantity']} shares")
+            exit_price = st.number_input('Actual average exit price (optional, ₹)', min_value=0.0, value=None, step=.01, format='%.4f')
+            confirmed = st.checkbox('I confirm I exited ALL shares in this position.')
+            submitted = st.form_submit_button('Mark fully closed')
+        if submitted:
+            try:
+                close_persistent_position(owner, selected, exit_price=exit_price, confirmed=confirmed)
+                st.session_state['_position_notice'] = 'Position marked closed. History retained; no broker action was taken.'
+            except Exception as exc:
+                _position_error(exc)
+            else:
+                _rerun_with_metrics()
+    legacy = get_positions_df(CURRENT_USER_ID)
+    if not legacy.empty:
+        st.warning('Legacy SQLite entries still exist in this session. They are not included in the new journal: they lack entry/stop/target/quantity. Nothing was deleted or guessed.')
+        st.download_button('Export legacy positions', runtime.csv_bytes(legacy), 'legacy_positions.csv', 'text/csv')
+
+
 def add_position(ticker, capital_deployed, user_id, db_path=DEFAULT_DB_PATH):
     if not user_id:
         raise ValueError("Authenticated user_id is required")
@@ -2425,38 +2558,7 @@ if primary_section == "Settings":
     )
 
     with st.sidebar.expander("My Positions"):
-        st.caption("Visible only in this browser session. A browser reload starts a new session; no login or account recovery is configured. Used only for sector-exposure warnings.")
-        new_pos_ticker = st.text_input("Ticker", key="sb_new_pos_ticker", placeholder="e.g. HDFCBANK")
-        new_pos_capital = st.number_input(
-            "Capital Deployed (₹)", min_value=0.0, step=1000.0, key="sb_new_pos_capital",
-        )
-        if st.button("Add Position", key="sb_add_position", width='stretch'):
-            if new_pos_ticker and new_pos_capital > 0:
-                add_position(new_pos_ticker, new_pos_capital, CURRENT_USER_ID)
-                _rerun_with_metrics()
-            else:
-                st.warning("Enter both a ticker and a capital amount.")
-
-        positions_df = get_positions_df(CURRENT_USER_ID)
-        if not positions_df.empty:
-            for _, prow in positions_df.iterrows():
-                pcol1, pcol2 = st.columns([4, 1])
-                with pcol1:
-                    st.caption(f"{prow['ticker']} · {prow['sector']} · ₹{prow['capital_deployed']:,.0f}")
-                with pcol2:
-                    if st.button("Remove", key=f"sb_del_pos_{prow['id']}"):
-                        remove_position(prow['id'], CURRENT_USER_ID)
-                        _rerun_with_metrics()
-
-            exposure = get_sector_exposure(CURRENT_USER_ID)
-            if exposure:
-                st.markdown("**Sector breakdown**")
-                for sector, cap in sorted(exposure.items(), key=lambda x: -x[1]):
-                    pct = cap / investment_capital * 100.0 if investment_capital > 0 else 0.0
-                    flag = " — limit reached" if pct >= max_sector_exposure_pct else ""
-                    st.caption(f"{sector}: ₹{cap:,.0f} ({pct:.1f}%){flag}")
-        else:
-            st.caption("No positions logged yet.")
+        render_persistent_positions_sidebar()
 
 AUTOREFRESH_AVAILABLE = False
 try:
@@ -7545,6 +7647,7 @@ elif selected_tab == "Futures & Derivatives":
 elif selected_tab == "Equities Screener & Risk":
     st.subheader("Equities Technical Screener & Position Sizing Engine")
     st.markdown("Rule-based research candidates, risk scenarios, and historical evidence—not a guarantee of future performance.")
+    render_portfolio_heat_panel()
 
     resolvable_quick_tickers = [t for t in LIQUID_CORE_TICKERS if instrument_dict.get(t)]
     quick_scan_available = len(resolvable_quick_tickers) >= 50
@@ -9079,6 +9182,11 @@ elif selected_tab == "Equities Screener & Risk":
             cc6.metric("Position Size", f"{real_qty} shares" if real_qty > 0 else "Not actionable")
             cc7.metric("Capital Required", f"₹{capital_required:,.0f}" if real_qty > 0 else "N/A")
             cc8.metric("Confidence", sig["Conviction"])
+            if sizing_available and real_qty > 0 and investment_capital > 0:
+                with st.expander('Track this position after entering it'):
+                    render_position_entry_form('risk_track_' + str(sig['Ticker']), defaults=dict(
+                        ticker=sig['Ticker'], entry=entry, stop=sl_val, target=tgt_val, quantity=real_qty),
+                        actionable=sizing_available and sig.get('Action') == 'Buy')
 
         def _render_score_breakdown(sig):
             """Requirement 2: real weighted components of the actual ranking

@@ -33,6 +33,7 @@ RELEASE_FILES = (
     "equity_scan_profiling.py",
     "equity_evidence_delivery.py",
     "equity_checkpoint_delivery.py",
+    "equity_positions.py",
 )
 
 
