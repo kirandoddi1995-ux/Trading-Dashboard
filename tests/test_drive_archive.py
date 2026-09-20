@@ -2,6 +2,7 @@ import datetime as dt
 from decimal import Decimal
 import hashlib
 import io
+import json
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -159,6 +160,43 @@ def test_oauth_only_narrow_scope_and_fixed_token_endpoint():
                      {'refresh_token': ''}, {'type': 'service_account'}):
         with pytest.raises(ArchiveError):
             credentials({**token, **override})
+
+
+def test_runtime_credentials_reads_oauth_secret(monkeypatch):
+    token = dict(type='authorized_user', client_id='id', client_secret='secret',
+                 refresh_token='refresh', scopes=[SCOPE], token_uri=TOKEN_URI)
+    monkeypatch.setenv('DRIVE_OAUTH_TOKEN_JSON', json.dumps(token))
+    monkeypatch.setenv('DRIVE_SERVICE_ACCOUNT_JSON', 'must-not-be-read')
+    builder = Mock(wraps=credentials)
+    monkeypatch.setattr(maintenance, 'credentials', builder)
+    result = maintenance.build_drive_credentials()
+    builder.assert_called_once_with(token)
+    assert result.refresh_token == 'refresh'
+    assert result.scopes == [SCOPE]
+    assert result.token_uri == TOKEN_URI
+
+
+@pytest.mark.parametrize('raw', [None, '', '{private-secret', 'null', '[]', '{}'])
+def test_runtime_credentials_invalid_config_is_sanitized(monkeypatch, raw):
+    monkeypatch.setenv('DRIVE_SERVICE_ACCOUNT_JSON', '{"type":"service_account"}')
+    if raw is None:
+        monkeypatch.delenv('DRIVE_OAUTH_TOKEN_JSON', raising=False)
+    else:
+        monkeypatch.setenv('DRIVE_OAUTH_TOKEN_JSON', raw)
+    with pytest.raises(ArchiveError, match='^INVALID_OAUTH_CONFIGURATION$'):
+        maintenance.build_drive_credentials()
+
+
+@pytest.mark.parametrize('key,value', [
+    ('client_id', ''), ('client_secret', None), ('refresh_token', ' '),
+    ('client_id', 123), ('token_uri', None), ('scopes', SCOPE),
+    ('scopes', [SCOPE, 'https://www.googleapis.com/auth/drive']),
+])
+def test_credentials_rejects_incomplete_or_broad_configuration(key, value):
+    token = dict(type='authorized_user', client_id='id', client_secret='secret',
+                 refresh_token='refresh', scopes=[SCOPE], token_uri=TOKEN_URI)
+    with pytest.raises(ArchiveError, match='^INVALID_OAUTH_CONFIGURATION$'):
+        credentials({**token, key: value})
 
 
 def test_token_file_refuses_overwrite(tmp_path):
