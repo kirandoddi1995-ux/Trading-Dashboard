@@ -15,6 +15,7 @@ import re
 import pyarrow as pa
 import pyarrow.parquet as pq
 from google.auth.transport.requests import AuthorizedSession
+from google.oauth2.credentials import Credentials
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -43,6 +44,25 @@ KEYS = {'mf_nav': ('scheme_code', 'nav_date'),
 
 class ArchiveError(RuntimeError):
     """Safe error codes only: do not put credentials, payloads or HTTP bodies here."""
+
+
+def credentials(token_info):
+    """Build OAuth credentials locally; never trust token-provided endpoints/scopes."""
+    if not isinstance(token_info, dict):
+        raise ArchiveError('INVALID_OAUTH_CONFIGURATION')
+    if (token_info.get('type') != 'authorized_user'
+            or token_info.get('token_uri') != TOKEN_URI
+            or token_info.get('scopes') != [SCOPE]
+            or any(not isinstance(token_info.get(key), str)
+                   or not token_info[key].strip()
+                   for key in ('client_id', 'client_secret', 'refresh_token'))):
+        raise ArchiveError('INVALID_OAUTH_CONFIGURATION')
+    # Ignore any supplied access token: refresh using the validated configuration.
+    return Credentials(
+        token=None, refresh_token=token_info['refresh_token'],
+        token_uri=TOKEN_URI, client_id=token_info['client_id'],
+        client_secret=token_info['client_secret'], scopes=[SCOPE],
+    )
 
 
 def digest(data):

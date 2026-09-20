@@ -11,9 +11,8 @@ import json
 import os
 
 import psycopg
-from google.oauth2 import service_account
 
-from drive_archive import ArchiveError, DriveArchive, SPECS, upload_verified
+from drive_archive import ArchiveError, DriveArchive, SPECS, credentials, upload_verified
 
 ROLE = 'quant_archive_worker'
 UTC = dt.timezone.utc
@@ -170,11 +169,11 @@ def run_batch(repo, drive, table, cutoff, limit=1000, delete=False):
 
 
 def build_drive_credentials():
-    sa_info = json.loads(os.environ.get('DRIVE_SERVICE_ACCOUNT_JSON', '{}'))
-    if not sa_info or sa_info.get('type') != 'service_account':
-        raise ArchiveError('INVALID_SERVICE_ACCOUNT_CONFIGURATION')
-    return service_account.Credentials.from_service_account_info(
-        sa_info, scopes=['https://www.googleapis.com/auth/drive.file'])
+    try:
+        token_info = json.loads(os.environ.get('DRIVE_OAUTH_TOKEN_JSON', '{}'))
+    except (ValueError, TypeError):
+        raise ArchiveError('INVALID_OAUTH_CONFIGURATION') from None
+    return credentials(token_info)
 
 
 def main(argv=None):
