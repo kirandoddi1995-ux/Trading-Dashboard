@@ -1018,6 +1018,13 @@ def run(mode: str, *, nav_file=None) -> dict:
 
 
 def main(argv=None) -> int:
+    # Separate credentials and lifecycle: never run maintenance inside a scan or
+    # pass its flags to the production collector/migration parser.
+    import sys
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == ["--archive"]:
+        from archive_maintenance import main as archive_main
+        return archive_main(arguments[1:])
     configure_runtime_observability()
     parser = argparse.ArgumentParser(description="Collect durable market research evidence")
     parser.add_argument(

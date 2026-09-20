@@ -910,7 +910,11 @@ class ProductionRepository:
 
     def prior_average_volumes(self, instrument_keys: Iterable[str], *, as_of_date,
                               lookback=20) -> dict[str, float]:
-        """Average completed-session cumulative volume strictly before as_of_date."""
+        """Same captured daily maxima, retained beyond the raw-quote archive window.
+
+        Apply the reviewed daily-volume migration before deploying this reader.
+        Missing migration is an error, never a silent shortened-history fallback.
+        """
         self.ensure_schema()
         keys = list(dict.fromkeys(str(key) for key in instrument_keys if key))
         if not keys:
@@ -918,10 +922,10 @@ class ProductionRepository:
         with self.connect() as conn:
             rows = conn.execute(f"""
                 WITH daily AS (
-                    SELECT instrument_key,trade_date,MAX(volume)::double precision AS day_volume
-                    FROM {SCHEMA}.market_quotes
-                    WHERE instrument_key=ANY(%s) AND trade_date < %s AND volume IS NOT NULL
-                    GROUP BY instrument_key,trade_date
+                    SELECT instrument_key,trade_date,max_captured_volume::double precision AS day_volume
+                    FROM {SCHEMA}.market_daily_volumes
+                    WHERE instrument_key=ANY(%s) AND trade_date < %s
+                      AND max_captured_volume IS NOT NULL
                 ), ranked AS (
                     SELECT instrument_key,day_volume,
                            ROW_NUMBER() OVER (PARTITION BY instrument_key ORDER BY trade_date DESC) AS rn
@@ -1016,6 +1020,11 @@ class ProductionRepository:
             conn.commit()
 
     def archive_quotes(self, quotes: Iterable[Mapping], *, observed_at=None, source="Upstox Market Quote V3") -> int:
+        """Keep raw snapshots; the reviewed DB trigger updates daily maxima atomically.
+
+        The trigger also covers collectors running the previous release. No raw
+        snapshot is deleted here; verified Drive archival owns that operation.
+        """
         self.ensure_schema()
         observed_at = observed_at or _utcnow()
         rows = []

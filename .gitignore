@@ -28,3 +28,9 @@ htmlcov/
 # Generated exports
 *.csv
 *.xlsx
+
+# Drive archival credentials and local archive exports (never upload to GitHub)
+token.json
+client_secret*.json
+*.parquet
+archive-downloads/
