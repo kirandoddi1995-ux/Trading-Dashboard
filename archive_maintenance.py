@@ -11,6 +11,7 @@ import json
 import os
 
 import psycopg
+from google.oauth2 import service_account
 
 from drive_archive import ArchiveError, DriveArchive, SPECS, upload_verified
 
@@ -168,6 +169,14 @@ def run_batch(repo, drive, table, cutoff, limit=1000, delete=False):
             'retained': len(texts) - deleted, 'batch_id': manifest['batch_id']}
 
 
+def build_drive_credentials():
+    sa_info = json.loads(os.environ.get('DRIVE_SERVICE_ACCOUNT_JSON', '{}'))
+    if not sa_info or sa_info.get('type') != 'service_account':
+        raise ArchiveError('INVALID_SERVICE_ACCOUNT_CONFIGURATION')
+    return service_account.Credentials.from_service_account_info(
+        sa_info, scopes=['https://www.googleapis.com/auth/drive.file'])
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Verified Drive archival, isolated from scans')
     parser.add_argument('--mode', choices=('preview', 'export', 'delete'), default='preview')
@@ -192,8 +201,8 @@ def main(argv=None):
                           'eligible': count}), flush=True)
         if args.mode == 'preview':
             return 0
-        drive = DriveArchive(json.loads(os.environ.get('DRIVE_OAUTH_TOKEN_JSON', '{}')),
-                             os.environ.get('DRIVE_ARCHIVE_FOLDER_ID', ''))
+        creds = build_drive_credentials()
+        drive = DriveArchive(creds, os.environ.get('DRIVE_ARCHIVE_FOLDER_ID', ''))
         drive.check_folder()
         for _ in range(args.max_batches):
             result = run_batch(repo, drive, args.table, cutoff, args.batch_size, deleting)

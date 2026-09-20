@@ -1,4 +1,4 @@
-"""Lossless Parquet batches and narrowly scoped OAuth Drive transport.
+"""Lossless Parquet batches and narrowly scoped Drive transport.
 
 No source deletion lives here. JSON/numeric text preserves PostgreSQL precision;
 columnar fields remain directly usable in pandas, with types declared in metadata.
@@ -15,7 +15,6 @@ import re
 import pyarrow as pa
 import pyarrow.parquet as pq
 from google.auth.transport.requests import AuthorizedSession
-from google.oauth2.credentials import Credentials
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -144,22 +143,12 @@ def verify_parquet(data, table, expected_id, expected_rows, expected_sha):
     return texts
 
 
-def credentials(token):
-    required = ('client_id', 'client_secret', 'refresh_token')
-    if (token.get('type') != 'authorized_user' or token.get('token_uri') != TOKEN_URI
-            or token.get('scopes') != [SCOPE]
-            or any(not isinstance(token.get(k), str) or not token[k] for k in required)):
-        raise ArchiveError('INVALID_OAUTH_CONFIGURATION')
-    return Credentials(token=None, token_uri=TOKEN_URI, scopes=[SCOPE],
-                       **{k: token[k] for k in required})
-
-
 class DriveArchive:
-    def __init__(self, token, folder_id):
+    def __init__(self, creds, folder_id):
         if not re.fullmatch(r'[A-Za-z0-9_-]+', folder_id):
             raise ArchiveError('INVALID_DRIVE_FOLDER')
         self.folder_id = folder_id
-        self.session = AuthorizedSession(credentials(token))
+        self.session = AuthorizedSession(creds)
         # Retry reads only. An uncertain upload is discovered by batch identity
         # on the next run, not blindly POSTed repeatedly.
         retries = Retry(total=3, backoff_factor=1, allowed_methods={'GET'},

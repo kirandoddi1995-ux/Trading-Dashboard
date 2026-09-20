@@ -1,0 +1,76 @@
+name: Verified Drive archive (NAV and raw quotes only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Preview, verify one archive batch, or verified deletion
+        type: choice
+        default: preview
+        options: [preview, export, delete]
+      table:
+        description: Approved source table
+        type: choice
+        default: mf_nav
+        options: [mf_nav, market_quotes]
+      nav_cutoff:
+        description: Optional one-time NAV cutoff YYYY-MM-DD (blank = 30 days)
+        type: string
+        default: ''
+  schedule:
+    - cron: '15 20 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verified-drive-archive
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    # Manual preview/export works before enabling the schedule. Deletion has a
+    # separate switch, enforced inside Python as well as workflow configuration.
+    if: github.event_name == 'workflow_dispatch' || vars.ARCHIVE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            requirements-archive.txt
+            constraints.txt
+      - run: python -m pip install -r requirements-archive.txt
+      - name: Archive outside the dashboard and scan processes
+        env:
+          ARCHIVE_DATABASE_URL: ${{ secrets.ARCHIVE_DATABASE_URL }}
+          DRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.DRIVE_SERVICE_ACCOUNT_JSON }}
+          DRIVE_ARCHIVE_FOLDER_ID: ${{ secrets.DRIVE_ARCHIVE_FOLDER_ID }}
+          ARCHIVE_DELETE_ENABLED: ${{ vars.ARCHIVE_DELETE_ENABLED }}
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_MODE: ${{ inputs.mode }}
+          REQUESTED_TABLE: ${{ inputs.table }}
+          NAV_CUTOFF: ${{ inputs.nav_cutoff }}
+        # Inputs are argv, never interpolated into shell source. No secret files
+        # or data artifacts are uploaded to GitHub Actions.
+        run: |
+          python - <<'PY'
+          import os
+          from archive_maintenance import main
+          if os.environ['EVENT_NAME'] == 'schedule':
+              mode = 'delete' if os.environ.get('ARCHIVE_DELETE_ENABLED') == 'true' else 'export'
+              for table in ('mf_nav', 'market_quotes'):
+                  result = main(['--mode', mode, '--table', table])
+                  if result:
+                      raise SystemExit(result)
+          else:
+              args = ['--mode', os.environ['REQUESTED_MODE'], '--table', os.environ['REQUESTED_TABLE']]
+              if os.environ.get('NAV_CUTOFF'):
+                  args += ['--nav-cutoff', os.environ['NAV_CUTOFF']]
+              raise SystemExit(main(args))
+          PY
