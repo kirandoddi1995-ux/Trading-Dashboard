@@ -39,6 +39,26 @@ jobs:
           python-version: '3.13'
           cache: pip
           cache-dependency-path: candidate/requirements.txt
+      - name: Validate repository request path
+        working-directory: authorization
+        env:
+          REQUEST_PATH: ${{ inputs.request_path }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          raw = os.environ.get("REQUEST_PATH", "")
+          root = Path.cwd().resolve()
+          try:
+              if not raw or any(ord(c) < 32 for c in raw) or Path(raw).is_absolute():
+                  raise ValueError
+              target = (root / raw).resolve(strict=True)
+              if not target.is_relative_to(root) or not target.is_file():
+                  raise ValueError
+          except (OSError, ValueError, RuntimeError):
+              raise SystemExit("Invalid request_path: must name an existing file inside the authorization repository.")
+          PY
       - name: Authenticate to Google Cloud for managed promotion keys
         if: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && vars.GCP_SECRET_READER_SERVICE_ACCOUNT != '' }}
         uses: google-github-actions/auth@v3
@@ -49,12 +69,13 @@ jobs:
       - name: Verify signed rollback request and independent approvals
         working-directory: authorization
         env:
+          REQUEST_PATH: ${{ inputs.request_path }}
           MODEL_ARTIFACT_SIGNING_KEY_ID: ${{ vars.MODEL_ARTIFACT_SIGNING_KEY_ID }}
           GCP_SECRET_MANAGER_PROJECT: ${{ vars.GCP_SECRET_MANAGER_PROJECT }}
           MODEL_ARTIFACT_SIGNING_SECRET_REF: ${{ vars.MODEL_ARTIFACT_SIGNING_SECRET_REF }}
           MODEL_APPROVER_SECRET_REFS_JSON: ${{ vars.MODEL_APPROVER_SECRET_REFS_JSON }}
           REQUIRE_MANAGED_PROMOTION_KEYS: 'true'
-        run: python verify_promotion_request.py "${{ inputs.request_path }}" --require-action ROLLBACK
+        run: python verify_promotion_request.py "./$REQUEST_PATH" --require-action ROLLBACK
       - name: Verify rollback candidate
         working-directory: candidate
         run: python -m pytest -q
