@@ -1,9 +1,11 @@
-"""Create a deployment archive from an explicit, credential-free allowlist."""
+"""Build a staged release, close local imports, and gate the extracted artifact."""
 import hashlib
 import json
 from pathlib import Path
 import zipfile
+import tempfile
 from deployment_canary import run_canaries
+from release_verification import release_members, verify_archive
 
 
 ROOT = Path(__file__).resolve().parent
@@ -29,7 +31,9 @@ RUNTIME = ['app.py', 'app_runtime.py', 'scan_jobs.py', 'reliable_charts.py',
            'track_record.py',
            'resilience_policy.json', 'resilience_policy.sha256',
            'requirements.txt', 'constraints.txt']
-FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_GUIDE.md',
+FILES = RUNTIME + ['release_verification.py', 'RELEASE_PACKAGING.md',
+                   'requirements-archive.txt', 'tests/test_release_packaging.py',
+                   '.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_GUIDE.md',
                    'RESILIENCE_IMPLEMENTATION.md', 'RESILIENCE_RUNBOOK.md',
                    'CONTINUOUS_EVOLUTION_IMPLEMENTATION.md',
                    'PREDICTION_RIGOR_IMPLEMENTATION.md',
@@ -65,29 +69,32 @@ FILES = RUNTIME + ['.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_
                    'PRODUCTION_EXTERNAL_ACTIONS.md', 'EVIDENCE_READINESS.md']
 
 
-def package():
-    canaries = run_canaries(ROOT)
+def package(root=None):
+    root = Path(root or ROOT).resolve()
+    canaries = run_canaries(root)
     if not canaries['ok']:
         raise RuntimeError(f"Release canaries failed: {canaries['checks']}")
     manifest = {}
-    archive = ROOT / 'release-v22.5.7-futures-history-hotfix.zip'
-    for name in FILES:
-        path = (ROOT / name).resolve()
-        if not path.is_relative_to(ROOT) or not path.is_file():
-            raise ValueError(f'Missing or unsafe release member: {name}')
-        manifest[name] = hashlib.sha256(path.read_bytes()).hexdigest()
-    manifest_text = json.dumps(manifest, indent=2) + '\n'
-    (ROOT / 'SHA256_MANIFEST.json').write_bytes(manifest_text.encode('utf-8'))
-    with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED) as bundle:
-        for name in FILES:
-            bundle.write(ROOT / name, name)
-        bundle.writestr('SHA256_MANIFEST.json', manifest_text)
-    with zipfile.ZipFile(archive) as bundle:
-        assert bundle.testzip() is None
-        assert set(bundle.namelist()) == set(FILES) | {'SHA256_MANIFEST.json'}
-        for name, digest in manifest.items():
-            assert hashlib.sha256(bundle.read(name)).hexdigest() == digest
-    print(f'{archive.name}: {len(FILES)} files, verified; no real secrets, databases, caches or environments included')
+    archive = root / 'release-v22.5.7-futures-history-hotfix.zip'
+    members = release_members(root, FILES)
+    # Build in a disposable directory on the destination filesystem. Never
+    # replace the previous good ZIP with an incomplete or unverified artifact.
+    with tempfile.TemporaryDirectory(prefix='.release-stage-', dir=root) as staging:
+        staged = Path(staging) / archive.name
+        with zipfile.ZipFile(staged, 'w', compression=zipfile.ZIP_DEFLATED) as bundle:
+            for name in members:
+                data = (root / name).read_bytes()
+                manifest[name] = hashlib.sha256(data).hexdigest()
+                bundle.writestr(name, data)
+            manifest_text = json.dumps(manifest, indent=2) + '\n'
+            bundle.writestr('SHA256_MANIFEST.json', manifest_text)
+        verify_archive(staged)  # Mandatory: subprocess imports the extracted ZIP.
+        staged.replace(archive)
+        sidecar = Path(staging) / 'SHA256_MANIFEST.json'
+        sidecar.write_bytes(manifest_text.encode('utf-8'))
+        sidecar.replace(root / sidecar.name)
+    print(f'{archive.name}: {len(members)} files; extracted import and hashes verified')
+    return archive
 
 
 if __name__ == '__main__':
