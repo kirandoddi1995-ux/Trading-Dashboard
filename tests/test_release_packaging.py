@@ -83,6 +83,30 @@ def test_exit_zero_without_import_completion_is_failure(tmp_path):
         verify_archive(archive(tmp_path, {"app.py": "raise SystemExit(0)\n"}))
 
 
+def test_cold_font_initialization_precedes_application_guard(tmp_path):
+    target = archive(tmp_path, {"app.py":
+        "import sys, os\n"
+        "assert 'matplotlib.font_manager' in sys.modules\n"
+        "from matplotlib.figure import Figure\n"
+        "from matplotlib import font_manager\n"
+        "assert font_manager.fontManager.ttflist\n"
+        "assert os.path.isdir(os.environ['MPLCONFIGDIR'])\n"
+        "Figure().subplots().set_title('Release font smoke test')\n"})
+    assert verify_archive(target)["import_verified"]
+
+
+@pytest.mark.parametrize("operation", [
+    "import subprocess; subprocess.run(['fc-list', '--help'])",
+    "import subprocess, sys; subprocess.run([sys.executable, '-c', 'pass'])",
+    "import os; os.system('echo forbidden')",
+    "import socket; socket.getaddrinfo('example.com', 443)",
+    "import socket; socket.socket().connect(('127.0.0.1', 9))",
+])
+def test_application_external_io_still_fails_after_font_warmup(tmp_path, operation):
+    with pytest.raises(RuntimeError, match="External I/O forbidden"):
+        verify_archive(archive(tmp_path, {"app.py": operation + "\n"}))
+
+
 def test_hash_tampering_and_traversal_rejected(tmp_path):
     target = archive(tmp_path, {"../escape.py": "pass\n", "app.py": "pass\n"})
     with pytest.raises(ValueError, match="Unsafe archive member"):
