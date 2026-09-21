@@ -115,6 +115,15 @@ import importlib, importlib.abc, importlib.machinery, json, pathlib, platform, s
 # before restricting application I/O; no application code has been imported.
 platform.platform()
 platform.processor()
+# Initialize only this known third-party housekeeping dependency while the
+# extracted application is still absent from sys.path. Network remains denied;
+# font discovery may run the installed system font utility. Never catch import
+# failures here: a missing/broken Matplotlib installation must fail the gate.
+def no_network(event, args):
+    if event in {"socket.connect", "socket.getaddrinfo", "socket.sendto"}:
+        raise RuntimeError("External I/O forbidden in release import verification")
+sys.addaudithook(no_network)
+importlib.import_module("matplotlib.font_manager")
 root = pathlib.Path(sys.argv[1]).resolve()
 local_names = set(json.loads(sys.argv[2]))
 sys.path[:] = [str(root)] + [p for p in sys.path if p and
@@ -178,6 +187,7 @@ def verify_archive(archive, *, timeout=120):
         }}
         env.update(HOME=str(home), USERPROFILE=str(home), APPDATA=str(home),
                    LOCALAPPDATA=str(home), TMP=str(home), TEMP=str(home),
+                   MPLCONFIGDIR=str(home / "matplotlib"),
                    STREAMLIT_BROWSER_GATHER_USAGE_STATS="false")
         try:
             result = subprocess.run(

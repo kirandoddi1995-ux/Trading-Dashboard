@@ -14,7 +14,13 @@ virtual environments and arbitrary data files are not swept into the archive.
 The builder writes a temporary ZIP, verifies every manifest member/hash, extracts
 it to an unrelated temporary directory, and imports app in a fresh isolated Python
 process. That child does not inherit credentials, PYTHONPATH, user-site packages
-or the user's home settings. Network and subprocess calls are forbidden. A
+or the user's home settings. Before adding the extracted application to the import
+path, the probe initializes installed Matplotlib's font manager with a fresh,
+temporary font cache. This permits system font discovery (such as fc-list), with
+network access still blocked. The subprocess ban is then installed before any
+application import; there is no permanent utility allowlist. Missing/broken
+Matplotlib still fails verification. Application network and subprocess calls
+are forbidden. A
 completion marker, zero exit code and timeout are enforced. No application/auth
 function is mocked. Only after success does the staged ZIP replace the old ZIP.
 The embedded manifest is authoritative; the convenience sidecar is written after
