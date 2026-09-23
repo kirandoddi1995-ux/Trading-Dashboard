@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import textwrap
 from unittest.mock import Mock
 
 import pyarrow as pa
@@ -114,9 +115,10 @@ def test_export_only_and_retry_after_upload_crash_reuse_files():
     assert repo.acknowledge.call_args.args[-1] is False
 
 
-def test_cutoff_bounds_and_30_calendar_day_policy():
+def test_cutoff_bounds_and_14_calendar_day_policy():
     today = dt.date(2026, 9, 20)
-    assert maintenance.cutoff_for('market_quotes', today) == dt.date(2026, 8, 21)
+    assert maintenance.cutoff_for('market_quotes', today) == dt.date(2026, 9, 6)
+    assert maintenance.cutoff_for('mf_nav', today) == dt.date(2026, 9, 6)
     assert maintenance.cutoff_for('mf_nav', today, dt.date(2026, 9, 13)) == dt.date(2026, 9, 13)
     with pytest.raises(ArchiveError):
         maintenance.cutoff_for('market_quotes', today, dt.date(2026, 9, 13))
@@ -133,6 +135,63 @@ def test_delete_switch_is_checked_before_any_connection(monkeypatch, capsys):
     assert maintenance.main(['--mode', 'delete']) == 1
     repo.assert_not_called()
     assert 'DELETION_NOT_ENABLED' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('table', ['evidence_ledger_events', 'scanner_observations',
+    'prediction_targets', 'market_daily_volumes', 'positions', 'orders',
+    'scan_runs', 'outcomes', 'observations'])
+def test_protected_tables_never_enter_archive_retention(table):
+    with pytest.raises(ArchiveError, match='UNSUPPORTED_TABLE'):
+        maintenance.cutoff_for(table, dt.date(2026, 9, 24))
+    with pytest.raises(ArchiveError, match='UNSUPPORTED_TABLE'):
+        maintenance.predicate(table)
+
+
+def workflow_script():
+    text = (Path(__file__).resolve().parents[1] /
+            '.github/workflows/drive-archive.yml').read_text()
+    return textwrap.dedent(text.split("python - <<'PY'\n", 1)[1].rsplit('          PY', 1)[0])
+
+
+def test_schedule_requests_deletion_for_both_tables(monkeypatch):
+    calls = []
+    monkeypatch.setenv('EVENT_NAME', 'schedule')
+    monkeypatch.setenv('ARCHIVE_DELETE_ENABLED', 'true')
+    monkeypatch.setattr(maintenance, 'main', lambda args: calls.append(args) or 0)
+    exec(compile(workflow_script(), '<archive-workflow>', 'exec'), {})
+    assert calls == [['--mode', 'delete', '--table', 'mf_nav'],
+                     ['--mode', 'delete', '--table', 'market_quotes']]
+
+
+def test_schedule_fails_closed_instead_of_export_fallback(monkeypatch, capsys):
+    monkeypatch.setenv('EVENT_NAME', 'schedule')
+    monkeypatch.delenv('ARCHIVE_DELETE_ENABLED', raising=False)
+    repo = Mock()
+    monkeypatch.setattr(maintenance, 'ArchiveRepository', repo)
+    with pytest.raises(SystemExit) as caught:
+        exec(compile(workflow_script(), '<archive-workflow>', 'exec'), {})
+    assert caught.value.code == 1
+    repo.assert_not_called()
+    assert 'DELETION_NOT_ENABLED' in capsys.readouterr().out
+
+
+def test_enabled_delete_verifies_before_acknowledging(monkeypatch):
+    repo = Mock()
+    repo.preview.return_value = 1
+    repo.select.side_effect = [[exact_json(nav())], []]
+    repo.acknowledge.return_value = 1
+    drive = MemoryDrive()
+    drive.check_folder = Mock()
+    drive.close = Mock()
+    monkeypatch.setenv('ARCHIVE_DELETE_ENABLED', 'true')
+    monkeypatch.setattr(maintenance, 'ArchiveRepository', lambda url: repo)
+    monkeypatch.setattr(maintenance, 'build_drive_credentials', lambda: None)
+    monkeypatch.setattr(maintenance, 'DriveArchive', lambda *args: drive)
+    assert maintenance.main(['--mode', 'delete']) == 0
+    manifest, texts, cutoff, deleting = repo.acknowledge.call_args.args
+    assert deleting is True and len(texts) == manifest['rows'] == 1
+    assert cutoff == dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=14)
+    assert len(drive.data) == 2
 
 
 def test_preview_never_constructs_drive(monkeypatch):

@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from archive_maintenance import ArchiveRepository, run_batch
+from archive_maintenance import ArchiveRepository, cutoff_for, run_batch
 from production_repository import ProductionRepository
 from test_drive_archive import MemoryDrive
 
@@ -260,3 +260,28 @@ def test_missing_rollup_blocks_deletion_and_rolls_back_manifest(pg):
         run_batch(repo, MemoryDrive(), 'market_quotes', dt.date(2026, 8, 21), delete=True)
     assert pg.execute('SELECT count(*) FROM quant_app.market_quotes').fetchone()[0] == 1
     assert pg.execute('SELECT count(*) FROM quant_app.archive_manifests').fetchone()[0] == 0
+
+
+def test_fourteen_day_boundary_latest_nav_and_recent_capture_survive(pg):
+    cutoff = cutoff_for('market_quotes', dt.date(2026, 9, 24))
+    assert cutoff == dt.date(2026, 9, 10)
+    insert_nav(pg, 'A', '2026-09-09')
+    insert_nav(pg, 'A', '2026-09-10')
+    insert_nav(pg, 'B', '2020-01-01')
+    for instrument, trade_date, observed_at in (
+        ('OLD', '2026-09-09', '2026-09-09T10:00Z'),
+        ('BOUNDARY', '2026-09-10', '2026-09-10T00:00Z'),
+        ('RECENT_CAPTURE', '2026-09-09', '2026-09-10T00:00Z'),
+        ('RECENT_TRADE', '2026-09-10', '2026-09-09T10:00Z'),
+    ):
+        pg.execute('INSERT INTO quant_app.market_quotes '
+                   '(instrument_key,trade_date,observed_at,source,volume) '
+                   "VALUES (%s,%s,%s,'test',100)", (instrument, trade_date, observed_at))
+    pg.execute('SET ROLE quant_archive_worker')
+    repo = ArchiveRepository('postgres://test-only')
+    for table in ('mf_nav', 'market_quotes'):
+        assert repo.preview(table, cutoff) == 1
+        assert run_batch(repo, MemoryDrive(), table, cutoff, delete=True)['deleted'] == 1
+    assert pg.execute('SELECT count(*) FROM quant_app.market_quotes').fetchone()[0] == 3
+    assert pg.execute('SELECT count(*) FROM quant_app.mf_nav').fetchone()[0] == 2
+    assert pg.execute('SELECT count(*) FROM quant_app.market_daily_volumes').fetchone()[0] == 4
