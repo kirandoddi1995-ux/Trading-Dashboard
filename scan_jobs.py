@@ -277,19 +277,24 @@ class ScanJobs:
             job["application_id"] = f"{job['id']}:{job['fencing_token']}"
             self._jobs[(owner, signature)] = job
             self._busy = True
-            self._persist(owner,signature,job,"RUNNING")
             try:
-                self._create_checkpoints(job, items)
-            except Exception as exc:
-                job["finished_at"] = time.time()
-                job["complete"] = True
-                job["error"] = type(exc).__name__
-                self._persist(owner, signature, job, "INTERRUPTED")
+                self._persist(owner,signature,job,"RUNNING")
+                try:
+                    self._create_checkpoints(job, items)
+                except Exception as exc:
+                    job["finished_at"] = time.time()
+                    job["complete"] = True
+                    job["error"] = type(exc).__name__
+                    self._persist(owner, signature, job, "INTERRUPTED")
+                    raise CheckpointUnavailable("Durable equity scan checkpoint initialization failed") from exc
+            except BaseException:
+                # No controller owns this reservation yet, even if the error
+                # occurred while persisting the initialization failure itself.
                 self._jobs.pop((owner, signature), None)
                 self._busy = False
-                raise CheckpointUnavailable("Durable equity scan checkpoint initialization failed") from exc
-        thread = threading.Thread(target=self._run, args=(job, items, worker, workers, timeout), daemon=True)
+                raise
         try:
+            thread = threading.Thread(target=self._run, args=(job, items, worker, workers, timeout), daemon=True)
             thread.start()
         except BaseException:
             with self._lock:
@@ -353,18 +358,25 @@ class ScanJobs:
             job["application_id"] = f"{job['id']}:{job['fencing_token']}"
             self._jobs[(owner, signature)] = job
             self._busy = True
-            self._persist(owner, signature, job, "RECOVERING")
-        thread = threading.Thread(target=self._run, args=(job, items, worker, workers, timeout), daemon=True)
+            try:
+                self._persist(owner, signature, job, "RECOVERING")
+            except BaseException:
+                self._jobs.pop((owner, signature), None)
+                self._busy = False
+                raise
         try:
+            thread = threading.Thread(target=self._run, args=(job, items, worker, workers, timeout), daemon=True)
             thread.start()
         except BaseException:
             with self._lock:
                 job["finished_at"] = time.time()
                 job["complete"] = True
                 job["error"] = "WorkerStartFailure"
-                self._persist(owner, signature, job, "INTERRUPTED")
-                self._jobs.pop((owner, signature), None)
-                self._busy = False
+                try:
+                    self._persist(owner, signature, job, "INTERRUPTED")
+                finally:
+                    self._jobs.pop((owner, signature), None)
+                    self._busy = False
             raise
         return job["id"]
 
@@ -432,25 +444,30 @@ class ScanJobs:
         except Exception as exc:
             with self._lock:
                 job['error'] = type(exc).__name__
+            raise
         finally:
-            with self._lock:
-                job['analysis_secs'] = round(time.monotonic() - started, 2)
-                job['finished_at'] = time.time()
-                job['complete'] = True
-                job['draining'] = any(not f.done() for f in pending)
-                job['cancelled'] = bool(job.get('cancel_requested'))
-                final_status = (
-                    "CANCELLED" if job['cancelled'] else
-                    "INTERRUPTED" if pending or job.get('error') or job.get('checkpoint_conflicts') else
-                    "COMPLETE"
-                )
-                self._persist(job["owner"],job["signature"],job,final_status)
-                if self._checkpoint_sender is not None:
-                    self._checkpoint_sender.notify()
             try:
-                if executor:
-                    executor.shutdown(wait=True, cancel_futures=True)
-            finally:
                 with self._lock:
-                    job['draining'] = False
-                    self._busy = False
+                    job['analysis_secs'] = round(time.monotonic() - started, 2)
+                    job['finished_at'] = time.time()
+                    job['complete'] = True
+                    job['draining'] = any(not f.done() for f in pending)
+                    job['cancelled'] = bool(job.get('cancel_requested'))
+                    final_status = (
+                        "CANCELLED" if job['cancelled'] else
+                        "INTERRUPTED" if pending or job.get('error') or job.get('checkpoint_conflicts') else
+                        "COMPLETE"
+                    )
+                    self._persist(job["owner"],job["signature"],job,final_status)
+                    if self._checkpoint_sender is not None:
+                        self._checkpoint_sender.notify()
+            finally:
+                # Persistence must never bypass worker cleanup. Keep the slot
+                # until shutdown finishes: timed-out threads cannot be killed.
+                try:
+                    if executor:
+                        executor.shutdown(wait=True, cancel_futures=True)
+                finally:
+                    with self._lock:
+                        job['draining'] = False
+                        self._busy = False
