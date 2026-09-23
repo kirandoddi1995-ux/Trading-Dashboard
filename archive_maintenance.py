@@ -16,12 +16,13 @@ from drive_archive import ArchiveError, DriveArchive, SPECS, credentials, upload
 
 ROLE = 'quant_archive_worker'
 UTC = dt.timezone.utc
+HOT_RETENTION_DAYS = 14  # Only SPECS' raw quotes and superseded NAV rows.
 
 
 def cutoff_for(table, today, nav_cutoff=None):
     if table not in SPECS:
         raise ArchiveError('UNSUPPORTED_TABLE')
-    normal = today - dt.timedelta(days=30)
+    normal = today - dt.timedelta(days=HOT_RETENTION_DAYS)
     if nav_cutoff is None:
         return normal
     if table != 'mf_nav' or nav_cutoff >= today:
@@ -36,7 +37,7 @@ def predicate(table):
             WHERE newer.scheme_code=s.scheme_code AND newer.nav_date>s.nav_date)"""
     if table == 'market_quotes':
         # Old trading date alone is insufficient: a stale quote may have only
-        # just been captured. Keep 30 days of capture time as well.
+        # just been captured. Keep the hot window of capture time as well.
         return """s.trade_date < %(cutoff)s
             AND s.observed_at < (%(cutoff)s::date::timestamp AT TIME ZONE 'UTC')"""
     raise ArchiveError('UNSUPPORTED_TABLE')
@@ -181,7 +182,7 @@ def main(argv=None):
     parser.add_argument('--mode', choices=('preview', 'export', 'delete'), default='preview')
     parser.add_argument('--table', choices=tuple(SPECS), default='mf_nav')
     parser.add_argument('--nav-cutoff', type=dt.date.fromisoformat,
-                        help='Manual one-time NAV cleanup only; normal policy is 30 days')
+                        help='Manual one-time NAV cleanup only; normal policy is 14 days')
     parser.add_argument('--batch-size', type=int, default=1000)
     parser.add_argument('--max-batches', type=int, default=20)
     args = parser.parse_args(argv)
