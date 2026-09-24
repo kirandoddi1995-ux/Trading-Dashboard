@@ -40,6 +40,7 @@ def collect(repo, client, token, calendar, *, clock=None):
         sessions_for(observation, calendar)
     failures = []
     stored = 0
+    unchanged = 0
     for observation in observations:
         observation = repo.register(observation)
         repo.connection.commit()
@@ -56,13 +57,16 @@ def collect(repo, client, token, calendar, *, clock=None):
             outcome = evaluate_touches(observation, candles, calendar, now=fetched.isoformat(),
                                        fetched_at=fetched.isoformat(), data_through=cutoff.isoformat(),
                                        source='Upstox V3 historical minutes/1')
-            repo.save_outcome(outcome)
+            inserted = repo.save_outcome(outcome)
             repo.connection.commit()
-            stored += 1
+            if inserted is False:
+                unchanged += 1
+            else:
+                stored += 1
         except Exception as exc:
             repo.connection.rollback()
             failures.append({'instrument': observation['instrument'], 'error_type': type(exc).__name__})
-    return {'purpose': 'RESEARCH_ONLY_PRICE_TOUCH', 'stored': stored, 'failures': failures,
+    return {'purpose': 'RESEARCH_ONLY_PRICE_TOUCH', 'stored': stored, 'unchanged': unchanged, 'failures': failures,
             'observations': repo.report()}
 
 

@@ -1,9 +1,30 @@
 """Private research persistence; deliberately does not import ProductionRepository."""
 from __future__ import annotations
 
-from equity_research_observations import COHORT, POLICY, PURPOSE, digest
+from equity_research_observations import COHORT, POLICY, PURPOSE, aware, digest
 
 ROLE = 'equity_research_collector'
+
+
+def outcome_evidence(payload):
+    """Compare evidence, not the time an identical provider response was fetched.
+
+    Preserve raw candles, hashes, calendar, gaps, provenance and classifications.
+    Past the fixed horizon, a later requested cutoff adds no price-touch evidence.
+    Stored records are never changed; the first fetch provenance remains intact.
+    """
+    evidence = dict(payload)
+    evidence.pop('assessed_at', None)
+    evidence.pop('fetched_at', None)
+    if evidence.get('horizon_complete') is True:
+        try:
+            close = aware(evidence['horizon_close'])
+            through = aware(evidence['requested_data_through'])
+            if through >= close:
+                evidence['requested_data_through'] = close.isoformat()
+        except (KeyError, ValueError, TypeError):
+            pass  # Malformed/absent provenance never earns normalization.
+    return evidence
 
 
 class ResearchRepository:
@@ -85,10 +106,22 @@ class ResearchRepository:
                 or outcome['purpose'] != PURPOSE or outcome['approved'] is not False):
             raise ValueError('Not a research-only outcome')
         from psycopg.types.json import Jsonb
-        self.connection.execute("""
+        # Transaction-scoped serialization also prevents two overlapping collectors
+        # from storing the same evidence with different fetch timestamps.
+        self.connection.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))',
+                                ('equity-research-outcome:' + outcome['decision_id'],))
+        previous = self.connection.execute("""
+            SELECT payload FROM equity_research.outcomes WHERE decision_id=%s
+            ORDER BY recorded_at DESC,snapshot_id DESC LIMIT 1
+        """, (outcome['decision_id'],)).fetchone()
+        if previous and outcome_evidence(previous[0]) == outcome_evidence(outcome):
+            return False
+        inserted = self.connection.execute("""
             INSERT INTO equity_research.outcomes(snapshot_id,decision_id,payload)
             VALUES (%s,%s,%s) ON CONFLICT (snapshot_id) DO NOTHING
-        """, (digest(outcome), outcome['decision_id'], Jsonb(outcome)))
+            RETURNING snapshot_id
+        """, (digest(outcome), outcome['decision_id'], Jsonb(outcome))).fetchone()
+        return inserted is not None
 
     def report(self):
         rows = self.connection.execute("""
