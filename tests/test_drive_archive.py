@@ -153,7 +153,7 @@ def workflow_script():
     return textwrap.dedent(text.split("python - <<'PY'\n", 1)[1].rsplit('          PY', 1)[0])
 
 
-def test_schedule_requests_deletion_for_all_four_tables(monkeypatch):
+def test_schedule_requests_deletion_for_all_five_tables(monkeypatch):
     calls = []
     monkeypatch.setenv('EVENT_NAME', 'schedule')
     monkeypatch.setenv('ARCHIVE_DELETE_ENABLED', 'true')
@@ -162,7 +162,21 @@ def test_schedule_requests_deletion_for_all_four_tables(monkeypatch):
     assert calls == [['--mode', 'delete', '--table', 'mf_nav'],
                      ['--mode', 'delete', '--table', 'market_quotes'],
                      ['--mode', 'delete', '--table', 'universe_membership_versions'],
-                     ['--mode', 'delete', '--table', 'scanner_observations']]
+                     ['--mode', 'delete', '--table', 'scanner_observations'],
+                     ['--mode', 'delete', '--table', 'equity_research.outcomes']]
+
+
+def test_research_preview_has_no_drive_export_or_deletion(monkeypatch, capsys):
+    repo = Mock()
+    repo.preview.return_value = 7
+    monkeypatch.setattr(maintenance, 'ArchiveRepository', lambda url: repo)
+    drive = Mock()
+    monkeypatch.setattr(maintenance, 'DriveArchive', drive)
+    assert maintenance.main(['--mode', 'preview', '--table', 'equity_research.outcomes']) == 0
+    drive.assert_not_called()
+    repo.select.assert_not_called()
+    repo.acknowledge.assert_not_called()
+    assert json.loads(capsys.readouterr().out)['eligible'] == 7
 
 
 def test_schedule_fails_closed_instead_of_export_fallback(monkeypatch, capsys):

@@ -148,6 +148,26 @@ def pg(monkeypatch):
                 quant_app.prediction_targets TO quant_app_runtime;
         """})
         db.send({'script': (ROOT / 'sql/drive_archive_scanner_universe_draft.sql').read_text()})
+        db.send({'script': """
+            CREATE SCHEMA equity_research;
+            CREATE TABLE equity_research.source_decisions(decision_id text PRIMARY KEY);
+            CREATE TABLE equity_research.observations(decision_id text PRIMARY KEY
+                REFERENCES equity_research.source_decisions(decision_id));
+            CREATE TABLE equity_research.outcomes(snapshot_id text PRIMARY KEY,
+                decision_id text NOT NULL REFERENCES equity_research.observations(decision_id),
+                payload jsonb NOT NULL, recorded_at timestamptz NOT NULL DEFAULT clock_timestamp());
+            GRANT USAGE ON SCHEMA equity_research TO equity_research_collector;
+            GRANT SELECT,INSERT ON equity_research.outcomes TO equity_research_collector;
+            CREATE POLICY research_read ON equity_research.outcomes FOR SELECT
+                TO equity_research_collector USING(true);
+            CREATE POLICY research_insert ON equity_research.outcomes FOR INSERT
+                TO equity_research_collector WITH CHECK(true);
+        """})
+        original_research = (ROOT / 'sql/equity_research_observations.sql').read_text()
+        protection = original_research.split('CREATE FUNCTION equity_research.reject_mutation()', 1)[1]
+        protection = protection.split('REVOKE ALL ON ALL TABLES', 1)[0]
+        db.send({'script': 'CREATE FUNCTION equity_research.reject_mutation()' + protection})
+        db.send({'script': (ROOT / 'sql/drive_archive_research_outcomes_draft.sql').read_text()})
         # PGlite has no shared processes; replace ONLY this lock in the harness.
         original = db.execute
         def execute(sql, params=()):
@@ -401,3 +421,146 @@ def test_migration_preserves_runtime_and_does_not_widen_existing_rls(pg):
     pg.send({'script': (ROOT / 'sql/drive_archive_scanner_universe_draft.sql').read_text()})
     pg.execute('SET ROLE quant_app_runtime')
     assert pg.execute('SELECT observation_id FROM quant_app.scanner_observations').fetchall() == []
+
+
+def research_snapshot(db, snapshot, subject, stamp):
+    db.execute('INSERT INTO equity_research.source_decisions VALUES (%s) ON CONFLICT DO NOTHING', (subject,))
+    db.execute('INSERT INTO equity_research.observations VALUES (%s) ON CONFLICT DO NOTHING', (subject,))
+    db.execute("""INSERT INTO equity_research.outcomes VALUES (%s,%s,
+        '{"source_candles":[["original",1.123456789123456789,0]],"approved":false}',%s)""",
+               (snapshot, subject, stamp))
+
+
+def test_research_archive_preserves_latest_per_entity_and_timestamp_ties(pg):
+    for snapshot, subject, stamp in [('a1','a','2020-01-01Z'), ('a2','a','2020-01-02Z'),
+                                     ('a3','a','2020-01-03Z'), ('b1','b','2020-01-01Z'),
+                                     ('c1','c','2020-01-01Z'), ('c2','c','2020-01-01Z')]:
+        research_snapshot(pg, snapshot, subject, stamp)
+    pg.execute('SET ROLE quant_archive_worker')
+    repo = ArchiveRepository('postgres://test-only')
+    repo.check()
+    cutoff = dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=14)
+    assert repo.preview('equity_research.outcomes', cutoff) == 3
+    drive = MemoryDrive()
+    result = run_batch(repo, drive, 'equity_research.outcomes', cutoff, delete=True)
+    assert result['verified'] == result['deleted'] == 3
+    assert pg.execute('SELECT snapshot_id FROM equity_research.outcomes ORDER BY snapshot_id').fetchall() == [
+        ('a3',), ('b1',), ('c2',)]
+    assert run_batch(repo, drive, 'equity_research.outcomes', cutoff, delete=True)['selected'] == 0
+    with pytest.raises(RuntimeError):
+        pg.execute('SELECT * FROM equity_research.observations')
+    # Exact archived full-row JSON restores raw candle precision, not estimates.
+    from drive_archive import verify_parquet, digest
+    data = next(data for data, kind in drive.data.values() if kind == 'data')
+    texts = verify_parquet(data, 'equity_research.outcomes', result['batch_id'], 3, digest(data))
+    assert '1.123456789123456789' in texts[0]
+    pg.execute('RESET ROLE')
+    pg.execute('CREATE TEMP TABLE research_restore (LIKE equity_research.outcomes)')
+    pg.execute('INSERT INTO research_restore SELECT * FROM '
+               'jsonb_populate_record(NULL::equity_research.outcomes,%s::jsonb)', (texts[0],))
+    assert pg.execute('SELECT count(*) FROM research_restore').fetchone()[0] == 1
+
+
+def test_research_age_boundary_and_latest_are_enforced_by_trigger(pg):
+    cutoff = pg.execute("SELECT (((statement_timestamp() AT TIME ZONE 'UTC')::date - 14)"
+                        "::timestamp AT TIME ZONE 'UTC')").fetchone()[0]
+    research_snapshot(pg, 'boundary', 'a', cutoff)
+    research_snapshot(pg, 'newer', 'a', '2099-01-01Z')
+    research_snapshot(pg, 'only-old', 'b', '2020-01-01Z')
+    pg.execute('SET ROLE quant_archive_worker')
+    for snapshot, message in [('boundary','retention window'), ('newer','retention window'),
+                              ('only-old','Latest research outcome')]:
+        with pytest.raises(RuntimeError, match=message):
+            pg.execute('DELETE FROM equity_research.outcomes WHERE snapshot_id=%s', (snapshot,))
+    assert pg.execute('SELECT count(*) FROM equity_research.outcomes').fetchone()[0] == 3
+
+
+@pytest.mark.parametrize('role', ['equity_research_collector', 'quant_app_runtime'])
+def test_research_trigger_blocks_other_callers_even_with_accidental_grants(pg, role):
+    research_snapshot(pg, 'old', 'a', '2020-01-01Z')
+    research_snapshot(pg, 'latest', 'a', '2020-01-02Z')
+    pg.execute(f'GRANT USAGE ON SCHEMA equity_research TO {role}')
+    pg.execute(f'GRANT SELECT,DELETE,UPDATE,TRUNCATE ON equity_research.outcomes TO {role}')
+    pg.execute(f'CREATE POLICY accidental_access ON equity_research.outcomes TO {role} '
+               'USING(true) WITH CHECK(true)')
+    pg.execute(f'SET ROLE {role}')
+    for sql in ["DELETE FROM equity_research.outcomes WHERE snapshot_id='old'",
+                "UPDATE equity_research.outcomes SET payload='{}'", 'TRUNCATE equity_research.outcomes']:
+        with pytest.raises(RuntimeError, match='append-only'):
+            pg.execute(sql)
+
+
+def test_archive_worker_cannot_mutate_other_research_tables_or_update_truncate(pg):
+    research_snapshot(pg, 'old', 'a', '2020-01-01Z')
+    # Accidental grants must still not bypass append-only triggers.
+    for table in ('outcomes', 'observations', 'source_decisions'):
+        pg.execute(f'GRANT SELECT,DELETE,UPDATE,TRUNCATE ON equity_research.{table} TO quant_archive_worker')
+    pg.execute('SET ROLE quant_archive_worker')
+    for sql in ['TRUNCATE equity_research.outcomes',
+                "UPDATE equity_research.outcomes SET payload='{}'",
+                'DELETE FROM equity_research.observations',
+                'DELETE FROM equity_research.source_decisions']:
+        with pytest.raises(RuntimeError, match='append-only'):
+            pg.execute(sql)
+
+
+def test_research_failed_verification_never_deletes_and_export_retry_is_safe(pg):
+    research_snapshot(pg, 'old', 'a', '2020-01-01Z')
+    research_snapshot(pg, 'latest', 'a', '2020-01-02Z')
+    pg.execute('SET ROLE quant_archive_worker')
+    repo = ArchiveRepository('postgres://test-only')
+    cutoff = dt.date(2026, 9, 10)
+    for corrupt in ('data','manifest'):
+        with pytest.raises(Exception):
+            run_batch(repo, MemoryDrive(corrupt), 'equity_research.outcomes', cutoff, delete=True)
+        assert pg.execute('SELECT count(*) FROM equity_research.outcomes').fetchone()[0] == 2
+        assert pg.execute('SELECT count(*) FROM quant_app.archive_manifests').fetchone()[0] == 0
+    from drive_archive import upload_verified
+    manifest, texts = upload_verified(MemoryDrive(), 'equity_research.outcomes',
+                                      repo.select('equity_research.outcomes', cutoff, 100))
+    assert repo.acknowledge(manifest, texts, cutoff, False) == 0
+    assert repo.acknowledge(manifest, texts, cutoff, True) == 1
+    assert repo.acknowledge(manifest, texts, cutoff, True) == 0
+
+
+def test_research_migration_rerunnable_and_disabled_guard_fails_check(pg):
+    pg.send({'script': (ROOT / 'sql/drive_archive_research_outcomes_draft.sql').read_text()})
+    pg.execute('SET ROLE quant_archive_worker')
+    repo = ArchiveRepository('postgres://test-only')
+    repo.check()
+    pg.execute('RESET ROLE')
+    pg.execute('ALTER TABLE equity_research.outcomes DISABLE TRIGGER outcome_archive_row_guard')
+    pg.execute('SET ROLE quant_archive_worker')
+    with pytest.raises(Exception, match='RESEARCH_ARCHIVE_GUARDS_REQUIRED'):
+        repo.check()
+
+
+def test_bulk_research_delete_cannot_remove_last_snapshot_or_partially_commit(pg):
+    research_snapshot(pg, 'old', 'a', '2020-01-01Z')
+    research_snapshot(pg, 'latest', 'a', '2020-01-02Z')
+    pg.execute('SET ROLE quant_archive_worker')
+    with pytest.raises(RuntimeError, match='Latest research outcome'):
+        pg.execute('DELETE FROM equity_research.outcomes')
+    assert pg.execute('SELECT count(*) FROM equity_research.outcomes').fetchone()[0] == 2
+
+
+def test_forged_cutoff_cannot_shorten_db_retention_and_manifest_rolls_back(pg):
+    now = pg.execute('SELECT clock_timestamp()').fetchone()[0]
+    research_snapshot(pg, 'recent', 'a', now)
+    research_snapshot(pg, 'future', 'a', '2099-01-01Z')
+    pg.execute('SET ROLE quant_archive_worker')
+    repo = ArchiveRepository('postgres://test-only')
+    with pytest.raises(RuntimeError, match='retention window'):
+        run_batch(repo, MemoryDrive(), 'equity_research.outcomes', dt.date(2090,1,1), delete=True)
+    assert pg.execute('SELECT count(*) FROM equity_research.outcomes').fetchone()[0] == 2
+    assert pg.execute('SELECT count(*) FROM quant_app.archive_manifests').fetchone()[0] == 0
+
+
+def test_collector_remains_append_only_and_archive_cannot_append(pg):
+    research_snapshot(pg, 'old', 'a', '2020-01-01Z')
+    pg.execute('SET ROLE equity_research_collector')
+    pg.execute("INSERT INTO equity_research.outcomes VALUES ('new','a','{}',clock_timestamp())")
+    assert pg.execute('SELECT count(*) FROM equity_research.outcomes').fetchone()[0] == 2
+    pg.execute('SET ROLE quant_archive_worker')
+    with pytest.raises(RuntimeError, match='permission denied'):
+        pg.execute("INSERT INTO equity_research.outcomes VALUES ('forbidden','a','{}',clock_timestamp())")
