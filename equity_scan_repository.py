@@ -212,6 +212,8 @@ class EquityScanRepository:
                 "archived_completed": int(row[5] or 0)}
 
     def claim_recovery(self, run_id, owner_id):
+        # Compare-and-set in one UPDATE: competing callers must not replace an
+        # active recovery's fence. No timeout takeover without a proven lease.
         with self._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(f"""
@@ -219,7 +221,7 @@ class EquityScanRepository:
                     SET fencing_token=fencing_token+1,status='RECOVERING',
                         heartbeat_at=clock_timestamp(),error_kind=NULL
                     WHERE run_id=%s AND owner_id=%s
-                      AND status IN ('RUNNING','INTERRUPTED','CANCELLED','RECOVERING','COMPLETE')
+                      AND status IN ('RUNNING','INTERRUPTED','CANCELLED','COMPLETE')
                       AND EXISTS (SELECT 1 FROM equity_operations.scan_candidates c
                         WHERE c.run_id=scan_runs.run_id
                           AND (c.status<>'COMPLETE' OR c.checkpoint_fencing_token IS NULL))
