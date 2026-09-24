@@ -12,7 +12,7 @@ on:
         description: Approved source table
         type: choice
         default: mf_nav
-        options: [mf_nav, market_quotes, universe_membership_versions, scanner_observations]
+        options: [mf_nav, market_quotes, universe_membership_versions, scanner_observations, equity_research.outcomes]
       nav_cutoff:
         description: Optional one-time NAV cutoff YYYY-MM-DD (blank = 14 days)
         type: string
@@ -66,7 +66,7 @@ jobs:
               # Fail closed in Python if the deletion switch is not enabled;
               # never silently report a scheduled export as storage cleanup.
               mode = 'delete'
-              for table in ('mf_nav', 'market_quotes', 'universe_membership_versions', 'scanner_observations'):
+              for table in ('mf_nav', 'market_quotes', 'universe_membership_versions', 'scanner_observations', 'equity_research.outcomes'):
                   result = main(['--mode', mode, '--table', table])
                   if result:
                       raise SystemExit(result)
