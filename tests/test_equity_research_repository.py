@@ -229,3 +229,109 @@ def test_diagnostics_use_sqlstate_and_do_not_misclassify_other_errors():
     assert error_category(psycopg.errors.InvalidPassword('private detail')) == 'authentication_failure'
     assert error_category(PermissionError('authentication failed')) == 'unclassified_error'
     assert error_category(ValueError('timeout expired')) == 'unclassified_error'
+
+
+class OutcomeConnection(Connection):
+    def __init__(self, previous=None):
+        super().__init__()
+        self.previous = previous
+        self.calls = []
+        self.inserted = []
+
+    def execute(self, sql, params=None):
+        if 'pg_advisory_xact_lock' in sql:
+            self.calls.append('lock')
+            return SimpleNamespace()
+        if 'SELECT payload FROM equity_research.outcomes' in sql:
+            self.calls.append('read')
+            assert 'ORDER BY recorded_at DESC,snapshot_id DESC LIMIT 1' in sql
+            return SimpleNamespace(fetchone=lambda: (self.previous,) if self.previous else None)
+        if 'INSERT INTO equity_research.outcomes' in sql:
+            self.calls.append('insert')
+            self.inserted.append(params[2].obj)
+            return SimpleNamespace(fetchone=lambda: (params[0],))
+        return super().execute(sql, params)
+
+
+def research_outcome():
+    from equity_research_observations import COHORT, POLICY, PURPOSE
+    return dict(decision_id=next(iter(COHORT)), policy=POLICY, purpose=PURPOSE,
+                approved=False, assessed_at='2026-10-10T00:00:00+00:00',
+                fetched_at='2026-10-10T00:00:00+00:00', horizon_complete=True,
+                horizon_close='2026-10-01T10:00:00+00:00',
+                requested_data_through='2026-10-10T00:00:00+00:00',
+                source_candles=[['2026-09-10T10:00:00+05:30', 100, 101, 99, 100, 20]],
+                source_sha256='original-hash', source='provider',
+                session_calendar={'sessions': []}, missing_minutes=['missing'],
+                status='INSUFFICIENT_DATA')
+
+
+def test_repeat_evidence_skips_insert_without_mutating_original():
+    from copy import deepcopy
+    previous = research_outcome()
+    original = deepcopy(previous)
+    latest = dict(previous, assessed_at='2026-10-11T00:00:00+00:00',
+                  fetched_at='2026-10-11T00:00:00+00:00',
+                  requested_data_through='2026-10-11T00:00:00+00:00')
+    conn = OutcomeConnection(previous)
+    assert ResearchRepository(conn).save_outcome(latest) is False
+    assert conn.calls == ['lock', 'read']
+    assert previous == original
+    assert not conn.inserted
+
+
+@pytest.mark.parametrize('field,value', [
+    ('source_candles', [['corrected', 100, 102, 99, 100, 20]]),
+    ('source_sha256', 'changed-hash'), ('source', 'different-provider'),
+    ('missing_minutes', []), ('status', 'COMPLETE'),
+    ('session_calendar', {'sessions': ['changed']}),
+    ('horizon_complete', False),
+])
+def test_changed_evidence_is_always_stored(field, value):
+    previous = research_outcome()
+    revised = dict(previous, **{field: value})
+    conn = OutcomeConnection(previous)
+    assert ResearchRepository(conn).save_outcome(revised) is True
+    assert conn.calls == ['lock', 'read', 'insert']
+    assert conn.inserted == [revised]
+
+
+def test_incomplete_horizon_keeps_new_coverage_cutoff():
+    previous = dict(research_outcome(), horizon_complete=False)
+    revised = dict(previous, requested_data_through='2026-10-11T00:00:00+00:00')
+    conn = OutcomeConnection(previous)
+    assert ResearchRepository(conn).save_outcome(revised) is True
+
+
+def test_first_outcome_is_stored_with_full_original_provenance():
+    outcome = research_outcome()
+    conn = OutcomeConnection()
+    assert ResearchRepository(conn).save_outcome(outcome) is True
+    assert conn.inserted == [outcome]
+
+
+def test_outcome_research_safeguard_precedes_deduplication():
+    conn = OutcomeConnection(research_outcome())
+    with pytest.raises(ValueError, match='research-only'):
+        ResearchRepository(conn).save_outcome(dict(research_outcome(), approved=True))
+    assert conn.calls == []
+
+
+def test_collector_reports_unchanged_without_counting_as_new(monkeypatch):
+    import datetime as dt
+    import equity_research_collector as collector
+    observation = dict(decision_at='2026-09-10T10:00:00+05:30', instrument_key='fixture')
+    commits = []
+    repo = SimpleNamespace(
+        sources=lambda: [observation], register=lambda row: row,
+        save_outcome=lambda row: False, report=lambda: [],
+        connection=SimpleNamespace(commit=lambda: commits.append(True)))
+    monkeypatch.setattr(collector, 'enroll', lambda row, **kw: row)
+    monkeypatch.setattr(collector, 'sessions_for', lambda *args: None)
+    monkeypatch.setattr(collector, 'fetch_minutes', lambda *args: [])
+    monkeypatch.setattr(collector, 'evaluate_touches', lambda *args, **kw: {})
+    result = collector.collect(repo, None, 'fixture',
+                               {'sessions': [{'close': '2026-10-01T10:00:00+00:00'}]},
+                               clock=lambda: dt.datetime(2026, 10, 11, tzinfo=dt.timezone.utc))
+    assert result['stored'] == 0 and result['unchanged'] == 1
+    assert result['failures'] == [] and len(commits) == 2
