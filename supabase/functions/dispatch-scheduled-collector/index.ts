@@ -59,11 +59,15 @@ export function createHandler(
       return jsonResponse({ error: "UNAUTHORIZED" }, 401);
     }
 
-    let payload: DispatchRequest;
+    let payload: DispatchRequest | null;
     try {
-      payload = await request.json() as DispatchRequest;
+      payload = await request.json() as DispatchRequest | null;
     } catch {
       return jsonResponse({ error: "INVALID_JSON" }, 400);
+    }
+
+    if (payload === null) {
+      return jsonResponse({ error: "INVALID_BODY" }, 400);
     }
 
     if (typeof payload.mode !== "string" || !ALLOWED_MODES.has(payload.mode)) {
