@@ -37,9 +37,24 @@ SPECS = {
         'low': 'numeric', 'previous_close': 'numeric', 'volume': 'numeric',
         'open_interest': 'numeric', 'raw': 'jsonb',
     },
+    'universe_membership_versions': {
+        'snapshot_id': 'text', 'instrument_key': 'text', 'trading_symbol': 'text',
+        'isin': 'text', 'name': 'text', 'exchange': 'text', 'segment': 'text',
+        'instrument_type': 'text', 'security_type': 'text', 'sector': 'text',
+        'source': 'text', 'observed_at': 'timestamptz', 'raw': 'jsonb',
+    },
+    'scanner_observations': {
+        'observation_id': 'text', 'as_of_date': 'date', 'observed_at': 'timestamptz',
+        'instrument_key': 'text', 'trading_symbol': 'text', 'strategy_version': 'text',
+        'universe_snapshot_date': 'date', 'stage1_pass': 'boolean', 'stage2_pass': 'boolean',
+        'rejection_reason': 'text', 'score': 'double precision', 'entry': 'double precision',
+        'stop': 'double precision', 'target': 'double precision', 'feature_json': 'jsonb',
+    },
 }
 KEYS = {'mf_nav': ('scheme_code', 'nav_date'),
-        'market_quotes': ('observed_at', 'instrument_key')}
+        'market_quotes': ('observed_at', 'instrument_key'),
+        'universe_membership_versions': ('snapshot_id', 'instrument_key'),
+        'scanner_observations': ('observation_id',)}
 
 
 class ArchiveError(RuntimeError):

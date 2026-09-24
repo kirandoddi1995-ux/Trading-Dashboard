@@ -1,6 +1,6 @@
 """Separate, bounded archive job. Preview is read-only; deletion is double-gated.
 
-Only mf_nav and market_quotes are allowlisted. No source locks during network I/O.
+Only explicit source tables are allowlisted. No source locks during network I/O.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from drive_archive import ArchiveError, DriveArchive, SPECS, credentials, upload
 
 ROLE = 'quant_archive_worker'
 UTC = dt.timezone.utc
-HOT_RETENTION_DAYS = 14  # Only SPECS' raw quotes and superseded NAV rows.
+HOT_RETENTION_DAYS = 14  # Eligibility below additionally protects live dependencies.
 
 
 def cutoff_for(table, today, nav_cutoff=None):
@@ -40,6 +40,21 @@ def predicate(table):
         # just been captured. Keep the hot window of capture time as well.
         return """s.trade_date < %(cutoff)s
             AND s.observed_at < (%(cutoff)s::date::timestamp AT TIME ZONE 'UTC')"""
+    if table == 'universe_membership_versions':
+        return """s.observed_at < (%(cutoff)s::date::timestamp AT TIME ZONE 'UTC')
+            AND EXISTS (SELECT 1 FROM quant_app.universe_snapshot_versions h
+                WHERE h.snapshot_id=s.snapshot_id AND h.snapshot_date < %(cutoff)s
+                  AND h.observed_at < (%(cutoff)s::date::timestamp AT TIME ZONE 'UTC')
+                  AND EXISTS (SELECT 1 FROM quant_app.universe_snapshot_versions newer
+                    WHERE newer.is_complete AND newer.observed_at > h.observed_at))"""
+    if table == 'scanner_observations':
+        # Passed signals may still be awaiting outcomes indefinitely. Never delete
+        # target parents (the reviewed migration also removes CASCADE as a backstop).
+        return """s.as_of_date < %(cutoff)s
+            AND s.observed_at < (%(cutoff)s::date::timestamp AT TIME ZONE 'UTC')
+            AND s.stage2_pass IS FALSE
+            AND NOT EXISTS (SELECT 1 FROM quant_app.prediction_targets t
+                            WHERE t.observation_id=s.observation_id)"""
     raise ArchiveError('UNSUPPORTED_TABLE')
 
 
@@ -72,7 +87,8 @@ class ArchiveRepository:
                 WHERE n.nspname IN ('quant_app','equity_operations','equity_research')
                   AND c.relkind IN ('r','p','v','m')
                   AND NOT (n.nspname='quant_app' AND c.relname IN
-                      ('mf_nav','market_quotes','market_daily_volumes','archive_manifests'))
+                      ('mf_nav','market_quotes','market_daily_volumes','archive_manifests',
+                       'universe_membership_versions','scanner_observations'))
                   AND (has_table_privilege(current_user,c.oid,'SELECT')
                     OR has_table_privilege(current_user,c.oid,'INSERT')
                     OR has_table_privilege(current_user,c.oid,'UPDATE')
@@ -90,6 +106,20 @@ class ArchiveRepository:
                     raise ArchiveError('ARCHIVE_SOURCE_WRITE_GRANT_FORBIDDEN')
             conn.execute('SELECT batch_id FROM quant_app.archive_manifests LIMIT 0')
             conn.execute('SELECT instrument_key FROM quant_app.market_daily_volumes LIMIT 0')
+            # Read only the dependency columns, not prediction payloads or other tables.
+            conn.execute('SELECT observation_id FROM quant_app.prediction_targets LIMIT 0')
+            conn.execute('SELECT snapshot_id,snapshot_date,observed_at,is_complete '
+                         'FROM quant_app.universe_snapshot_versions LIMIT 0')
+            safe_fk = conn.execute("""SELECT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conrelid='quant_app.prediction_targets'::regclass
+                  AND confrelid='quant_app.scanner_observations'::regclass
+                  AND conname='prediction_targets_observation_id_fkey'
+                  AND contype='f' AND confdeltype='r' AND convalidated)
+                AND NOT EXISTS (SELECT 1 FROM pg_constraint
+                WHERE confrelid='quant_app.scanner_observations'::regclass
+                  AND contype='f' AND confdeltype<>'r')""").fetchone()[0]
+            if not safe_fk:
+                raise ArchiveError('SCANNER_ARCHIVE_RESTRICT_FK_REQUIRED')
 
     def preview(self, table, cutoff):
         condition = predicate(table)
@@ -99,7 +129,10 @@ class ArchiveRepository:
 
     def select(self, table, cutoff, limit):
         condition = predicate(table)
-        order = 's.nav_date,s.scheme_code' if table == 'mf_nav' else 's.observed_at,s.instrument_key'
+        order = {'mf_nav': 's.nav_date,s.scheme_code',
+                 'market_quotes': 's.observed_at,s.instrument_key',
+                 'universe_membership_versions': 's.observed_at,s.snapshot_id,s.instrument_key',
+                 'scanner_observations': 's.as_of_date,s.observation_id'}[table]
         with self.connection(readonly=True) as conn:
             # Canonical PostgreSQL JSON text, never a driver float conversion.
             rows = conn.execute(f'SELECT to_jsonb(s)::text FROM quant_app.{table} s '
@@ -134,10 +167,12 @@ class ArchiveRepository:
             with conn.cursor() as cur:
                 cur.executemany('INSERT INTO verified_archive_rows VALUES (%s::jsonb)',
                                 [(text,) for text in texts])
-            key_match = ("s.scheme_code=v.original->>'scheme_code' AND "
-                         "s.nav_date=(v.original->>'nav_date')::date" if table == 'mf_nav' else
-                         "s.instrument_key=v.original->>'instrument_key' AND "
-                         "s.observed_at=(v.original->>'observed_at')::timestamptz")
+            key_match = {
+                'mf_nav': "s.scheme_code=v.original->>'scheme_code' AND s.nav_date=(v.original->>'nav_date')::date",
+                'market_quotes': "s.instrument_key=v.original->>'instrument_key' AND s.observed_at=(v.original->>'observed_at')::timestamptz",
+                'universe_membership_versions': "s.snapshot_id=v.original->>'snapshot_id' AND s.instrument_key=v.original->>'instrument_key'",
+                'scanner_observations': "s.observation_id=v.original->>'observation_id'",
+            }[table]
             if table == 'market_quotes':
                 # Fail closed if compact history does not cover archived volumes.
                 missing = conn.execute(f"""SELECT count(*) FROM quant_app.market_quotes s
