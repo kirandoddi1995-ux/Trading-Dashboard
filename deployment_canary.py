@@ -43,7 +43,12 @@ def run_canaries(root):
     checks["scheduled_collector_present"]=("scheduled_collector.py" in workflow
                                             and "secrets.DATABASE_URL" in workflow
                                             and "secrets.DATABASE_MIGRATION_URL" in workflow
-                                            and "--mode scan" in workflow
+                                            # Collection now routes all modes through dispatch;
+                                            # the removed cron-only scan step was unreachable.
+                                            and "  workflow_dispatch:" in workflow
+                                            and "options: [scan, global, open, close, weekly, all]" in workflow
+                                            and "if: github.event_name == 'workflow_dispatch'" in workflow
+                                            and 'run: python scheduled_collector.py --mode "${{ inputs.mode }}"' in workflow
                                             and "PROSPECTIVE_DATA_LICENSE_ACK" in workflow)
     collector_source=(root/"scheduled_collector.py").read_text(encoding="utf-8")
     checks["scheduled_scan_is_shadow_only"]=(
