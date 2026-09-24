@@ -1,0 +1,8 @@
+{
+  "name": "trading-dashboard-sql-safety-tests",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@electric-sql/pglite": "0.3.14"
+  }
+}
