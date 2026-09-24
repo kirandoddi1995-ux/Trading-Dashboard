@@ -144,8 +144,12 @@ def main():
         print('Copy archive_folder_id from that file to DRIVE_ARCHIVE_FOLDER_ID.')
         print('Keep client_secret.json and token.json in private, backed-up storage.')
         return 0
-    except Exception as exc:
-        print('Authorization failed: ' + (str(exc) if isinstance(exc, ArchiveError) else type(exc).__name__))
+    except KeyboardInterrupt:
+        print('Authorization cancelled.')
+        return 1
+    except Exception:
+        # Exception bodies can include credential JSON or provider responses.
+        print('Authorization failed. Check private configuration, consent, and token-file permissions.')
         return 1
 
 
