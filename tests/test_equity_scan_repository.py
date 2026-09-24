@@ -332,6 +332,16 @@ process.stdin.on('data',c=>input+=c);process.stdin.on('end',async()=>{
  const unfinished=(await q(c.claim[1])).rows;
  if(unfinished.length!==1||unfinished[0].item!=='ABC')throw Error('Legacy recovery selection incorrect');
  if((await q(c.checkpoint[0])).rows[0].fencing_token!==2)throw Error('Old fence not observable');
+ // A second claimant must neither steal the fence nor change stored work.
+ const before=JSON.stringify((await db.query('SELECT * FROM equity_operations.scan_candidates ORDER BY instrument')).rows);
+ if((await q(c.claim[0])).rows.length!==0)throw Error('Active recovery was superseded');
+ const active=(await db.query('SELECT status,fencing_token FROM equity_operations.scan_runs')).rows[0];
+ if(active.status!=='RECOVERING'||active.fencing_token!==2)throw Error('Rejected claim changed active run');
+ if(JSON.stringify((await db.query('SELECT * FROM equity_operations.scan_candidates ORDER BY instrument')).rows)!==before)
+   throw Error('Rejected claim changed checkpoints');
+ // Explicit interruption permits the normal retry, advancing the fence once.
+ await db.exec("UPDATE equity_operations.scan_runs SET status='INTERRUPTED' WHERE run_id='run'");
+ if((await q(c.claim[0])).rows[0].fencing_token!==3)throw Error('Interrupted recovery cannot resume');
  console.log('CHECKPOINT_POSTGRES_PASS');
  }catch(e){console.error(e.message);process.exitCode=1;}finally{await db.close();}
 });
@@ -355,6 +365,15 @@ def test_recovery_claim_increments_fence_and_returns_only_unfinished_items():
     }
     assert "fencing_token=fencing_token+1" in conn.calls[0][0]
     assert "status<>'COMPLETE'" in conn.calls[1][0]
+
+
+def test_rejected_recovery_claim_rolls_back_without_reading_or_committing_items():
+    conn = Connection(fetchone=[None])
+    assert repository(conn).claim_recovery('run', 'owner') is None
+    assert conn.rollbacks == 1
+    assert conn.commits == 0
+    assert len(conn.calls) == 1
+    assert "'RECOVERING'" not in conn.calls[0][0].split('WHERE', 1)[1]
 
 
 def test_manual_review_is_append_only_at_repository_boundary():
