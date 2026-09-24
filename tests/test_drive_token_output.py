@@ -1,6 +1,9 @@
 """Fake credentials only: never contact Google or write real token files."""
 import importlib
 import json
+from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import Mock
 
 import pytest
@@ -24,6 +27,52 @@ def test_import_is_silent(monkeypatch, capsys):
     importlib.reload(helper)
     prompt.assert_not_called()
     assert capsys.readouterr() == ('', '')
+
+
+def test_fresh_import_needs_no_credentials_or_oauth_dependencies(tmp_path):
+    # Compile before guarding I/O so Python can load the source itself. The
+    # isolated interpreter has no previously imported helper hiding side effects.
+    source = Path(helper.__file__).resolve()
+    script = r'''
+import builtins
+import sys
+import types
+source = sys.argv[1]
+with open(source, encoding="utf-8") as stream:
+    code = compile(stream.read(), source, "exec")
+original_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    if name.split(".")[0] in {
+        "authorize_drive", "drive_archive", "google", "google_auth_oauthlib",
+        "requests", "dotenv", "oauth2client", "pyarrow"
+    }:
+        raise AssertionError("OAuth dependency loaded during import")
+    return original_import(name, *args, **kwargs)
+def forbidden(*args, **kwargs):
+    raise AssertionError("Import attempted external interaction")
+def audit(event, args):
+    if event == "open" or event.startswith(("socket.", "subprocess.", "os.system")):
+        forbidden()
+builtins.__import__ = guarded_import
+builtins.input = forbidden
+sys.addaudithook(audit)
+module = types.ModuleType("get_drive_token")
+module.__file__ = source
+exec(code, module.__dict__)
+assert callable(module.main)
+'''
+    result = subprocess.run(
+        [sys.executable, '-I', '-c', script, str(source)],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == result.stderr == ''
+
+
+def test_authorization_dependencies_are_declared():
+    requirements = (Path(helper.__file__).parent / 'requirements-archive.txt').read_text()
+    for dependency in ('google-auth', 'requests', 'pyarrow'):
+        assert any(line.startswith(dependency + '==') for line in requirements.splitlines())
 
 
 @pytest.mark.parametrize('error', [RuntimeError, ArchiveError, KeyboardInterrupt])
