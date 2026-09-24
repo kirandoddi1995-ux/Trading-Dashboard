@@ -4,6 +4,23 @@ import { createHandler } from "./index.ts";
 
 const endpoint = "https://example.test/dispatch";
 
+test("rejects literal JSON null with 400 before contacting GitHub", async () => {
+  let calls = 0;
+  const handler = createHandler(
+    { githubToken: "github-secret", sharedSecret: "shared-test-secret" },
+    async () => {
+      calls += 1;
+      return new Response(null, { status: 204 });
+    },
+  );
+  const incoming = request(null);
+  assert.equal(await incoming.clone().text(), "null");
+  const response = await handler(incoming);
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "INVALID_BODY" });
+  assert.equal(calls, 0);
+});
+
 function request(body: unknown, secret = "shared-test-secret"): Request {
   return new Request(endpoint, {
     method: "POST",
