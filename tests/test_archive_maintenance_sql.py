@@ -131,6 +131,23 @@ def pg(monkeypatch):
         """})
         migration = (ROOT / 'sql/drive_archive_draft.sql').read_text()
         db.send({'script': migration})
+        from drive_archive import SPECS
+        for table in ('universe_membership_versions', 'scanner_observations'):
+            columns = ','.join(f'{name} {kind}' for name, kind in SPECS[table].items())
+            key = 'snapshot_id,instrument_key' if table.startswith('universe') else 'observation_id'
+            db.execute(f'CREATE TABLE quant_app.{table} ({columns}, PRIMARY KEY({key}))')
+        db.send({'script': """
+            CREATE TABLE quant_app.universe_snapshot_versions (
+                snapshot_id text PRIMARY KEY,snapshot_date date,observed_at timestamptz,
+                is_complete boolean,payload_hash text);
+            CREATE TABLE quant_app.prediction_targets (
+                observation_id text PRIMARY KEY REFERENCES quant_app.scanner_observations(observation_id)
+                    ON DELETE CASCADE, outcome text);
+            GRANT SELECT,INSERT,UPDATE ON quant_app.scanner_observations,
+                quant_app.universe_membership_versions,quant_app.universe_snapshot_versions,
+                quant_app.prediction_targets TO quant_app_runtime;
+        """})
+        db.send({'script': (ROOT / 'sql/drive_archive_scanner_universe_draft.sql').read_text()})
         # PGlite has no shared processes; replace ONLY this lock in the harness.
         original = db.execute
         def execute(sql, params=()):
@@ -285,3 +302,102 @@ def test_fourteen_day_boundary_latest_nav_and_recent_capture_survive(pg):
     assert pg.execute('SELECT count(*) FROM quant_app.market_quotes').fetchone()[0] == 3
     assert pg.execute('SELECT count(*) FROM quant_app.mf_nav').fetchone()[0] == 2
     assert pg.execute('SELECT count(*) FROM quant_app.market_daily_volumes').fetchone()[0] == 4
+
+
+def scanner(db, identifier, *, passed=False, day='2026-08-01', observed=None):
+    db.execute("""INSERT INTO quant_app.scanner_observations
+        (observation_id,as_of_date,observed_at,instrument_key,trading_symbol,strategy_version,
+         universe_snapshot_date,stage1_pass,stage2_pass,feature_json)
+        VALUES (%s,%s,%s,'KEY','SYMBOL','test',%s,true,%s,'{"x":1.234567890123456789}')""",
+               (identifier, day, observed or day+'T10:00Z', day, passed))
+
+
+def test_scanner_retains_passed_target_parents_boundary_and_recent_capture(pg):
+    scanner(pg, 'archive')
+    scanner(pg, 'passed', passed=True)
+    scanner(pg, 'target')
+    scanner(pg, 'boundary', day='2026-09-10')
+    scanner(pg, 'recent_capture', observed='2026-09-10T00:00Z')
+    pg.execute("INSERT INTO quant_app.prediction_targets VALUES ('target','label')")
+    pg.execute('SET ROLE quant_archive_worker')
+    repo = ArchiveRepository('postgres://test-only')
+    repo.check()
+    cutoff = dt.date(2026, 9, 10)
+    assert repo.preview('scanner_observations', cutoff) == 1
+    result = run_batch(repo, MemoryDrive(), 'scanner_observations', cutoff, delete=True)
+    assert result['verified'] == result['deleted'] == 1
+    assert {r[0] for r in pg.execute('SELECT observation_id FROM quant_app.scanner_observations').fetchall()} == {
+        'passed', 'target', 'boundary', 'recent_capture'}
+    assert pg.execute('SELECT observation_id FROM quant_app.prediction_targets').fetchall() == [('target',)]
+    with pytest.raises(RuntimeError):
+        pg.execute('SELECT outcome FROM quant_app.prediction_targets')
+    with pytest.raises(RuntimeError):
+        pg.execute('DELETE FROM quant_app.prediction_targets')
+
+
+def test_scanner_rechecks_payload_status_and_new_target_after_export(pg):
+    from drive_archive import upload_verified
+    for identifier in ('changed', 'promoted', 'target_added'):
+        scanner(pg, identifier)
+    pg.execute('SET ROLE quant_archive_worker')
+    repo = ArchiveRepository('postgres://test-only')
+    cutoff = dt.date(2026, 9, 10)
+    manifest, texts = upload_verified(MemoryDrive(), 'scanner_observations',
+                                      repo.select('scanner_observations', cutoff, 100))
+    pg.execute('RESET ROLE')
+    pg.execute("UPDATE quant_app.scanner_observations SET score=99 WHERE observation_id='changed'")
+    pg.execute("UPDATE quant_app.scanner_observations SET stage2_pass=true WHERE observation_id='promoted'")
+    pg.execute("INSERT INTO quant_app.prediction_targets VALUES ('target_added','label')")
+    pg.execute('SET ROLE quant_archive_worker')
+    assert repo.acknowledge(manifest, texts, cutoff, True) == 0
+    pg.execute('RESET ROLE')
+    # Even an owner bypassing RLS cannot cascade away an existing target.
+    with pytest.raises(RuntimeError, match='foreign key'):
+        pg.execute("DELETE FROM quant_app.scanner_observations WHERE observation_id='target_added'")
+    assert pg.execute('SELECT count(*) FROM quant_app.prediction_targets').fetchone()[0] == 1
+
+
+def test_membership_versions_keep_latest_complete_and_recent_capture(pg):
+    for identifier, date, complete in [('old','2026-08-01',True),
+                                       ('latest','2026-08-02',True),
+                                       ('incomplete','2026-08-03',False)]:
+        pg.execute('INSERT INTO quant_app.universe_snapshot_versions VALUES (%s,%s,%s,%s,\'hash\')',
+                   (identifier,date,date+'T10:00Z',complete))
+        pg.execute("""INSERT INTO quant_app.universe_membership_versions
+            (snapshot_id,instrument_key,trading_symbol,observed_at,source,raw)
+            VALUES (%s,'KEY','SYMBOL',%s,'provider','{"original":true}')""",
+                   (identifier,date+'T10:00Z'))
+    pg.execute("""INSERT INTO quant_app.universe_membership_versions
+        (snapshot_id,instrument_key,observed_at) VALUES ('old','RECENT','2026-09-10T00:00Z')""")
+    pg.execute('SET ROLE quant_archive_worker')
+    repo = ArchiveRepository('postgres://test-only')
+    result = run_batch(repo, MemoryDrive(), 'universe_membership_versions', dt.date(2026,9,10), delete=True)
+    assert result['deleted'] == result['verified'] == 1
+    assert pg.execute('SELECT count(*) FROM quant_app.universe_membership_versions').fetchone()[0] == 3
+    assert pg.execute('SELECT count(snapshot_id) FROM quant_app.universe_snapshot_versions').fetchone()[0] == 3
+    with pytest.raises(RuntimeError):
+        pg.execute('SELECT payload_hash FROM quant_app.universe_snapshot_versions')
+
+
+def test_new_migration_rerunnable_and_missing_restrict_guard_blocks(pg):
+    pg.send({'script': (ROOT / 'sql/drive_archive_scanner_universe_draft.sql').read_text()})
+    pg.execute('SET ROLE quant_archive_worker')
+    repo = ArchiveRepository('postgres://test-only')
+    repo.check()
+    pg.execute('RESET ROLE')
+    pg.execute('ALTER TABLE quant_app.prediction_targets DROP CONSTRAINT prediction_targets_observation_id_fkey')
+    pg.execute('SET ROLE quant_archive_worker')
+    with pytest.raises(Exception, match='RESTRICT_FK_REQUIRED'):
+        repo.check()
+
+
+def test_migration_preserves_runtime_and_does_not_widen_existing_rls(pg):
+    pg.execute('SET ROLE quant_app_runtime')
+    scanner(pg, 'runtime', passed=True)
+    assert pg.execute('SELECT observation_id FROM quant_app.scanner_observations').fetchone() == ('runtime',)
+    pg.execute('RESET ROLE')
+    pg.execute('ALTER POLICY archive_preserve_runtime ON quant_app.scanner_observations '
+               'USING (false) WITH CHECK (false)')
+    pg.send({'script': (ROOT / 'sql/drive_archive_scanner_universe_draft.sql').read_text()})
+    pg.execute('SET ROLE quant_app_runtime')
+    assert pg.execute('SELECT observation_id FROM quant_app.scanner_observations').fetchall() == []

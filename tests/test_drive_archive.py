@@ -137,7 +137,7 @@ def test_delete_switch_is_checked_before_any_connection(monkeypatch, capsys):
     assert 'DELETION_NOT_ENABLED' in capsys.readouterr().out
 
 
-@pytest.mark.parametrize('table', ['evidence_ledger_events', 'scanner_observations',
+@pytest.mark.parametrize('table', ['evidence_ledger_events',
     'prediction_targets', 'market_daily_volumes', 'positions', 'orders',
     'scan_runs', 'outcomes', 'observations'])
 def test_protected_tables_never_enter_archive_retention(table):
@@ -153,14 +153,16 @@ def workflow_script():
     return textwrap.dedent(text.split("python - <<'PY'\n", 1)[1].rsplit('          PY', 1)[0])
 
 
-def test_schedule_requests_deletion_for_both_tables(monkeypatch):
+def test_schedule_requests_deletion_for_all_four_tables(monkeypatch):
     calls = []
     monkeypatch.setenv('EVENT_NAME', 'schedule')
     monkeypatch.setenv('ARCHIVE_DELETE_ENABLED', 'true')
     monkeypatch.setattr(maintenance, 'main', lambda args: calls.append(args) or 0)
     exec(compile(workflow_script(), '<archive-workflow>', 'exec'), {})
     assert calls == [['--mode', 'delete', '--table', 'mf_nav'],
-                     ['--mode', 'delete', '--table', 'market_quotes']]
+                     ['--mode', 'delete', '--table', 'market_quotes'],
+                     ['--mode', 'delete', '--table', 'universe_membership_versions'],
+                     ['--mode', 'delete', '--table', 'scanner_observations']]
 
 
 def test_schedule_fails_closed_instead_of_export_fallback(monkeypatch, capsys):
