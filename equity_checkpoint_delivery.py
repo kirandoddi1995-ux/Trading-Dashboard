@@ -63,6 +63,39 @@ def has_pending(path, scan_id):
                             (scan_id,)).fetchone() is not None
 
 
+def list_conflicts(path, scan_id=None):
+    """Operator metadata only: never return checkpoint payloads or credentials."""
+    with local_connection(path) as conn:
+        rows = conn.execute('''SELECT scan_id,candidate,fencing_token,attempts
+            FROM checkpoint_outbox WHERE delivered_at IS NULL AND last_error='CONFLICT'
+            AND (? IS NULL OR scan_id=?) ORDER BY created_at,scan_id,candidate''',
+            (scan_id, scan_id)).fetchall()
+    return [dict(zip(('scan_id', 'candidate', 'fencing_token', 'attempts'), row)) for row in rows]
+
+
+def retry_conflict(path, scan_id, candidate, fencing_token, *, confirmed=False):
+    """Explicit recheck after investigation; never change payload/fence or acknowledge.
+
+    The normal sender still requires NEW/IDEMPOTENT_SUCCESS. A stale fence or
+    unchanged data conflict is quarantined again, not bypassed.
+    """
+    if confirmed is not True:
+        raise ValueError('Confirm investigation before retrying a checkpoint conflict')
+    key = (scan_id, candidate, str(fencing_token))
+    with delivery_owner(str(Path(path).resolve()) + '.checkpoint-sender.lock') as owned:
+        if not owned:
+            raise RuntimeError('Checkpoint sender is busy; retry later')
+        with local_connection(path) as conn:
+            updated = conn.execute('''UPDATE checkpoint_outbox SET last_error=NULL,next_attempt_at=0
+                WHERE scan_id=? AND candidate=? AND fencing_token=?
+                AND delivered_at IS NULL AND last_error='CONFLICT' ''', key).rowcount
+            conn.commit()
+    if updated != 1:
+        raise ValueError('No pending conflict matches that checkpoint identity')
+    logging.getLogger(__name__).warning('CHECKPOINT_CONFLICT_RETRY %s', json.dumps(dict(
+        scan_id=scan_id, candidate=candidate, fencing_token=str(fencing_token))))
+
+
 class CheckpointSender:
     def __init__(self, path, repository, *, poll_seconds=1, batch_size=50):
         self.path = str(Path(path).resolve())
@@ -143,6 +176,11 @@ class CheckpointSender:
                             WHERE scan_id=? AND candidate=? AND fencing_token=? AND delivered_at IS NULL''',
                             (time.time() + min(60, 2 ** min(attempts, 6)), error, *key))
                         conn.commit()
+                    if error == 'CONFLICT':
+                        logging.getLogger(__name__).error('CHECKPOINT_CONFLICT %s', json.dumps(dict(
+                            scan_id=scan_id, candidate=candidate, fencing_token=token,
+                            action='Inspect with equity_checkpoint_delivery.py --database PATH; '
+                                   'retry only after investigation. Evidence remains pending.')))
             if stats['selected']:
                 logging.getLogger(__name__).info('CHECKPOINT_DELIVERY %s', json.dumps(stats, sort_keys=True))
             self._finalize_runs()
@@ -171,3 +209,29 @@ def get_sender(path, repository):
         if key not in _registry:
             _registry[key] = CheckpointSender(key, repository)
         return _registry[key]
+
+
+def main(argv=None):
+    """Local operator tool. Never connects to PostgreSQL or deletes evidence."""
+    import argparse
+    parser = argparse.ArgumentParser(description='Inspect/requeue checkpoint conflicts; no evidence is discarded.')
+    parser.add_argument('--database', required=True, help='Existing scan SQLite database on the affected host')
+    parser.add_argument('--retry', nargs=3, metavar=('SCAN_ID', 'CANDIDATE', 'FENCING_TOKEN'))
+    parser.add_argument('--confirm-investigated', action='store_true')
+    args = parser.parse_args(argv)
+    if not Path(args.database).is_file():
+        parser.error('Existing scan database required')
+    try:
+        if args.retry:
+            retry_conflict(args.database, *args.retry, confirmed=args.confirm_investigated)
+            print('Checkpoint queued for revalidation; it is not marked delivered.')
+        else:
+            print(json.dumps(list_conflicts(args.database), sort_keys=True))
+        return 0
+    except Exception as exc:
+        print('Checkpoint operation failed (' + type(exc).__name__ + '); no forced acknowledgment performed.')
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

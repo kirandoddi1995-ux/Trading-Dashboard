@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 import datetime as dt
-from equity_checkpoint_delivery import ensure_schema, enqueue, get_sender, has_pending
+from equity_checkpoint_delivery import ensure_schema, enqueue, get_sender, has_pending, list_conflicts
 from equity_scan_profiling import (
     timed as profile_timed, profile_controller,
     run_candidate, milestone, candidate_context, span,
@@ -312,6 +312,12 @@ class ScanJobs:
             if not source:
                 raise CheckpointUnavailable("No interrupted equity scan is available")
             if self._checkpoint_sender is not None and has_pending(self._db_path, source['id']):
+                conflicts = list_conflicts(self._db_path, source['id'])
+                if conflicts:
+                    raise CheckpointUnavailable(
+                        f"{len(conflicts)} checkpoint conflict(s) require operator investigation; "
+                        "use equity_checkpoint_delivery.py --database PATH on this host. "
+                        "Conflicting evidence has not been discarded.")
                 self._checkpoint_sender.notify()
                 raise CheckpointUnavailable("Checkpoint delivery is pending; recovery must wait for acknowledgment")
             if self._checkpoint_store is not None and self._checkpoint_store.configured:
