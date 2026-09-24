@@ -302,3 +302,69 @@ def test_late_old_fence_delivery_is_a_visible_failure(tmp_path):
     assert sender.drain_once() == dict(selected=1, delivered=0, failed=1)
     assert delivery.has_pending(path, 'run')
     assert not any(sql.startswith('UPDATE') for sql, _ in conn.calls)
+
+
+def test_conflict_operator_retry_preserves_evidence_and_requires_real_ack(tmp_path, caplog):
+    path, jobs, job = fixture(tmp_path)
+    payload = queue(path)
+    jobs._persist('owner', 'sig', job, 'COMPLETE')
+    store = Store(CheckpointOutcome.CONFLICT)
+    sender = delivery.CheckpointSender(path, store)
+    sender.drain_once()
+    assert 'CHECKPOINT_CONFLICT' in caplog.text
+    assert 'score' not in caplog.text
+    assert delivery.list_conflicts(path) == [dict(scan_id='run', candidate='A', fencing_token='1', attempts=1)]
+    assert delivery.list_conflicts(path, 'other') == []
+    with pytest.raises(ValueError, match='Confirm'):
+        delivery.retry_conflict(path, 'run', 'A', 1)
+    delivery.retry_conflict(path, 'run', 'A', 1, confirmed=True)
+    assert delivery.has_pending(path, 'run')
+    assert sender.drain_once()['failed'] == 1  # retry cannot bypass a real conflict
+    assert store.finished == []
+    assert delivery.list_conflicts(path)[0]['attempts'] == 2
+    delivery.retry_conflict(path, 'run', 'A', 1, confirmed=True)
+    store.outcome = CheckpointOutcome.IDEMPOTENT_SUCCESS
+    assert sender.drain_once()['delivered'] == 1
+    assert store.calls == [payload, payload, payload]
+    assert len(store.finished) == 1
+    assert delivery.list_conflicts(path) == []
+    with pytest.raises(ValueError, match='No pending conflict'):
+        delivery.retry_conflict(path, 'run', 'A', 1, confirmed=True)
+
+
+def test_conflict_survives_restart_but_does_not_block_other_deliveries(tmp_path):
+    path, _, _ = fixture(tmp_path)
+    queue(path)
+    delivery.CheckpointSender(path, Store(CheckpointOutcome.CONFLICT)).drain_once()
+    queue(path, 'B')
+    assert delivery.CheckpointSender(path, Store()).drain_once()['delivered'] == 1
+    assert delivery.list_conflicts(path)[0]['candidate'] == 'A'
+    assert delivery.has_pending(path, 'run')
+    with delivery.delivery_owner(path + '.checkpoint-sender.lock') as owned:
+        assert owned
+        with pytest.raises(RuntimeError, match='busy'):
+            delivery.retry_conflict(path, 'run', 'A', 1, confirmed=True)
+    assert delivery.list_conflicts(path)
+
+
+def test_conflict_is_actionable_in_recovery_and_operator_cli(tmp_path, capsys):
+    path, jobs, _ = fixture(tmp_path)
+    queue(path)
+    class Recovery(Store):
+        def latest_recoverable(self, *args):
+            return {'id': 'run'}
+        def claim_recovery(self, *args):
+            pytest.fail('conflict must block recovery claim')
+    jobs._checkpoint_store = Recovery(CheckpointOutcome.CONFLICT)
+    jobs._checkpoint_sender = delivery.CheckpointSender(path, jobs._checkpoint_store)
+    jobs._checkpoint_sender.drain_once()
+    with pytest.raises(CheckpointUnavailable, match='operator investigation'):
+        jobs.recover('owner', 'sig', lambda item: None)
+    assert delivery.main(['--database', path]) == 0
+    output = capsys.readouterr().out
+    assert 'fencing_token' in output and 'score' not in output
+    args = ['--database', path, '--retry', 'run', 'A', '1']
+    assert delivery.main(args) == 1
+    assert delivery.list_conflicts(path)
+    assert delivery.main(args + ['--confirm-investigated']) == 0
+    assert delivery.has_pending(path, 'run')
