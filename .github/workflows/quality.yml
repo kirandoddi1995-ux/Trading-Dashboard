@@ -1,13 +1,22 @@
 name: Production quality gate
 on:
   push:
-    branches: [main, master]
   pull_request:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      EQUITY_TEST_PGLITE_MODULE: ${{ github.workspace }}/tests/sql-harness/node_modules/@electric-sql/pglite
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install locked SQL safety test engine
+        run: npm ci --prefix tests/sql-harness --ignore-scripts --no-audit --no-fund
+      - name: Verify SQL safety test engine (mandatory)
+        run: |
+          node -e 'const {PGlite}=require(process.env.EQUITY_TEST_PGLITE_MODULE); (async()=>{const db=new PGlite(); try {await db.waitReady; await db.query("SELECT 1");} finally {await db.close();}})().catch(e=>{console.error(e);process.exitCode=1;});'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
