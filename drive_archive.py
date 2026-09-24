@@ -25,6 +25,10 @@ API = 'https://www.googleapis.com/drive/v3/files'
 MAX_BYTES = 32 * 1024 * 1024
 FORMAT_VERSION = 'quant-archive-v1'
 SPECS = {
+    'equity_research.outcomes': {
+        'snapshot_id': 'text', 'decision_id': 'text', 'payload': 'jsonb',
+        'recorded_at': 'timestamptz',
+    },
     'mf_nav': {
         'scheme_code': 'text', 'nav_date': 'date', 'isin_growth': 'text',
         'isin_reinvestment': 'text', 'scheme_name': 'text', 'amc': 'text',
@@ -52,9 +56,14 @@ SPECS = {
     },
 }
 KEYS = {'mf_nav': ('scheme_code', 'nav_date'),
+        'equity_research.outcomes': ('snapshot_id',),
         'market_quotes': ('observed_at', 'instrument_key'),
         'universe_membership_versions': ('snapshot_id', 'instrument_key'),
         'scanner_observations': ('observation_id',)}
+
+# Schema routing is fixed, never derived from user-supplied SQL identifiers.
+RELATIONS = {key: ('equity_research.outcomes' if key == 'equity_research.outcomes'
+                   else 'quant_app.' + key) for key in SPECS}
 
 
 class ArchiveError(RuntimeError):

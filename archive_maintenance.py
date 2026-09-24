@@ -12,7 +12,7 @@ import os
 
 import psycopg
 
-from drive_archive import ArchiveError, DriveArchive, SPECS, credentials, upload_verified
+from drive_archive import ArchiveError, DriveArchive, RELATIONS, SPECS, credentials, upload_verified
 
 ROLE = 'quant_archive_worker'
 UTC = dt.timezone.utc
@@ -31,6 +31,12 @@ def cutoff_for(table, today, nav_cutoff=None):
 
 
 def predicate(table):
+    if table == 'equity_research.outcomes':
+        # Match ResearchRepository.report's deterministic latest-row ordering.
+        return """s.recorded_at < (%(cutoff)s::date::timestamp AT TIME ZONE 'UTC')
+            AND EXISTS (SELECT 1 FROM equity_research.outcomes newer
+                WHERE newer.decision_id=s.decision_id
+                  AND (newer.recorded_at,newer.snapshot_id) > (s.recorded_at,s.snapshot_id))"""
     if table == 'mf_nav':
         return """s.nav_date < %(cutoff)s AND EXISTS (
             SELECT 1 FROM quant_app.mf_nav newer
@@ -88,7 +94,8 @@ class ArchiveRepository:
                   AND c.relkind IN ('r','p','v','m')
                   AND NOT (n.nspname='quant_app' AND c.relname IN
                       ('mf_nav','market_quotes','market_daily_volumes','archive_manifests',
-                       'universe_membership_versions','scanner_observations'))
+                       'universe_membership_versions','scanner_observations')
+                       OR n.nspname='equity_research' AND c.relname='outcomes')
                   AND (has_table_privilege(current_user,c.oid,'SELECT')
                     OR has_table_privilege(current_user,c.oid,'INSERT')
                     OR has_table_privilege(current_user,c.oid,'UPDATE')
@@ -99,10 +106,10 @@ class ArchiveRepository:
             for table in SPECS:
                 for permission in ('SELECT', 'DELETE'):
                     if not conn.execute('SELECT has_table_privilege(current_user,%s,%s)',
-                                        ('quant_app.' + table, permission)).fetchone()[0]:
+                                        (RELATIONS[table], permission)).fetchone()[0]:
                         raise ArchiveError('ARCHIVE_SOURCE_GRANT_MISSING')
                 if conn.execute('SELECT has_table_privilege(current_user,%s,%s)',
-                                ('quant_app.' + table, 'INSERT,UPDATE,TRUNCATE')).fetchone()[0]:
+                                (RELATIONS[table], 'INSERT,UPDATE,TRUNCATE,TRIGGER')).fetchone()[0]:
                     raise ArchiveError('ARCHIVE_SOURCE_WRITE_GRANT_FORBIDDEN')
             conn.execute('SELECT batch_id FROM quant_app.archive_manifests LIMIT 0')
             conn.execute('SELECT instrument_key FROM quant_app.market_daily_volumes LIMIT 0')
@@ -120,11 +127,21 @@ class ArchiveRepository:
                   AND contype='f' AND confdeltype<>'r')""").fetchone()[0]
             if not safe_fk:
                 raise ArchiveError('SCANNER_ARCHIVE_RESTRICT_FK_REQUIRED')
+            guards = conn.execute("""SELECT count(*) FROM pg_trigger
+                WHERE tgrelid='equity_research.outcomes'::regclass
+                  AND tgenabled IN ('O','A') AND NOT tgisinternal
+                  AND ((tgname='outcome_append_only' AND tgtype=58
+                        AND tgfoid='equity_research.reject_mutation()'::regprocedure)
+                    OR (tgname='outcome_archive_row_guard' AND tgtype=11
+                        AND tgfoid='equity_research.guard_outcome_archive_delete()'::regprocedure))
+            """).fetchone()[0]
+            if guards != 2:
+                raise ArchiveError('RESEARCH_ARCHIVE_GUARDS_REQUIRED')
 
     def preview(self, table, cutoff):
         condition = predicate(table)
         with self.connection(readonly=True) as conn:
-            return conn.execute(f'SELECT count(*) FROM quant_app.{table} s WHERE {condition}',
+            return conn.execute(f'SELECT count(*) FROM {RELATIONS[table]} s WHERE {condition}',
                                 {'cutoff': cutoff}).fetchone()[0]
 
     def select(self, table, cutoff, limit):
@@ -132,10 +149,11 @@ class ArchiveRepository:
         order = {'mf_nav': 's.nav_date,s.scheme_code',
                  'market_quotes': 's.observed_at,s.instrument_key',
                  'universe_membership_versions': 's.observed_at,s.snapshot_id,s.instrument_key',
-                 'scanner_observations': 's.as_of_date,s.observation_id'}[table]
+                 'scanner_observations': 's.as_of_date,s.observation_id',
+                 'equity_research.outcomes': 's.recorded_at,s.snapshot_id'}[table]
         with self.connection(readonly=True) as conn:
             # Canonical PostgreSQL JSON text, never a driver float conversion.
-            rows = conn.execute(f'SELECT to_jsonb(s)::text FROM quant_app.{table} s '
+            rows = conn.execute(f'SELECT to_jsonb(s)::text FROM {RELATIONS[table]} s '
                                 f'WHERE {condition} ORDER BY {order} LIMIT %(limit)s',
                                 {'cutoff': cutoff, 'limit': limit}).fetchall()
             return [row[0] for row in rows]
@@ -172,6 +190,7 @@ class ArchiveRepository:
                 'market_quotes': "s.instrument_key=v.original->>'instrument_key' AND s.observed_at=(v.original->>'observed_at')::timestamptz",
                 'universe_membership_versions': "s.snapshot_id=v.original->>'snapshot_id' AND s.instrument_key=v.original->>'instrument_key'",
                 'scanner_observations': "s.observation_id=v.original->>'observation_id'",
+                'equity_research.outcomes': "s.snapshot_id=v.original->>'snapshot_id'",
             }[table]
             if table == 'market_quotes':
                 # Fail closed if compact history does not cover archived volumes.
@@ -184,7 +203,7 @@ class ArchiveRepository:
                 if missing:
                     raise ArchiveError('DAILY_VOLUME_COVERAGE_MISSING')
             count = conn.execute(f"""WITH removed AS (
-                DELETE FROM quant_app.{table} s USING verified_archive_rows v
+                DELETE FROM {RELATIONS[table]} s USING verified_archive_rows v
                 WHERE {key_match} AND to_jsonb(s)=v.original AND {condition}
                 RETURNING 1) SELECT count(*) FROM removed""", {'cutoff': cutoff}).fetchone()[0]
             conn.execute("""UPDATE quant_app.archive_manifests
