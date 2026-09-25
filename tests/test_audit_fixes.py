@@ -415,6 +415,15 @@ def test_option_costs_depth_and_capital_use_one_execution_model():
     row={'Strike':'24000','Put LTP':'38.80','_put_bid':38.75,'_put_ask':38.85,
          '_put_ask_qty':100000,'_put_bid_qty':100000,'_put_volume':1000000,
          '_put_validation': {'valid': True, 'failures': []}}
+    # This test isolates sizing; production foundation validation has its own tests.
+    ctx['access_token'] = 'test-only'
+    ctx['derivative_entry_preflight'] = lambda *a, **kw: SimpleNamespace(
+        eligible=True, contract=SimpleNamespace(key='K', lot=65, version='test', rule_version='test'),
+        snapshot={'reference_price':row['_put_ask'], 'quotes':{'K':{
+            'bid':row['_put_bid'], 'ask':row['_put_ask'], 'ask_size':row['_put_ask_qty']}}})
+    ctx['evaluate_live_governance_contract'] = lambda **kw: {'allow_trade':True}
+    ctx['_evaluate_governance_fail_closed'] = lambda *a, **kw: {'allow_trade':True}
+    ctx.update(selected_opt_asset='TEST', using_live_chain=True, MARKET_OPEN=True)
     result=ctx['build_option_recommendation']('Bearish',best_row=row)
     assert result is not None
     cost=result['premium']*.007
@@ -477,6 +486,11 @@ def test_option_recommendation_governance_exception_becomes_no_trade():
         '_put_ask_qty': 100000, '_put_bid_qty': 100000, '_put_volume': 1000000,
         '_put_validation': {'valid': True, 'failures': []},
     }
+    ctx['access_token'] = 'test-only'
+    ctx['derivative_entry_preflight'] = lambda *a, **kw: SimpleNamespace(
+        eligible=True, contract=SimpleNamespace(key='K', lot=65, version='test', rule_version='test'),
+        snapshot={'reference_price':row['_put_ask'], 'quotes':{'K':{
+            'bid':row['_put_bid'], 'ask':row['_put_ask'], 'ask_size':row['_put_ask_qty']}}})
 
     assert ctx['build_option_recommendation']('Bearish', best_row=row) is None
     assert rejections[-1]['reason'] == 'governance_blocked'
