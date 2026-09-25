@@ -32,6 +32,7 @@ RUNTIME = ['app.py', 'app_runtime.py', 'scan_jobs.py', 'reliable_charts.py',
            'resilience_policy.json', 'resilience_policy.sha256',
            'requirements.txt', 'constraints.txt']
 FILES = RUNTIME + ['release_verification.py', 'RELEASE_PACKAGING.md',
+                   'sql/derivative_foundations_review_only.sql', 'DERIVATIVE_FOUNDATIONS.md',
                    'requirements-archive.txt', 'tests/test_release_packaging.py',
                    '.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_GUIDE.md',
                    'RESILIENCE_IMPLEMENTATION.md', 'RESILIENCE_RUNBOOK.md',

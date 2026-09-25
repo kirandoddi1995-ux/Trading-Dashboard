@@ -52,6 +52,9 @@ from live_evidence import (
     quote_evidence_times, timestamped_feature_lineage,
 )
 from live_governance import GovernanceServices, evaluate_live_governance
+from derivative_preflight import evaluate as evaluate_derivative_preflight, PreflightResult
+from derivative_quotes import QuotePolicy, decode_v3
+from derivative_repository import DerivativeRepository
 from calibration_artifacts import build_equity_calibration_artifact
 from artifact_security import ArtifactSigner
 from equity_runtime_evidence import build_equity_live_evidence
@@ -3490,6 +3493,9 @@ class MarketDataBuffer:
         self.token = token
         self.lock = threading.RLock()
         self.quotes = {}
+        self.derivative_generation = 0
+        self.derivative_keys = set()
+        self.derivative_segment_status = {}
         self.subscribed = set()
         self.connected = False
         self.last_error = None
@@ -3539,6 +3545,11 @@ class MarketDataBuffer:
         if not isinstance(data, dict): return []
         feeds = data.get('feeds') or data.get('Feeds') or data.get('data',{}).get('feeds')
         if not isinstance(feeds, dict): return []
+        try:
+            normalized = decode_v3(data, received_at=datetime.datetime.now(IST),
+                                   generation=getattr(self, "derivative_generation", 0))
+        except Exception:
+            normalized = {}  # Malformed derivative payload must not break equity ingestion.
         out=[]
         for key, feed in feeds.items():
             if not isinstance(feed, dict): continue
@@ -3579,10 +3590,17 @@ class MarketDataBuffer:
                 '_ts': time.time(),
             }
             out.append((key,q))
+            q['_derivative'] = normalized.get(key)
         return out
 
     def on_message(self, message):
         try:
+            plain = self._plain(message)
+            info = plain.get('marketInfo', plain.get('market_info', {})) if isinstance(plain, dict) else {}
+            states = info.get('segmentStatus', info.get('segment_status', {}))
+            if isinstance(states, dict) and states:
+                with self.lock:
+                    self.derivative_segment_status.update(states)
             updates=self._extract_quotes(message)
             if not updates: return
             with self.lock:
@@ -3594,6 +3612,11 @@ class MarketDataBuffer:
             self.last_error=str(e)
 
     def on_open(self):
+        with self.lock:
+            self.derivative_generation += 1
+            self.derivative_segment_status.clear()
+            for quote in self.quotes.values():
+                quote.pop('_derivative', None)
         self.connected=True
         self.last_error=None
         self.auth_failed=False
@@ -3604,6 +3627,9 @@ class MarketDataBuffer:
             if keys and self.streamer is not None:
                 for i in range(0, len(keys), 500):
                     self.streamer.subscribe(keys[i:i + 500], 'ltpc')
+                derivative_keys = list(self.derivative_keys.intersection(keys))
+                if derivative_keys:
+                    self.streamer.change_mode(derivative_keys, 'full')
         except Exception as e:
             self.last_error=str(e)
 
@@ -3682,6 +3708,10 @@ class MarketDataBuffer:
                 self.streamer.unsubscribe(dropped_keys[i:i + 500])
             for i in range(0, len(new_keys), 500):
                 self.streamer.subscribe(new_keys[i:i + 500], 'ltpc')
+            self.derivative_keys.difference_update(dropped_keys)
+            for key in dropped_keys:
+                if key in self.quotes:
+                    self.quotes[key].pop('_derivative', None)
         except Exception as exc:
             self.last_error = str(exc)
 
@@ -4454,6 +4484,47 @@ def fetch_option_contracts(instrument_key, token):
         LOGGER.debug("Suppressed exception: %s", e)
         pass
     return []
+
+
+def derivative_entry_preflight(instrument_key, token, *, quantity=None, side="BUY"):
+    """Fresh shared foundation check; never a substitute for governance/manual review."""
+    try:
+        now = datetime.datetime.now(IST)
+        venue = str(instrument_key).split("_", 1)[0]
+        if not DURABLE_REPOSITORY.configured:
+            return PreflightResult(False, ("Derivative reference repository unavailable",))
+        repo = DerivativeRepository(DURABLE_REPOSITORY.connect)
+        master, rules, ban = repo.load(instrument_key, venue=venue, trading_date=now.date(), now=now)
+        if not master or not rules:
+            return PreflightResult(False, ("Current master/reviewed exchange rules unavailable",))
+        buffer = get_market_data_buffer(token)
+        buffer.reconcile("derivative-" + instrument_key, [instrument_key, master["underlying_key"]])
+        with buffer.lock:
+            required = {instrument_key, master["underlying_key"]}
+            newly_full = required - buffer.derivative_keys
+            buffer.derivative_keys.update(required)
+            if buffer.connected and newly_full:
+                buffer.streamer.change_mode(list(newly_full), 'full')
+        with buffer.lock:
+            quotes = {k: dict(v.get("_derivative") or {}) for k, v in buffer.quotes.items()}
+            generation = buffer.derivative_generation
+            connected = buffer.connected
+            phase = buffer.derivative_segment_status.get(master['segment'])
+        if not connected:
+            return PreflightResult(False, ("Derivative feed disconnected",))
+        if phase != 'NORMAL_OPEN':
+            return PreflightResult(False, ("Derivative segment is not verified in continuous trading",))
+        # Policies must be explicitly reviewed and versioned with the exchange rules.
+        policy = QuotePolicy(**rules["quote_policy"])
+        result = evaluate_derivative_preflight(master, rules, quotes, now=now,
+            generation=generation, quantity=quantity if quantity is not None else master["lot_size"],
+            side=side, policy=policy, ban=ban)
+        if result.eligible:
+            repo.record_snapshot(result, now=now)
+        return result
+    except Exception as exc:
+        LOGGER.warning("Derivative preflight unavailable: %s", type(exc).__name__)
+        return PreflightResult(False, ("Derivative reference/feed verification unavailable",))
 
 
 def get_available_expiries(contracts):
@@ -6055,8 +6126,9 @@ elif selected_tab == "Options & Derivatives Chain":
 
     if not is_stock_mode:
         selected_opt_asset = st.selectbox("Select Derivative Index:", ["NIFTY 50", "BANKNIFTY", "FINNIFTY", "SENSEX"], key="opt_asset_select")
-        opt_mapping = {"NIFTY 50": ("NSE_INDEX|Nifty 50", 65), "BANKNIFTY": ("NSE_INDEX|Nifty Bank", 30), "FINNIFTY": ("NSE_INDEX|Nifty Fin Service", 60), "SENSEX": ("BSE_INDEX|SENSEX", 20)}
-        live_key, lot_size = opt_mapping.get(selected_opt_asset, ("NSE_INDEX|Nifty 50", 65))
+        opt_mapping = {"NIFTY 50": "NSE_INDEX|Nifty 50", "BANKNIFTY": "NSE_INDEX|Nifty Bank",
+                       "FINNIFTY": "NSE_INDEX|Nifty Fin Service", "SENSEX": "BSE_INDEX|SENSEX"}
+        live_key, lot_size = opt_mapping[selected_opt_asset], None
     else:
         fo_symbols = get_fo_stock_symbols()
         liquid_fo = [t for t in LIQUID_CORE_TICKERS if t in fo_symbols]
@@ -6225,44 +6297,27 @@ elif selected_tab == "Options & Derivatives Chain":
             # analysis below (ATM strike only, fixed 25%/20% target/stop) —
             # meant as a fast overview to scan, not a replacement for the
             # detailed per-stock analysis you get by selecting one below.
-            @st.cache_data(ttl=60, show_spinner=False)
             def _quick_top_trade_ideas(movers_tuple, token):
-                def _one(row):
-                    ticker, momentum, spot = row
-                    if abs(momentum) < 0.5:
-                        return None  # no clear direction — skip rather than guess
-                    side = "CE" if momentum >= 0.5 else "PE"
-                    key = instrument_dict.get(ticker)
-                    if not key:
-                        return None
-                    try:
-                        contracts = fetch_option_contracts(key, token)
-                        expiries = get_available_expiries(contracts)
-                        if not expiries:
-                            return None
-                        nearest_expiry = expiries[0]
-                        chain = fetch_option_chain(key, nearest_expiry, token)
-                        if not chain:
-                            return None
-                        sorted_chain = sorted(chain, key=lambda x: x.get('strike_price', 0))
-                        atm_item = min(sorted_chain, key=lambda x: abs(x.get('strike_price', 0) - spot))
-                        opt_side = (atm_item.get('call_options') if side == "CE" else atm_item.get('put_options')) or {}
-                        premium = (opt_side.get('market_data') or {}).get('ltp')
-                        if not premium or premium <= 0:
-                            return None
-                        return {
-                            "Symbol": ticker, "Side": side, "Strike": atm_item.get('strike_price'),
-                            "Premium": round(float(premium), 2), "Target (+25%)": round(float(premium) * 1.25, 2),
-                            "Stop (-20%)": round(float(premium) * 0.80, 2), "Expiry": nearest_expiry,
-                        }
-                    except Exception as e:
-                        LOGGER.debug("Suppressed exception: %s", e)
-                        return None
+                # Research shortlist only. No LTP-derived targets, sizing or approval.
                 ideas = []
-                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                    for result in executor.map(_one, movers_tuple):
-                        if result:
-                            ideas.append(result)
+                for ticker, momentum, spot in movers_tuple:
+                    side = "CE" if momentum >= 0 else "PE"
+                    contracts = fetch_option_contracts(instrument_dict.get(ticker), token)
+                    expiries = get_available_expiries(contracts)
+                    if not expiries:
+                        continue
+                    chain = fetch_option_chain(instrument_dict.get(ticker), expiries[0], token)
+                    if not chain:
+                        continue
+                    item = min(chain, key=lambda r: abs(float(r["strike_price"]) - spot))
+                    option = item.get("call_options" if side == "CE" else "put_options") or {}
+                    check = derivative_entry_preflight(option.get("instrument_key"), token)
+                    ideas.append({
+                        "Symbol": ticker, "Side": side, "Strike": item["strike_price"],
+                        "Ask reference": str(check.snapshot["reference_price"]) if check.eligible else None,
+                        "Status": "RESEARCH ONLY — governance/manual review still required" if check.eligible
+                                  else "NOT ACTIONABLE — " + "; ".join(check.reasons),
+                    })
                 return ideas
 
             movers_for_ideas = tuple(
@@ -6276,8 +6331,8 @@ elif selected_tab == "Options & Derivatives Chain":
                     quick_ideas = []
 
             if quick_ideas:
-                st.markdown("#### 🎯 Quick Trade Ideas — Top Movers (ATM, no manual selection needed)")
-                st.caption("Fast overview across multiple stocks at once — ATM strike, fixed +25%/-20% target/stop. Select a stock below for the full detailed analysis (multiple strikes, real risk sizing).")
+                st.markdown("#### F&O research shortlist — not trade approvals")
+                st.caption("Executable references require current contract, feed and restriction checks. No LTP fallback.")
                 st.dataframe(pd.DataFrame(quick_ideas), width='stretch', hide_index=True)
         else:
             if auto_scan_on:
@@ -6488,6 +6543,8 @@ elif selected_tab == "Options & Derivatives Chain":
                 is_atm = strike == sorted_chain[atm_idx].get('strike_price')
                 chain_rows.append({
                     "Strike": f"🎯 {strike}" if is_atm else str(strike),
+                    "_call_instrument_key": call.get('instrument_key'),
+                    "_put_instrument_key": put.get('instrument_key'),
                     "Call Delta": c_g.get('delta', 'N/A'),
                     "Call Gamma": c_g.get('gamma', 'N/A'),
                     "Call Theta": c_g.get('theta', 'N/A'),
@@ -6723,6 +6780,13 @@ elif selected_tab == "Options & Derivatives Chain":
                     ),
                 )
 
+            foundation = derivative_entry_preflight(
+                best_row.get("_call_instrument_key" if side == "CE" else "_put_instrument_key"), access_token)
+            if not foundation.eligible:
+                return reject_candidate("derivative_preflight_failed", "; ".join(foundation.reasons))
+            contract_lot = foundation.contract.lot
+            if lot_size != contract_lot:
+                return reject_candidate("contract_lot_mismatch", "Selected contract lot differs from displayed lot")
             premium_str = best_row.get(side_key, "N/A")
             if premium_str == "N/A":
                 return reject_candidate(
@@ -6741,7 +6805,8 @@ elif selected_tab == "Options & Derivatives Chain":
             bid_key, ask_key = ("_call_bid", "_call_ask") if side == "CE" else ("_put_bid", "_put_ask")
             bid_qty_key, ask_qty_key = ("_call_bid_qty", "_call_ask_qty") if side == "CE" else ("_put_bid_qty", "_put_ask_qty")
             vol_key = "_call_volume" if side == "CE" else "_put_volume"
-            bid_px, ask_px = best_row.get(bid_key), best_row.get(ask_key)
+            verified_book = foundation.snapshot["quotes"][foundation.contract.key]
+            bid_px, ask_px = float(verified_book["bid"]), float(verified_book["ask"])
 
             spread_pct = None
             if bid_px and ask_px and math.isfinite(bid_px) and math.isfinite(ask_px) and 0 < bid_px <= ask_px:
@@ -6862,7 +6927,7 @@ elif selected_tab == "Options & Derivatives Chain":
 
             lots = min(risk_qty, cap_qty)
             try:
-                visible_ask_qty = float(str(best_row.get(ask_qty_key, 0)).replace(",", ""))
+                visible_ask_qty = float(verified_book["ask_size"])
                 lots = min(lots, math.floor(visible_ask_qty / lot_size))
             except (TypeError, ValueError):
                 return reject_candidate(
@@ -6883,6 +6948,14 @@ elif selected_tab == "Options & Derivatives Chain":
                     stop=stop_premium, target=target_premium,
                 )
 
+            sized_foundation = derivative_entry_preflight(foundation.contract.key, access_token,
+                                                         quantity=lots * lot_size)
+            if (not sized_foundation.eligible
+                    or sized_foundation.contract.version != foundation.contract.version
+                    or sized_foundation.contract.rule_version != foundation.contract.rule_version
+                    or any(sized_foundation.snapshot["quotes"][foundation.contract.key][field] != verified_book[field]
+                           for field in ("bid", "ask"))):
+                return reject_candidate("sized_preflight_failed", "Quote changed or sized order failed preflight; recompute")
             total_risk = round(risk_per_lot * lots, 2)
             required_capital = round(position_value_per_lot * lots, 2)
 
@@ -6969,7 +7042,7 @@ elif selected_tab == "Options & Derivatives Chain":
                     },
                 )
                 if callable(governance_evaluator)
-                else {"status": "TEST_HARNESS", "allow_trade": True, "blocking_reasons": []}
+                else {"status": "UNAVAILABLE", "allow_trade": False, "blocking_reasons": ["Governance unavailable"]}
             )
             if not governance["allow_trade"]:
                 return reject_candidate(
@@ -7454,12 +7527,15 @@ elif selected_tab == "Futures & Derivatives":
                 fq = get_live_market_quotes([fut_instrument_key], access_token)
                 fut_ltp = fq.get(fut_instrument_key, {}).get('last_price', 0.0) if fq else 0.0
 
-            basis = round(fut_ltp - spot_ltp, 2) if (fut_ltp and spot_quote_available) else None
+            basis_foundation = derivative_entry_preflight(fut_instrument_key, access_token, quantity=lot_size)
+            basis = (round(float(basis_foundation.snapshot["reference_price"]) -
+                           float(basis_foundation.snapshot["quotes"][basis_foundation.contract.underlying]["reference"]), 2)
+                     if basis_foundation.eligible else None)
 
             fc1, fc2, fc3, fc4 = st.columns(4)
             fc1.metric("Spot snapshot" if spot_quote_available else "Historical spot (not live)", f"₹{spot_ltp:,.2f}" if spot_ltp else "N/A")
             fc2.metric(f"Futures LTP ({fut_symbol})", f"₹{fut_ltp:,.2f}" if fut_ltp else "N/A")
-            fc3.metric("Basis (Fut − Spot)", f"₹{basis:+,.2f}" if basis is not None else "N/A")
+            fc3.metric("Synchronized buy basis (ask − spot)", f"₹{basis:+,.2f}" if basis is not None else "N/A")
             fc4.metric("Lot Size", f"{lot_size}" if lot_size else "N/A", help=f"Expiry: {fut_expiry}")
 
             def determine_futures_bias():
@@ -7521,12 +7597,15 @@ elif selected_tab == "Futures & Derivatives":
                     return "Neutral", {"reason": "Indicator calculation failed", "history": pd.DataFrame()}
 
             fut_bias, fut_evidence = determine_futures_bias()
+            futures_foundation = derivative_entry_preflight(
+                fut_instrument_key, access_token, quantity=lot_size,
+                side="BUY" if fut_bias == "Bullish" else "SELL")
             hist_for_atr = fut_evidence.get("history", pd.DataFrame())
             atr_series = ta.atr(hist_for_atr['High'], hist_for_atr['Low'], hist_for_atr['Close'], length=14).dropna() if not hist_for_atr.empty else pd.Series(dtype=float)
 
             st.markdown("### 🎯 Recommended Futures Trade")
-            if fut_bias == "Neutral" or atr_series.empty or not spot_quote_available or not lot_size or not fut_ltp or not MARKET_OPEN:
-                futures_reasons = []
+            if not futures_foundation.eligible or fut_bias == "Neutral" or atr_series.empty or not spot_quote_available or not lot_size or not fut_ltp or not MARKET_OPEN:
+                futures_reasons = list(futures_foundation.reasons)
                 if fut_bias == "Neutral":
                     futures_reasons.append(fut_evidence.get("reason") or "Directional evidence is neutral")
                 if atr_series.empty:
@@ -7548,7 +7627,7 @@ elif selected_tab == "Futures & Derivatives":
             else:
                 atr_val = atr_series.iloc[-1]
                 direction = "LONG (Buy)" if fut_bias == "Bullish" else "SHORT (Sell)"
-                entry = fut_ltp
+                entry = float(futures_foundation.snapshot["reference_price"])
                 engine_direction = "long" if fut_bias == "Bullish" else "short"
 
                 target = risk_engine.calculate_target(entry, atr_val, engine_direction, 2.5)
