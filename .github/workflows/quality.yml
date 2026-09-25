@@ -2,6 +2,10 @@ name: Production quality gate
 on:
   push:
   pull_request:
+
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
