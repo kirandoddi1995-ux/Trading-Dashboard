@@ -1,0 +1,4 @@
+-r requirements-archive.txt
+upstox-python-sdk==2.29.0
+protobuf==7.36.0
+websocket-client==1.9.1
