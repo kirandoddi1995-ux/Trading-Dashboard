@@ -32,13 +32,13 @@ jobs:
     # Manual preview/export works before enabling the schedule. Deletion has a
     # separate switch, enforced inside Python as well as workflow configuration.
     if: github.event_name == 'workflow_dispatch' || vars.ARCHIVE_ENABLED == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
           cache: pip

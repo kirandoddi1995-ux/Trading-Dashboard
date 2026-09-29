@@ -15,11 +15,11 @@ concurrency:
 
 jobs:
   evaluate-equity-readiness:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
           cache: pip
@@ -45,7 +45,7 @@ jobs:
         run: python -m json.tool model-readiness-result.json
       - name: Retain read-only readiness reports
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: evidence-readiness-${{ github.run_id }}
           path: |

@@ -22,19 +22,19 @@ concurrency:
 
 jobs:
   authorize-and-package:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: production
     steps:
       - name: Checkout authorization request
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: authorization
       - name: Checkout immutable rollback candidate
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ inputs.rollback_ref }}
           path: candidate
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
           cache: pip
@@ -82,7 +82,7 @@ jobs:
       - name: Build immutable rollback package
         working-directory: candidate
         run: python package_release.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: rollback-${{ inputs.rollback_ref }}
           path: candidate/release-*.zip
