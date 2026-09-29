@@ -9,16 +9,17 @@ calls, model-registry writes or promotion flags. Reports always contain
 `mode=RESEARCH_ONLY` and `approval_eligible=false`, irrespective of input fields.
 No SQL migration or new dependency is required.
 
-Existing `iv_surface.normalize_iv_surface` DOES affect decisions today:
-`app.py` maps `production_valid` to `_call_validation`/`_put_validation`; candidate
-selection rejects an invalid leg with `independent_option_validation_failed`
-before calling derivative preflight. This existing protection is unchanged.
-The old path's implicit rate/dividend/expiry/IV conventions are NOT repaired by
-this research work. Its replacement is a separate fail-closed deployment once
-provider conventions, reviewed carry inputs and comparison policy are settled.
+The legacy `iv_surface.normalize_iv_surface` previously affected decisions:
+`production_valid` fed `_call_validation`/`_put_validation` and leg rejection.
+That mapping has now been removed. Its implicit rate/dividend/expiry/IV
+conventions remain research diagnostics only, not a decision-quality test.
+Shared derivative preflight now holds all CE/PE ENTRY/ROLL requests as
+NOT_COMPARABLE (ineligible), pending verified production comparison inputs and
+policy. Futures and EXIT review retain their existing checks. See
+`OPTION_COMPARISON_HOLD.md` for the intentional operational restriction.
 
 The new `greek_consistency` comparator runs in SHADOW only. It does not bypass or
-replace the old gate. It requires explicit normalized conventions and per-Greek
+replace the entry hold. It requires explicit normalized conventions and per-Greek
 absolute/relative tolerances; no values are invented. Even `CONSISTENT` is not
 authority. Uploaded conventions/provenance are declarations, not authenticated
 exchange or broker evidence. There is deliberately no live-chain auto-adapter
@@ -167,8 +168,8 @@ Promotion requires a separate reviewed code change: declared prediction target,
 coverage and error limits, walk-forward evaluation with point-in-time data,
 cost/turnover evidence where applicable, explicit approved artifact version,
 and a fail-closed consumer. No UI checkbox/environment switch promotes this
-engine. Current candidate selection never reads its output. Static integration
-tests guard that boundary and retention of existing rejection checks.
+engine. Current candidate selection never reads its output. Integration tests
+guard that boundary and the fail-closed option-entry hold.
 
 Raw SVI reference: https://arxiv.org/abs/1204.0646
 

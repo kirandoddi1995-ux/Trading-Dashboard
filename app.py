@@ -6561,13 +6561,6 @@ elif selected_tab == "Options & Derivatives Chain":
 
     if using_live_chain:
         try:
-            surface_validation = {}
-            if not iv_surface_frame.empty:
-                for _, surface_row in iv_surface_frame.iterrows():
-                    surface_validation[(float(surface_row["strike"]), str(surface_row["option_type"]))] = {
-                        "valid": bool(surface_row["production_valid"]),
-                        "failures": list(surface_row["validation_failures"]),
-                    }
             sorted_chain = sorted(live_chain_data, key=lambda x: x.get('strike_price', 0))
             atm_idx = min(range(len(sorted_chain)), key=lambda i: abs(sorted_chain[i].get('strike_price', 0) - atm_reference_price))
             lo, hi = max(0, atm_idx - 5), min(len(sorted_chain), atm_idx + 6)
@@ -6601,12 +6594,6 @@ elif selected_tab == "Options & Derivatives Chain":
                     "_put_bid": p_md.get('bid_price'), "_put_ask": p_md.get('ask_price'),
                     "_put_bid_qty": p_md.get('bid_qty'), "_put_ask_qty": p_md.get('ask_qty'),
                     "_put_volume": p_md.get('volume'),
-                    "_call_validation": surface_validation.get((float(strike), "CE"), {
-                        "valid": False, "failures": ["Independent call valuation unavailable"],
-                    }),
-                    "_put_validation": surface_validation.get((float(strike), "PE"), {
-                        "valid": False, "failures": ["Independent put valuation unavailable"],
-                    }),
                 })
         except Exception as e:
             LOGGER.debug("Suppressed exception: %s", e)
@@ -6805,18 +6792,9 @@ elif selected_tab == "Options & Derivatives Chain":
                     side=side,
                 )
 
-            validation_key = "_call_validation" if side == "CE" else "_put_validation"
-            independent_validation = best_row.get(validation_key) or {}
-            if independent_validation.get("valid") is not True:
-                return reject_candidate(
-                    "independent_option_validation_failed",
-                    "Independent IV/Greeks/no-arbitrage validation failed",
-                    strike=best_row.get("Strike"), side=side,
-                    blocking_reasons=(
-                        independent_validation.get("failures") or ["Validation evidence unavailable"]
-                    ),
-                )
-
+            # Legacy IV-surface diagnostics have no decision authority. The shared
+            # preflight holds option entries as NOT_COMPARABLE until a verified
+            # production comparison exists; quick ideas use this boundary too.
             foundation = derivative_entry_preflight(
                 best_row.get("_call_instrument_key" if side == "CE" else "_put_instrument_key"), access_token)
             if not foundation.eligible:
@@ -7117,7 +7095,8 @@ elif selected_tab == "Options & Derivatives Chain":
                 "timing_qualification": timing["timing_qualification"],
                 "confidence": trade_contracts.rule_confidence(abs(float(market_bias_scores.get("net_score", 0)))),
                 "probability": "N/A — no calibrated option-outcome probability",
-                "option_validation": independent_validation,
+                "option_validation": {"status": sized_foundation.greek_status,
+                                      "eligible": sized_foundation.eligible},
                 "governance": governance,
             }
         except Exception as e:
@@ -7495,11 +7474,12 @@ elif selected_tab == "Options & Derivatives Chain":
             valid_greeks_pct = float(iv_surface_frame["greeks_valid"].mean() * 100.0)
             surface_outliers = int(iv_surface_frame["surface_outlier"].sum())
             st.caption(
-                f"Normalized IV surface: {len(iv_surface_frame)} contracts across moneyness/DTE · "
+                f"Legacy research-only IV surface: {len(iv_surface_frame)} contracts across moneyness/DTE · "
                 f"Greek validity {valid_greeks_pct:.1f}% · robust surface outliers {surface_outliers}."
             )
             if valid_greeks_pct < 90 or surface_outliers:
-                st.warning("Some provider Greeks failed consistency checks or are IV-surface outliers. Treat affected option proposals as lower confidence.")
+                st.warning("Legacy assumptions produced diagnostic differences; these are not verified trade rejections or approvals.")
+        st.info("Option entries and rolls are NOT_COMPARABLE and not actionable until the production Greek comparison is verified. Research remains visible; existing-position monitoring and exit safeguards remain active.")
         col_m5.metric("Lot Size", f"{lot_size}" if lot_size else "N/A")
 
         col_iv1, col_iv2 = st.columns(2)
