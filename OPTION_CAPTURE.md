@@ -2,7 +2,8 @@
 
 No database, trading, hold-release or hosted changes are made by this delivery.
 The new workflow is disabled until explicitly configured. Existing entry hold,
-equity scan workers, collectors, archive deletion and release fingerprint are unchanged.
+equity scan workers and archive deletion are unchanged. The TLS follow-up below
+does change the app's transport and release fingerprint; upload that fix together.
 
 ## Scope and limits
 
@@ -17,7 +18,10 @@ weekday, settlement cutoff, rate, dividend or IV-unit conversion.
 
 Four snapshots per weekday: 10:15, 11:45, 13:45, 15:00 IST. Each opens one V3 full
 feed for at most roughly 60 seconds plus connection/receive timeout. Maximum
-ten-minute slot lateness; actual timestamps are retained. This is a sampling policy,
+ten-minute slot lateness; actual timestamps are retained. Workflow triggers are
+now five minutes before the targets to allow installation/startup; the process
+waits (bounded) until the target before collecting. This reduces jitter, not a
+guarantee of execution. This is a sampling policy,
 not an authoritative exchange calendar. REST market status and feed segment status
 must corroborate normal trading; confirmed closed sessions get a verified skip.
 Unknown session states fail. Special weekend sessions are outside this initial schedule.
@@ -35,6 +39,15 @@ default omissions stay unknown too; this can deliberately produce partial captur
 Partial updates replace rather than merge fields, preventing fresh timestamps on
 old books. Partial/stale/crossed/incomplete samples and interrupted streams remain
 research records with reasons and a failing job, never fabricated completed chains.
+Every new file/manifest carries `scheduled_at`, `capture_delay_seconds`,
+`timing_quality` and `same_time_comparison_eligible`. Only complete captures within
+60 seconds of the target, including retained provider packet times, have the last
+flag true. This one-minute research stratum is provisional, not statistical proof
+that two observations are equivalent. Delayed samples within ten minutes are
+archived but fail the job and are excluded from same-time comparisons. Beyond ten
+minutes no new acquisition starts. Legacy files without these fields are UNVERIFIED,
+not grandfathered into a precise-time dataset. Nothing is backdated or backfilled.
+
 No reconnection combines epochs. REST LTP is used only to choose strikes, not as
 the aligned captured execution reference. Future maturities remain explicit; these
 files do not silently treat a different-maturity future as the option's forward.
@@ -107,20 +120,57 @@ before expiry and maintain GitHub Actions failure notifications.
    been run by the coding agent. Treat repeated PARTIAL as a diagnostic, not a reason
    to loosen filters blindly.
 4. Enable scheduling. At 17:00 IST an audit downloads/verifies all four expected
-   files; absent/partial/unverified slots fail as `DAY_INCOMPLETE`.
+   files; absent/partial/unverified/delayed slots fail as `DAY_INCOMPLETE`. A late
+   first deployment may legitimately have missed earlier slots; do not fill those
+   with later observations just to obtain a green audit.
 
 GitHub may delay/drop scheduled jobs; missed slots are not retrospectively filled.
 The same-host audit cannot detect a total GitHub outage if it too fails to run.
 An independent heartbeat check/operator check is still needed for that failure mode.
+Missing captures are potentially biased (for example, dropped high-load/event-day
+samples); count missingness by date, slot and regime in any validation study.
+For now use Actions for exploratory collection, measuring punctuality for 5–10
+sessions. If fixed-time coverage matters or missingness is material, move this same
+CLI to an always-on host with a local scheduler, synchronized clock and a separately
+hosted heartbeat watchdog. A self-hosted runner still triggered by GitHub cron is
+not the solution: the scheduling dependency remains. A Windows PC Task Scheduler
+can serve a pilot if awake, powered and connected; it is not an unattended guarantee.
+No paid host, external monitor or hosted setting was provisioned here.
 These snapshots also consume one feed connection alongside the dashboard: check
 account connection limits before enabling. Do not disconnect the dashboard to
 make a capture pass.
 
-Transport uses `websocket-client` with certificate and hostname verification. It
-uses only the SDK's protobuf definition, not its streamer. Inspection of installed
-SDK 2.29.0 found its feeder sets `CERT_NONE`; this new path avoids it. Any existing
-application path using that feeder needs a separate security review; it was not
-changed here.
+## TLS follow-up: application streaming fixed locally
+
+Inspection confirmed `app.py` called SDK 2.29.0's `MarketDataStreamerV3`, whose feeder
+sent an Authorization bearer token with `CERT_NONE` and hostname checks disabled.
+An attacker capable of intercepting the network connection could impersonate the
+server, steal that credential and alter feed data. Encryption without server identity
+verification does not prevent this. No interception has been established by this audit.
+
+`secure_upstox_stream.py` now owns connection establishment. It obtains a signed
+feed URL over certificate-verified HTTPS, validates the Upstox WSS hostname, rejects
+redirects and non-101 handshakes, and verifies WSS certificates and hostnames. It
+does not forward the bearer header to WSS. SDK subscription encoding and protobuf
+decoding remain reused. No package installation is monkeypatched, no TLS fallback
+exists, and application backoff is the sole reconnect owner. Errors exposed to the
+app are sanitized; failed connections clear cached quotes. Existing REST fallback
+retains its certificate verification. Recorder WSS also rejects redirects.
+
+Upload `app.py`, `secure_upstox_stream.py` and `equity_runtime_health.py` together
+with the capture/timing changes and tests. The new transport is included in the
+release fingerprint and discovered by the existing package dependency gate.
+Set `EXPECTED_EQUITY_CODE_SHA256` to:
+
+```
+a833cb201418fafaa02235b0ce16a76beb4e9491d01ee6e4e4b0471dc2a9d489
+```
+
+Other expected-version secrets are unchanged. Restart/redeploy so cached old
+streamer objects are gone. Verify hosted connection and sanitized status messages;
+never disable verification to fix a certificate error. Renew/rotate the affected
+Upstox credential after deployment as a precaution, coordinating every consumer;
+this is not a claim it was stolen. No credential or hosted setting was changed here.
 
 Local CLI after installing `requirements-option-capture.txt`:
 
@@ -166,3 +216,4 @@ output that unlocks approvals. The existing option-entry hold remains unchanged.
 Sources checked September 30, 2026:
 - https://upstox.com/developer/api-documentation/analytics-token/
 - https://upstox.com/developer/api-documentation/v3/get-market-data-feed/
+- https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule

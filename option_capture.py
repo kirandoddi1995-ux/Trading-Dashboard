@@ -30,6 +30,29 @@ def policy(underlyings):
                 slot_lateness_seconds=600, mode='RESEARCH_ONLY')
 
 
+def timing_evidence(report, day, slot):
+    """One-minute research stratum, NOT proof of market timestamp accuracy.
+
+    Ten minutes remains the maximum collection window; only observations within
+    60 seconds of the target are eligible for *same-time research comparisons*.
+    Existing files without these fields must not be assumed aligned.
+    """
+    target = datetime.combine(day, datetime.min.time(), IST).replace(
+        hour=SLOTS[slot][0], minute=SLOTS[slot][1])
+    captured = stamp(report['captured_at'])
+    deviation = (captured-target).total_seconds()
+    times = [stamp(row['source_at']) for row in report['rows'] if row.get('source_at')]
+    max_offset = max([abs(deviation), *[abs((t-target).total_seconds()) for t in times]])
+    quality = 'ON_TIME' if 0 <= deviation <= 60 and max_offset <= 60 else 'DELAYED'
+    if not 0 <= deviation <= 600:
+        quality = 'OUTSIDE_WINDOW'
+    if report['status'] == 'SKIPPED_CLOSED':
+        quality = 'NOT_APPLICABLE'
+    return dict(scheduled_at=target.isoformat(), capture_delay_seconds=deviation,
+                timing_quality=quality, comparison_tolerance_seconds=60,
+                same_time_comparison_eligible=report['status'] == 'CAPTURED' and quality == 'ON_TIME')
+
+
 def sample_identity(config, day, slot):
     if slot not in SLOTS:
         raise CaptureError('UNKNOWN_SLOT')

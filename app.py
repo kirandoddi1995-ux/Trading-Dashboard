@@ -413,6 +413,7 @@ def render_trade_transparency_panel(
 
 try:
     import upstox_client
+    from secure_upstox_stream import VerifiedMarketDataStreamer, safe_error as stream_safe_error
     UPSTOX_SDK_AVAILABLE = True
 except ImportError:
     upstox_client = None
@@ -3640,13 +3641,16 @@ class MarketDataBuffer:
 
     def on_error(self, err):
         err_str=str(err)
-        self.last_error=err_str
+        self.last_error=err_str if err_str in {'AUTH_REQUIRED', 'TLS_VERIFICATION_FAILED', 'STREAM_CONNECTION_FAILED', 'STREAM_DECODE_FAILED'} else 'STREAM_CONNECTION_FAILED'
         self.connected=False
         self.consecutive_failures+=1
+        with self.lock:
+            self.quotes.clear()
+            self.derivative_segment_status.clear()
         # A 403/Forbidden handshake means the token itself was rejected —
         # this will NEVER succeed on retry until the token is fixed, so stop
         # hammering Upstox's servers instead of retrying in a tight loop.
-        if '403' in err_str or 'Forbidden' in err_str:
+        if err_str == 'AUTH_REQUIRED' or '403' in err_str or 'Forbidden' in err_str:
             self.auth_failed=True
             LOGGER.warning("Upstox WebSocket auth rejected (403) — halting auto-reconnect until token is refreshed.")
 
@@ -3654,7 +3658,7 @@ class MarketDataBuffer:
         try:
             configuration=upstox_client.Configuration()
             configuration.access_token=self.token
-            self.streamer=upstox_client.MarketDataStreamerV3(upstox_client.ApiClient(configuration))
+            self.streamer=VerifiedMarketDataStreamer(upstox_client.ApiClient(configuration))
             self.streamer.on('open', self.on_open)
             self.streamer.on('message', self.on_message)
             self.streamer.on('close', self.on_close)
@@ -3666,10 +3670,7 @@ class MarketDataBuffer:
             # with a proper backoff + circuit breaker instead.
             self.streamer.connect()
         except Exception as e:
-            self.last_error=str(e)
-            self.connected=False
-            if '403' in str(e) or 'Forbidden' in str(e):
-                self.auth_failed=True
+            self.on_error(stream_safe_error(e))
 
     @staticmethod
     def _scope_priority(scope):

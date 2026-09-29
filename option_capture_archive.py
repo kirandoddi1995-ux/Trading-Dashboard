@@ -1,12 +1,13 @@
 """Verified research-only Drive files. No SQL, deletion or promotion operations."""
 import io
 import json
+from datetime import date
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from drive_archive import API, ArchiveError, digest
-from option_capture import MAX_BYTES, VERSION, canonical, CaptureError
+from option_capture import MAX_BYTES, VERSION, canonical, CaptureError, timing_evidence
 
 FIELDS = ('instrument_key', 'underlying', 'role', 'source_at', 'received_at',
           'bid', 'ask', 'bid_size', 'ask_size', 'reference', 'iv_raw', 'oi', 'volume')
@@ -45,6 +46,10 @@ def verify(data, sample_id, policy_hash):
     if len({r['instrument_key'] for r in rows}) != len(rows):
         raise CaptureError('ARCHIVE_DUPLICATE_KEYS')
     report = dict(header, rows=rows)
+    if 'timing_quality' in report:
+        expected_timing = timing_evidence(report, date.fromisoformat(report['trading_date']), report['slot'])
+        if any(report.get(k) != v for k, v in expected_timing.items()):
+            raise CaptureError('ARCHIVE_TIMING_MISMATCH')
     # Check every analytical column, not just the recovery JSON.
     reconstructed = pq.read_table(io.BytesIO(encode(report)))
     if not table.equals(reconstructed, check_metadata=True):
@@ -66,11 +71,20 @@ def lookup(drive, sample_id, kind):
     return files[0]['id'] if files else None
 
 
-def finish(drive, data_id, data, report):
+def manifest_for(data_id, data, report):
     manifest = dict(format=VERSION, sample_id=report['sample_id'], policy_hash=report['policy_hash'],
                     sha256=digest(data), rows=len(report['rows']), data_file_id=data_id,
                     status=report['status'], captured_at=report['captured_at'],
                     mode='RESEARCH_ONLY', approval_eligible=False)
+    for field in ('scheduled_at', 'capture_delay_seconds', 'timing_quality',
+                  'comparison_tolerance_seconds', 'same_time_comparison_eligible'):
+        if field in report:
+            manifest[field] = report[field]
+    return manifest
+
+
+def finish(drive, data_id, data, report):
+    manifest = manifest_for(data_id, data, report)
     content = canonical(manifest)
     ident = drive.put('options-'+report['sample_id']+'.manifest.json', content,
                       report['sample_id'], 'manifest', 'application/json')
@@ -109,19 +123,20 @@ def publish(drive, report):
     return finish(drive, ident, downloaded, verified)
 
 
-def inspect_sample(drive, sample_id, policy_hash):
+def inspect_sample(drive, sample_id, policy_hash, *, details=False):
     """Read-only end-of-day completeness check, including downloaded checksum."""
     data_id = lookup(drive, sample_id, 'data')
     manifest_id = lookup(drive, sample_id, 'manifest')
     if not data_id or not manifest_id:
-        return 'MISSING_OR_UNVERIFIED'
+        return {'status': 'MISSING_OR_UNVERIFIED'} if details else 'MISSING_OR_UNVERIFIED'
     data = drive.download(data_id)
     report = verify(data, sample_id, policy_hash)
     manifest = json.loads(drive.download(manifest_id))
-    expected = dict(format=VERSION, sample_id=sample_id, policy_hash=policy_hash,
-                    sha256=digest(data), rows=len(report['rows']), data_file_id=data_id,
-                    status=report['status'], captured_at=report['captured_at'],
-                    mode='RESEARCH_ONLY', approval_eligible=False)
+    expected = manifest_for(data_id, data, report)
     if manifest != expected:
         raise CaptureError('MANIFEST_VERIFICATION_FAILED')
+    if details:
+        return dict(status=report['status'], timing_quality=report.get('timing_quality', 'UNVERIFIED'),
+                    capture_delay_seconds=report.get('capture_delay_seconds'),
+                    same_time_comparison_eligible=report.get('same_time_comparison_eligible', False))
     return report['status']

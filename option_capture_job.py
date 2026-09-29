@@ -16,7 +16,7 @@ import requests
 from derivative_contracts import digest, stamp
 from drive_archive import DriveArchive, credentials
 from option_capture import (CaptureError, VERSION, IST, SLOTS, policy, check_slot,
-                            select_contracts, sample_identity, SnapshotBuffer, canonical)
+                            select_contracts, sample_identity, SnapshotBuffer, canonical, timing_evidence)
 from option_capture_archive import publish, resume, inspect_sample
 
 MASTER = 'https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz'
@@ -93,9 +93,11 @@ def capture(reader, selected, config):
     url = websocket_url(authorized['authorized_redirect_uri'])
     buffer = SnapshotBuffer(selected, config)
     start = time.monotonic()
-    connection = websocket.create_connection(url, timeout=5,
+    connection = websocket.create_connection(url, timeout=5, redirect_limit=0,
         sslopt={'cert_reqs': ssl.CERT_REQUIRED, 'check_hostname': True})
     try:
+        if connection.getstatus() != 101:
+            raise CaptureError('STREAM_HANDSHAKE_REJECTED')
         connection.send_binary(canonical(dict(guid=uuid.uuid4().hex, method='sub',
                                               data={'instrumentKeys': sorted(selected), 'mode': 'full'})))
         while time.monotonic()-start < config['collection_seconds']:
@@ -152,11 +154,27 @@ def failure_record(drive, sample_id, code):
         raise CaptureError('HEALTH_RECORD_UNVERIFIED')
 
 
+def wait_for_slot(slot):
+    """Bounded early-start cushion, not a guarantee that a scheduler starts us."""
+    started = time.monotonic()
+    current = now().astimezone(IST)
+    target = current.replace(hour=SLOTS[slot][0], minute=SLOTS[slot][1], second=0, microsecond=0)
+    remaining = (target-current).total_seconds()
+    if remaining > 600 or current.weekday() >= 5:
+        raise CaptureError('OUTSIDE_EARLY_START_WINDOW')
+    while remaining > 0:
+        if time.monotonic()-started > 610:
+            raise CaptureError('CLOCK_WAIT_FAILED')
+        time.sleep(min(remaining, 1))
+        remaining = (target-now().astimezone(IST)).total_seconds()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--slot', choices=sorted(SLOTS), default='1015')
     parser.add_argument('--preview', action='store_true')
     parser.add_argument('--audit-today', action='store_true')
+    parser.add_argument('--wait-for-slot', action='store_true')
     args = parser.parse_args(argv)
     drive, session, sample = None, None, None
     try:
@@ -174,16 +192,21 @@ def main(argv=None):
                              os.environ.get('OPTION_CAPTURE_DRIVE_FOLDER_ID', ''))
         drive.check_folder()
         if args.audit_today:
-            results = {slot: inspect_sample(drive, sample_identity(config, day, slot), digest(config))
+            results = {slot: inspect_sample(drive, sample_identity(config, day, slot), digest(config), details=True)
                        for slot in SLOTS}
-            good = all(s in {'CAPTURED', 'SKIPPED_CLOSED'} for s in results.values())
+            good = all(s['status'] == 'SKIPPED_CLOSED' or
+                       (s['status'] == 'CAPTURED' and s.get('same_time_comparison_eligible') is True)
+                       for s in results.values())
             print(json.dumps(dict(status='DAY_COMPLETE' if good else 'DAY_INCOMPLETE', slots=results)))
             return 0 if good else 1
         previous = resume(drive, sample, digest(config))
         if previous:
-            print(json.dumps(dict(status='ALREADY_VERIFIED', sample_id=sample, capture_status=previous['status'])))
-            return 0 if previous['status'] in {'CAPTURED', 'SKIPPED_CLOSED'} else 1
+            print(json.dumps(dict(status='ALREADY_VERIFIED', sample_id=sample, capture_status=previous['status'],
+                                  timing_quality=previous.get('timing_quality', 'UNVERIFIED'))))
+            return 0 if previous['status'] == 'SKIPPED_CLOSED' or previous.get('same_time_comparison_eligible') is True else 1
         # Restore an existing upload after its slot, never capture a later cut.
+        if args.wait_for_slot:
+            wait_for_slot(args.slot)
         check_slot(now(), args.slot)
         token = os.environ.get('UPSTOX_ANALYTICS_TOKEN', '').strip()
         try:
@@ -203,10 +226,12 @@ def main(argv=None):
         report.update(format=VERSION, sample_id=sample, policy_hash=digest(config), policy=config,
                       trading_date=day.isoformat(), slot=args.slot,
                       token_days_remaining=max(0, (expiry-now()).days))
+        report.update(timing_evidence(report, day, args.slot))
         manifest = publish(drive, report)
         print(json.dumps(dict(status=report['status'], rows=manifest['rows'], sample_id=sample,
-                              sha256=manifest['sha256'], token_days_remaining=report['token_days_remaining'])))
-        return 0 if report['status'] in {'CAPTURED', 'SKIPPED_CLOSED'} else 1
+                              sha256=manifest['sha256'], token_days_remaining=report['token_days_remaining'],
+                              timing_quality=report['timing_quality'], capture_delay_seconds=report['capture_delay_seconds'])))
+        return 0 if report['status'] == 'SKIPPED_CLOSED' or report['same_time_comparison_eligible'] else 1
     except Exception as exc:
         code = str(exc) if type(exc) is CaptureError else 'CAPTURE_FAILED'
         # CaptureError only originates from fixed strings in our modules.
