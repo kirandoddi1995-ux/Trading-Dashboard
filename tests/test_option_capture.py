@@ -60,6 +60,7 @@ def report():
     result = buffer.snapshot(NOW)
     result.update(format=core.VERSION, sample_id=core.sample_identity(CONFIG, NOW.date(), '1015'),
                   policy_hash=digest(CONFIG), policy=CONFIG, trading_date=str(NOW.date()), slot='1015')
+    result.update(core.timing_evidence(result, NOW.date(), '1015'))
     return result
 
 
@@ -295,6 +296,7 @@ def test_real_protobuf_decode_and_tls_verification(monkeypatch):
     from upstox_client.feeder.proto.MarketDataFeedV3_pb2 import FeedResponse
     packet = ParseDict(message(), FeedResponse()).SerializeToString()
     connection = Mock()
+    connection.getstatus.return_value = 101
     connection.recv.return_value = packet
     connect = Mock(return_value=connection)
     monkeypatch.setattr(websocket, 'create_connection', connect)
@@ -332,6 +334,7 @@ def test_after_slot_retry_repairs_manifest_but_cannot_capture_new_data(monkeypat
 def test_stream_disconnect_preserves_partial_without_leaking_signed_url(monkeypatch):
     import websocket
     connection = Mock()
+    connection.getstatus.return_value = 101
     connection.recv.side_effect = RuntimeError('SECRET signed URL')
     monkeypatch.setattr(websocket, 'create_connection', Mock(return_value=connection))
     monkeypatch.setattr(job, 'now', lambda: NOW)
@@ -341,6 +344,54 @@ def test_stream_disconnect_preserves_partial_without_leaking_signed_url(monkeypa
     assert result['status'] == 'PARTIAL' and result['transport_status'] == 'STREAM_FAILED'
     assert 'SECRET' not in core.canonical(result).decode()
     connection.close.assert_called_once()
+
+
+@pytest.mark.parametrize('seconds,quality,eligible', [(0, 'ON_TIME', True), (60, 'ON_TIME', True),
+    (61, 'DELAYED', False), (599, 'DELAYED', False), (601, 'OUTSIDE_WINDOW', False)])
+def test_timing_strata_never_relabel_delayed_capture(seconds, quality, eligible):
+    r = report()
+    r['captured_at'] = (NOW+timedelta(seconds=seconds)).isoformat()
+    result = core.timing_evidence(r, NOW.date(), '1015')
+    assert result['timing_quality'] == quality
+    assert result['same_time_comparison_eligible'] is eligible
+    assert result['capture_delay_seconds'] == seconds
+
+
+def test_forged_timing_metadata_is_rejected():
+    r = report()
+    r['captured_at'] = (NOW+timedelta(minutes=3)).isoformat()
+    with pytest.raises(core.CaptureError, match='TIMING_MISMATCH'):
+        archive.verify(archive.encode(r), r['sample_id'], r['policy_hash'])
+
+
+def test_legacy_files_are_not_assumed_timing_eligible(drive):
+    r = report()
+    for key in core.timing_evidence(r, NOW.date(), '1015'):
+        del r[key]
+    archive.publish(drive, r)
+    result = archive.inspect_sample(drive, r['sample_id'], r['policy_hash'], details=True)
+    assert result['timing_quality'] == 'UNVERIFIED'
+    assert result['same_time_comparison_eligible'] is False
+
+
+def test_early_wait_does_not_capture_before_target(monkeypatch):
+    readings = iter([NOW-timedelta(seconds=2), NOW-timedelta(seconds=1), NOW])
+    monkeypatch.setattr(job, 'now', lambda: next(readings))
+    sleep = Mock()
+    monkeypatch.setattr(job.time, 'sleep', sleep)
+    job.wait_for_slot('1015')
+    assert sleep.call_count == 2
+    monkeypatch.setattr(job, 'now', lambda: NOW-timedelta(minutes=11))
+    with pytest.raises(core.CaptureError, match='OUTSIDE_EARLY_START_WINDOW'):
+        job.wait_for_slot('1015')
+
+
+def test_delayed_completed_day_is_flagged_not_silently_aligned(monkeypatch, capsys, drive):
+    setup_job(monkeypatch, drive)
+    monkeypatch.setattr(job, 'inspect_sample', lambda *a, **kw:
+                        dict(status='CAPTURED', same_time_comparison_eligible=False, timing_quality='DELAYED'))
+    assert job.main(['--audit-today']) == 1
+    assert json.loads(capsys.readouterr().out)['status'] == 'DAY_INCOMPLETE'
 
 
 def test_workflow_is_disabled_by_default_and_has_no_database_secret():
