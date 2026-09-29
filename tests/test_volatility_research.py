@@ -207,8 +207,10 @@ def test_research_has_no_authorization_or_persistence_wiring():
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == 'render_volatility_research']
     assert len(calls) == 1
     assert any(isinstance(n, ast.Expr) and n.value is calls[0] for n in ast.walk(tree))
-    assert 'if independent_validation.get("valid") is not True:' in app
-    assert '"valid": bool(surface_row["production_valid"])' in app
+    assert '_call_validation' not in app and '_put_validation' not in app
+    assert '"valid": bool(surface_row["production_valid"])' not in app
+    preflight = (root/'derivative_preflight.py').read_text()
+    assert 'OPTION_COMPARISON_HOLD' in preflight
     assert 'volatility_research' not in (root/'derivative_preflight.py').read_text()
 
 

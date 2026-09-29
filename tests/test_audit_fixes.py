@@ -413,12 +413,11 @@ def test_option_costs_depth_and_capital_use_one_execution_model():
                       IST=datetime.timezone(datetime.timedelta(hours=5,minutes=30)))
     ctx['risk_engine']=RiskEngine(investment_capital=1000000,max_risk_pct=2,max_position_pct=20)
     row={'Strike':'24000','Put LTP':'38.80','_put_bid':38.75,'_put_ask':38.85,
-         '_put_ask_qty':100000,'_put_bid_qty':100000,'_put_volume':1000000,
-         '_put_validation': {'valid': True, 'failures': []}}
+         '_put_ask_qty':100000,'_put_bid_qty':100000,'_put_volume':1000000}
     # This test isolates sizing; production foundation validation has its own tests.
     ctx['access_token'] = 'test-only'
     ctx['derivative_entry_preflight'] = lambda *a, **kw: SimpleNamespace(
-        eligible=True, contract=SimpleNamespace(key='K', lot=65, version='test', rule_version='test'),
+        eligible=True, greek_status='TEST_ONLY', contract=SimpleNamespace(key='K', lot=65, version='test', rule_version='test'),
         snapshot={'reference_price':row['_put_ask'], 'quotes':{'K':{
             'bid':row['_put_bid'], 'ask':row['_put_ask'], 'ask_size':row['_put_ask_qty']}}})
     ctx['evaluate_live_governance_contract'] = lambda **kw: {'allow_trade':True}
@@ -484,11 +483,10 @@ def test_option_recommendation_governance_exception_becomes_no_trade():
     row = {
         'Strike': '24000', 'Put LTP': '38.80', '_put_bid': 38.75, '_put_ask': 38.85,
         '_put_ask_qty': 100000, '_put_bid_qty': 100000, '_put_volume': 1000000,
-        '_put_validation': {'valid': True, 'failures': []},
     }
     ctx['access_token'] = 'test-only'
     ctx['derivative_entry_preflight'] = lambda *a, **kw: SimpleNamespace(
-        eligible=True, contract=SimpleNamespace(key='K', lot=65, version='test', rule_version='test'),
+        eligible=True, greek_status='TEST_ONLY', contract=SimpleNamespace(key='K', lot=65, version='test', rule_version='test'),
         snapshot={'reference_price':row['_put_ask'], 'quotes':{'K':{
             'bid':row['_put_bid'], 'ask':row['_put_ask'], 'ask_size':row['_put_ask_qty']}}})
 

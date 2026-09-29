@@ -8,7 +8,7 @@ import pytest
 
 from derivative_contracts import digest, resolve_contract, FoundationError
 from derivative_quotes import QuotePolicy, decode_v3
-from derivative_preflight import evaluate
+from derivative_preflight import evaluate, OPTION_COMPARISON_HOLD
 from derivative_restrictions import parse_ban, ban_url, restriction
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,13 +49,13 @@ def inputs():
 
 def test_valid_snapshot_decimal_ask_not_ltp_and_not_approval(inputs):
     result = evaluate(**inputs)
-    assert result.eligible, result.reasons
+    assert not result.eligible and result.greek_status == "NOT_COMPARABLE"
     assert result.snapshot["reference_price"] == Decimal("10.05")
     assert result.snapshot["quotes"][inputs["master"]["underlying_key"]]["reference"] == Decimal("100")
     assert not result.permits()
     assert not result.permits(now=NOW, governance_approved=False, manual_reviewed=True)
     assert not result.permits(now=NOW, governance_approved=True, manual_reviewed=False)
-    assert result.permits(now=NOW, governance_approved=True, manual_reviewed=True)
+    assert not result.permits(now=NOW, governance_approved=True, manual_reviewed=True)
     assert not result.permits(now=NOW+timedelta(seconds=6),governance_approved=True,manual_reviewed=True)
     inputs["side"] = "SELL"
     assert evaluate(**inputs).snapshot["reference_price"] == Decimal("10")
@@ -182,6 +182,86 @@ def test_index_reference_has_no_executable_book_but_needs_value_timestamp(inputs
     inputs['lifecycle']['adjustment_review'].update(contract_version=digest(inputs['master']),rule_version=digest(inputs['rules']))
     q = inputs['quotes'][inputs['master']['underlying_key']]
     q.update(bid=None, ask=None, last_trade_at=int(NOW.timestamp()*1000))
-    assert evaluate(**inputs).eligible
+    result = evaluate(**inputs)
+    assert result.snapshot is not None and result.greek_status == 'NOT_COMPARABLE'
     q['last_trade_at'] -= 100_000
-    assert not evaluate(**inputs).eligible
+    result = evaluate(**inputs)
+    assert not result.eligible and 'Stale index reference' in result.reasons[0]
+
+
+def refresh_fixture_versions(inputs):
+    inputs['rules']['master_hash'] = digest(inputs['master'])
+    inputs['lifecycle']['broker_policy']['contract_version'] = digest(inputs['master'])
+    inputs['lifecycle']['adjustment_review'].update(
+        contract_version=digest(inputs['master']), rule_version=digest(inputs['rules']))
+
+
+@pytest.mark.parametrize('kind', ['CE', 'PE'])
+@pytest.mark.parametrize('action', ['ENTRY', 'ROLL'])
+def test_option_hold_cannot_be_overridden_by_research_or_manual_review(inputs, kind, action, monkeypatch):
+    inputs['master']['instrument_type'] = kind
+    inputs['quotes'][inputs['master']['instrument_key']]['greeks']['delta'] = '.5' if kind == 'CE' else '-.5'
+    refresh_fixture_versions(inputs)
+    inputs['action'] = action
+    inputs['lifecycle'].update(production_valid=True, manual_confirmation=True,
+                              greek_comparison={'status': 'CONSISTENT', 'approval_eligible': True})
+    monkeypatch.setenv('OPTION_COMPARISON_APPROVED', 'true')
+    result = evaluate(**inputs)
+    assert result.reasons == (OPTION_COMPARISON_HOLD,)
+    assert result.snapshot is not None and not result.eligible
+    assert result.greek_status == 'NOT_COMPARABLE'
+    assert not result.permits(now=NOW, governance_approved=True, manual_reviewed=True)
+
+
+def test_old_cached_eligible_option_entry_cannot_permit(inputs):
+    from dataclasses import replace
+    held = evaluate(**inputs)
+    legacy = replace(held, eligible=True, reasons=(), greek_status='CONSISTENT')
+    assert not legacy.permits(now=NOW, governance_approved=True, manual_reviewed=True)
+    legacy = replace(legacy, snapshot={k:v for k,v in legacy.snapshot.items() if k != 'action'})
+    assert not legacy.permits(now=NOW, governance_approved=True, manual_reviewed=True)
+
+
+def test_futures_eligibility_and_manual_governance_requirements_unchanged(inputs):
+    inputs['master']['instrument_type'] = 'FUT'
+    refresh_fixture_versions(inputs)
+    result = evaluate(**inputs)
+    assert result.eligible, result.reasons
+    assert result.greek_status == 'NOT_APPLICABLE'
+    assert result.snapshot['reference_price'] == Decimal('10.05')
+    assert result.permits(now=NOW, governance_approved=True, manual_reviewed=True)
+    assert not result.permits(now=NOW, governance_approved=False, manual_reviewed=True)
+    assert not result.permits(now=NOW, governance_approved=True, manual_reviewed=False)
+    assert not result.permits(now=NOW+timedelta(seconds=6), governance_approved=True, manual_reviewed=True)
+
+
+def test_option_exit_review_still_runs_and_requires_official_exposure(inputs):
+    inputs['action'] = 'EXIT'
+    result = evaluate(**inputs)
+    assert not result.eligible and 'clearing-house deltas required' in result.reasons[0]
+    key = inputs['master']['instrument_key']
+    inputs['exposure'] = dict(complete=True, source='CLEARING_CORPORATION',
+        trading_date=NOW.date().isoformat(), valid_until=(NOW+timedelta(seconds=10)).isoformat(),
+        positions_before={key: 10}, positions_after={key: 0}, cc_deltas={key: '.5'})
+    result = evaluate(**inputs)
+    assert result.eligible, result.reasons
+    assert result.greek_status == 'NOT_APPLICABLE'
+    assert result.permits(now=NOW, governance_approved=True, manual_reviewed=True)
+
+
+def test_existing_quote_failure_is_not_misreported_as_comparison_hold(inputs):
+    inputs['quotes'][inputs['master']['instrument_key']]['bid'] = '11'
+    result = evaluate(**inputs)
+    assert not result.eligible
+    assert 'Crossed book' in result.reasons[0]
+    assert OPTION_COMPARISON_HOLD not in result.reasons
+
+
+def test_legacy_flag_removed_from_live_selector_not_replaced_by_shadow():
+    source = (ROOT/'app.py').read_text(encoding='utf-8')
+    assert '_call_validation' not in source and '_put_validation' not in source
+    tree = ast.parse(source)
+    function = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == 'build_option_recommendation')
+    selection = ast.unparse(function)
+    assert 'derivative_entry_preflight' in selection and 'not foundation.eligible' in selection
+    assert 'production_valid' not in selection and 'greek_consistency' not in selection
