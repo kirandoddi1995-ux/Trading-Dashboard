@@ -55,6 +55,7 @@ from live_governance import GovernanceServices, evaluate_live_governance
 from derivative_preflight import evaluate as evaluate_derivative_preflight, PreflightResult
 from derivative_quotes import QuotePolicy, decode_v3
 from derivative_repository import DerivativeRepository
+from derivative_contracts import digest as derivative_digest, stamp as derivative_stamp
 from calibration_artifacts import build_equity_calibration_artifact
 from artifact_security import ArtifactSigner
 from equity_runtime_evidence import build_equity_live_evidence
@@ -4497,6 +4498,11 @@ def derivative_entry_preflight(instrument_key, token, *, quantity=None, side="BU
         master, rules, ban = repo.load(instrument_key, venue=venue, trading_date=now.date(), now=now)
         if not master or not rules:
             return PreflightResult(False, ("Current master/reviewed exchange rules unavailable",))
+        account_id = str(st.secrets.get('derivatives_monitor', {}).get('account_id', '')).strip()
+        if not account_id:
+            return PreflightResult(False, ('Derivative monitor account is not configured',))
+        lifecycle = repo.lifecycle_context(instrument_key,now=now,
+            account_key=derivative_digest({'upstox_account':account_id}))
         buffer = get_market_data_buffer(token)
         buffer.reconcile("derivative-" + instrument_key, [instrument_key, master["underlying_key"]])
         with buffer.lock:
@@ -4518,13 +4524,42 @@ def derivative_entry_preflight(instrument_key, token, *, quantity=None, side="BU
         policy = QuotePolicy(**rules["quote_policy"])
         result = evaluate_derivative_preflight(master, rules, quotes, now=now,
             generation=generation, quantity=quantity if quantity is not None else master["lot_size"],
-            side=side, policy=policy, ban=ban)
+            side=side, policy=policy, ban=ban, lifecycle=lifecycle)
         if result.eligible:
             repo.record_snapshot(result, now=now)
         return result
     except Exception as exc:
         LOGGER.warning("Derivative preflight unavailable: %s", type(exc).__name__)
         return PreflightResult(False, ("Derivative reference/feed verification unavailable",))
+
+
+def render_derivative_monitor_panel(panel_key):
+    """Read retained positions even when trading, auth or current references fail."""
+    st.markdown('#### Settlement and corporate-action monitor')
+    try:
+        repo = DerivativeRepository(DURABLE_REPOSITORY.connect)
+        state = repo.monitor_state()
+        now = datetime.datetime.now(IST)
+        if not state:
+            st.error('Monitor has not reported. New derivative entries are blocked.')
+            return
+        fresh = derivative_stamp(state['checked_at']) <= now < derivative_stamp(state['valid_until'])
+        status = state['status'] if fresh else 'MONITOR STALE — BROKER STATE UNKNOWN'
+        st.write(status)
+        st.caption('Last broker check: ' + str(state['checked_at']) + '. No automatic liquidation. Acknowledgement does not resolve obligations.')
+        positions = list(repo.positions().values())
+        if positions:
+            st.dataframe(pd.DataFrame(positions),use_container_width=True)
+        else:
+            st.info('No retained derivative positions. This is not proof of historical settlement reconciliation.')
+        for alert in repo.alerts():
+            st.warning(alert['code'])
+            st.caption('Email accepted at: '+str(alert['delivered_at'])+'; delivery error: '+str(alert['last_error']))
+            if st.button('Acknowledge (does not resolve)',key=panel_key+'-derivative-alert-'+alert['alert_id']):
+                repo.acknowledge(alert['alert_id'],now)
+                st.info('Acknowledged; monitoring and unresolved obligations remain active.')
+    except Exception:
+        st.error('Settlement monitor unavailable. Check broker positions directly; new entries remain blocked.')
 
 
 def get_available_expiries(contracts):
@@ -6113,6 +6148,7 @@ if selected_tab == "Settings":
 # ==========================================
 elif selected_tab == "Options & Derivatives Chain":
     st.subheader("Options Chain Analytics")
+    render_derivative_monitor_panel('options')
 
     if "iv_history" not in st.session_state:
         st.session_state.iv_history = load_iv_history_disk()
@@ -7490,6 +7526,7 @@ elif selected_tab == "Options & Derivatives Chain":
 # ==========================================
 elif selected_tab == "Futures & Derivatives":
     st.subheader("Futures Trading")
+    render_derivative_monitor_panel('futures')
     st.markdown("Index futures research using observed contract prices and ATR-based levels. No broker margin or executable quantity is implied.")
 
     fut_df = get_futures_instruments()

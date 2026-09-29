@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import zipfile
 import tempfile
+import os
 from deployment_canary import run_canaries
 from release_verification import release_members, verify_archive
 
@@ -33,6 +34,8 @@ RUNTIME = ['app.py', 'app_runtime.py', 'scan_jobs.py', 'reliable_charts.py',
            'requirements.txt', 'constraints.txt']
 FILES = RUNTIME + ['release_verification.py', 'RELEASE_PACKAGING.md',
                    'sql/derivative_foundations_review_only.sql', 'DERIVATIVE_FOUNDATIONS.md',
+                   'sql/derivative_monitor_review_only.sql', 'DERIVATIVE_MONITOR_REVIEW.md',
+                   'derivative_monitor.py',
                    'requirements-archive.txt', 'tests/test_release_packaging.py',
                    '.gitignore', '.streamlit/secrets.example.toml', 'PRODUCTION_GUIDE.md',
                    'RESILIENCE_IMPLEMENTATION.md', 'RESILIENCE_RUNBOOK.md',
@@ -70,6 +73,72 @@ FILES = RUNTIME + ['release_verification.py', 'RELEASE_PACKAGING.md',
                    'PRODUCTION_EXTERNAL_ACTIONS.md', 'EVIDENCE_READINESS.md']
 
 
+def _file_access_descriptor(path):
+    """Windows DACL only; no owner/SACL privilege or PowerShell dependency."""
+    import ctypes
+    from ctypes import wintypes
+    api = ctypes.WinDLL('advapi32',use_last_error=True)
+    get = api.GetFileSecurityW
+    get.argtypes = [wintypes.LPCWSTR,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD)]
+    get.restype = wintypes.BOOL
+    needed = wintypes.DWORD()
+    get(str(path),4,None,0,ctypes.byref(needed))
+    if not needed.value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    buffer = ctypes.create_string_buffer(needed.value)
+    if not get(str(path),4,buffer,len(buffer),ctypes.byref(needed)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return buffer
+
+
+def _dacl_bytes(descriptor):
+    import ctypes
+    from ctypes import wintypes
+    api = ctypes.WinDLL('advapi32',use_last_error=True)
+    get = api.GetSecurityDescriptorDacl
+    get.argtypes = [ctypes.c_void_p,ctypes.POINTER(wintypes.BOOL),ctypes.POINTER(ctypes.c_void_p),ctypes.POINTER(wintypes.BOOL)]
+    get.restype = wintypes.BOOL
+    present,defaulted,acl = wintypes.BOOL(),wintypes.BOOL(),ctypes.c_void_p()
+    if not get(descriptor,ctypes.byref(present),ctypes.byref(acl),ctypes.byref(defaulted)) or not present.value or not acl.value:
+        raise RuntimeError('Destination file must have a non-null DACL')
+    size = ctypes.c_ushort.from_address(acl.value+2).value
+    return ctypes.string_at(acl.value,size)
+
+
+def prepare_artifact_permissions(staged, destination_root):
+    """Copy only the destination's inherited file DACL, never its directory ACL.
+
+    A sibling probe inherits the intended file permissions. Private staging stays
+    private. Do not copy the previous release's potentially broken owner-only ACL.
+    Never touches credentials or broadens project/directory permissions.
+    """
+    if os.name != 'nt':
+        return
+    before = hashlib.sha256(staged.read_bytes()).digest()
+    fd, name = tempfile.mkstemp(prefix='.release-acl-probe-',dir=destination_root)
+    os.close(fd)
+    probe = Path(name)
+    try:
+        import ctypes
+        from ctypes import wintypes
+        descriptor = _file_access_descriptor(probe)
+        expected = _dacl_bytes(descriptor)
+        api = ctypes.WinDLL('advapi32',use_last_error=True)
+        setter = api.SetFileSecurityW
+        setter.argtypes = [wintypes.LPCWSTR,wintypes.DWORD,ctypes.c_void_p]
+        setter.restype = wintypes.BOOL
+        # DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION.
+        # Parent staging permissions must not be reapplied. Ownership is untouched.
+        if not setter(str(staged),0x80000004,descriptor):
+            raise RuntimeError('Release artifact permissions could not be prepared; not published')
+        if _dacl_bytes(_file_access_descriptor(staged)) != expected:
+            raise RuntimeError('Release artifact destination DACL mismatch; not published')
+        if hashlib.sha256(staged.read_bytes()).digest() != before:
+            raise RuntimeError('Artifact bytes changed during permission preparation; not published')
+    finally:
+        probe.unlink(missing_ok=True)
+
+
 def package(root=None):
     root = Path(root or ROOT).resolve()
     canaries = run_canaries(root)
@@ -90,9 +159,12 @@ def package(root=None):
             manifest_text = json.dumps(manifest, indent=2) + '\n'
             bundle.writestr('SHA256_MANIFEST.json', manifest_text)
         verify_archive(staged)  # Mandatory: subprocess imports the extracted ZIP.
-        staged.replace(archive)
         sidecar = Path(staging) / 'SHA256_MANIFEST.json'
         sidecar.write_bytes(manifest_text.encode('utf-8'))
+        # Both preparations must succeed before either existing artifact is replaced.
+        prepare_artifact_permissions(staged, root)
+        prepare_artifact_permissions(sidecar, root)
+        staged.replace(archive)
         sidecar.replace(root / sidecar.name)
     print(f'{archive.name}: {len(members)} files; extracted import and hashes verified')
     return archive

@@ -80,6 +80,15 @@ class Contract:
 
 
 def resolve_contract(master, rules, *, now):
+    return _resolve_contract(master, rules, now=now, monitoring=False)
+
+
+def resolve_historical_contract(master, rules, *, now):
+    """For unresolved positions only; cannot establish executable eligibility."""
+    return _resolve_contract(master, rules, now=now, monitoring=True)
+
+
+def _resolve_contract(master, rules, *, now, monitoring):
     """Rules are reviewed, dated records; a BOD expiry marker is not a trading cutoff."""
     now = stamp(now)
     if not isinstance(master, dict) or not isinstance(rules, dict):
@@ -90,7 +99,7 @@ def resolve_contract(master, rules, *, now):
                 "master_hash", "exchange", "segment", "trading_status", "session_date")
     if any(rules.get(k) is None or rules.get(k) == "" for k in required):
         raise FoundationError("Incomplete reviewed exchange rules")
-    if stamp(rules["known_at"]) > now or not stamp(rules["effective_from"]) <= now < stamp(rules["effective_until"]):
+    if stamp(rules["known_at"]) > now or stamp(rules['effective_from']) > now or (not monitoring and not now < stamp(rules["effective_until"])):
         raise FoundationError("Exchange rules are stale or not yet known")
     key, venue = master.get("instrument_key"), master.get("exchange")
     segment = master.get("segment")
@@ -101,7 +110,7 @@ def resolve_contract(master, rules, *, now):
     if (rules["instrument_key"] != key or rules["exchange"] != venue or
             rules["segment"] != segment or rules["master_hash"] != digest(master)):
         raise FoundationError("Contract/rule version mismatch")
-    if rules["trading_status"] != "ACTIVE" or rules.get("corporate_action_status") != "VERIFIED":
+    if (not monitoring and rules["trading_status"] != "ACTIVE") or rules.get("corporate_action_status") != "VERIFIED":
         raise FoundationError("Trading status or corporate action unverified")
     kind = master.get("instrument_type")
     under_type = master.get("underlying_type")
@@ -124,9 +133,9 @@ def resolve_contract(master, rules, *, now):
         raise FoundationError("Master expiry date disagrees with reviewed cutoff")
     start, end = stamp(rules["session_open"]), stamp(rules["session_close"])
     session_local = datetime.fromisoformat(str(rules["session_open"]))
-    if session_local.date().isoformat() != rules["session_date"] or now.astimezone(session_local.tzinfo).date() != session_local.date():
+    if session_local.date().isoformat() != rules["session_date"] or (not monitoring and now.astimezone(session_local.tzinfo).date() != session_local.date()):
         raise FoundationError("Exchange session date mismatch")
-    if not start <= now < min(end, expiry):
+    if not monitoring and not start <= now < min(end, expiry):
         raise FoundationError("Contract session closed or expired")
     lot = number(master.get("lot_size"), positive=True)
     if lot != lot.to_integral_value():

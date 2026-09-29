@@ -36,6 +36,7 @@ RELEASE_FILES = (
     "equity_positions.py",
     "derivative_contracts.py", "derivative_quotes.py", "derivative_restrictions.py",
     "derivative_preflight.py", "derivative_repository.py",
+    "derivative_settlement.py", "derivative_corporate_actions.py", "derivative_monitor.py",
 )
 
 

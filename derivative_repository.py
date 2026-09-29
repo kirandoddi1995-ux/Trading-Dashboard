@@ -7,14 +7,151 @@ import gzip
 import hashlib
 import json
 import os
+from contextlib import contextmanager
+from datetime import timedelta
+from uuid import uuid4
 
-from derivative_contracts import FoundationError, digest
+from derivative_contracts import FoundationError, digest, stamp, resolve_historical_contract
 from derivative_restrictions import ban_url, parse_ban
 
 
 class DerivativeRepository:
     def __init__(self, connect):
         self.connect = connect
+
+    def historical(self, key, *, now, version=None, rule_version=None):
+        """Monitoring lookup survives expiry/master removal; never an entry fallback."""
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT payload,version FROM derivatives_reference.exchange_rules "
+                        "WHERE instrument_key=%s AND known_at<=%s "
+                        "AND (%s::text IS NULL OR version=%s) ORDER BY known_at DESC,version LIMIT 1",
+                        (key,now,rule_version,rule_version))
+            row = cur.fetchone()
+            if not row or digest(row[0]) != row[1]:
+                raise FoundationError('Historical reviewed contract unavailable')
+            rules = row[0]
+            if version is not None and rules['master_hash'] != version:
+                raise FoundationError('Historical contract lineage mismatch')
+            cur.execute("SELECT payload FROM derivatives_reference.contract_versions WHERE version=%s AND known_at<=%s",
+                        (rules['master_hash'],now))
+            row = cur.fetchone()
+            if not row:
+                raise FoundationError('Historical master unavailable')
+            return resolve_historical_contract(row[0],rules,now=now)
+
+    def reviewed(self, kind, key, *, now):
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT payload,version FROM derivatives_monitor.records WHERE kind=%s "
+                        "AND instrument_key=%s AND known_at<=%s ORDER BY known_at DESC,version LIMIT 1", (kind,key,now))
+            row = cur.fetchone()
+            if not row:
+                return None
+            if digest(row[0]) != row[1]:
+                raise FoundationError('Reviewed record hash mismatch')
+            return row[0]
+
+    def publish_adjustment(self, event, old_master, new_master, new_rules, review):
+        """Owner-only review transaction, never invoked by runtime/monitor ingestion.
+
+        Preserve old rows and atomically publish lineage + exact replacement terms.
+        No pricing event can take this route. Conflicts are errors, not overwrites.
+        """
+        from derivative_corporate_actions import validate_adjustment
+        event_version = validate_adjustment(event,old_master,new_master)
+        if (new_rules.get('master_hash') != digest(new_master) or review.get('event_version') != event_version
+                or review.get('contract_version') != digest(new_master) or review.get('rule_version') != digest(new_rules)
+                or stamp(review['quotes_after']) < stamp(event['effective_at'])):
+            raise FoundationError('Adjustment review linkage mismatch')
+        with self.connect() as conn, conn.cursor() as cur:
+            for master in (old_master,new_master):
+                cur.execute('INSERT INTO derivatives_reference.contract_versions VALUES(%s,%s::jsonb,%s) ON CONFLICT DO NOTHING',
+                            (digest(master),json.dumps(master),event['known_at']))
+            cur.execute('INSERT INTO derivatives_reference.exchange_rules VALUES(%s,%s,%s,%s::jsonb) ON CONFLICT DO NOTHING',
+                        (digest(new_rules),new_master['instrument_key'],new_rules['known_at'],json.dumps(new_rules,default=str)))
+            for kind,payload in (('CONTRACT_ADJUSTMENT',event),('ADJUSTMENT_REVIEW',review)):
+                cur.execute('INSERT INTO derivatives_monitor.records VALUES(%s,%s,%s,%s,%s::jsonb) ON CONFLICT DO NOTHING',
+                            (digest(payload),kind,new_master['instrument_key'],event['known_at'],json.dumps(payload,default=str)))
+
+    def monitor_state(self):
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT account_key,status,checked_at,valid_until,unresolved_critical FROM derivatives_monitor.state WHERE singleton")
+            row = cur.fetchone()
+            return dict(zip(('account_key','status','checked_at','valid_until','unresolved_critical'),row)) if row else None
+
+    def lifecycle_context(self, key, *, now, account_key):
+        state = self.monitor_state()
+        if not state or state['account_key'] != account_key:
+            raise FoundationError('Monitor account unavailable or mismatched')
+        return dict(state, broker_policy=self.reviewed('BROKER_POLICY',key,now=now),
+                    adjustment_review=self.reviewed('ADJUSTMENT_REVIEW',key,now=now))
+
+    @contextmanager
+    def monitor_lock(self):
+        # Serialize polls across hosts without a host-specific lock service.
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute('SELECT pg_try_advisory_xact_lock(71943012)')
+            if not cur.fetchone()[0]:
+                raise FoundationError('Monitor already running')
+            yield
+
+    def set_monitor_state(self, account_key, status, now, ttl, critical=True):
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute("INSERT INTO derivatives_monitor.state VALUES(true,%s,%s,%s,%s,%s) "
+                        "ON CONFLICT(singleton) DO UPDATE SET account_key=excluded.account_key,status=excluded.status,"
+                        "checked_at=excluded.checked_at,valid_until=excluded.valid_until,unresolved_critical=excluded.unresolved_critical",
+                        (account_key,status,now,stamp(now)+timedelta(seconds=ttl),critical))
+
+    def positions(self):
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute('SELECT position_key,payload FROM derivatives_monitor.positions ORDER BY position_key')
+            return dict(cur.fetchall())
+
+    def save_position(self, key, payload, now):
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute("INSERT INTO derivatives_monitor.positions VALUES(%s,%s,%s,%s,%s::jsonb,%s) "
+                        "ON CONFLICT(position_key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
+                        (key,payload['account_key'],payload['instrument_key'],payload['product'],json.dumps(payload,default=str),now))
+
+    def alert(self, code, now):
+        # One retryable record per condition; no token, account, or position data in email.
+        key = digest({'alert':code})
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute("INSERT INTO derivatives_monitor.alerts(alert_id,code,first_seen,last_seen,next_attempt) "
+                        "VALUES(%s,%s,%s,%s,%s) ON CONFLICT(alert_id) DO UPDATE SET active=true,last_seen=excluded.last_seen,"
+                        "next_attempt=CASE WHEN derivatives_monitor.alerts.active THEN derivatives_monitor.alerts.next_attempt ELSE excluded.next_attempt END,"
+                        "acknowledged_at=CASE WHEN derivatives_monitor.alerts.active THEN derivatives_monitor.alerts.acknowledged_at ELSE NULL END",
+                        (key,code,now,now,now))
+
+    def clear_alert(self, code):
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute('UPDATE derivatives_monitor.alerts SET active=false WHERE alert_id=%s',(digest({'alert':code}),))
+
+    def alerts(self):
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute('SELECT alert_id,code,last_seen,acknowledged_at,delivered_at,last_error FROM derivatives_monitor.alerts WHERE active ORDER BY last_seen DESC')
+            return [dict(zip(('alert_id','code','last_seen','acknowledged_at','delivered_at','last_error'),r)) for r in cur.fetchall()]
+
+    def acknowledge(self, key, now):
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute('UPDATE derivatives_monitor.alerts SET acknowledged_at=%s WHERE alert_id=%s AND active',(now,key))
+
+    def claim_email(self, now):
+        token = str(uuid4())
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute("WITH due AS (SELECT alert_id FROM derivatives_monitor.alerts WHERE active AND next_attempt<=%s "
+                        "AND (lease_until IS NULL OR lease_until<=%s) ORDER BY next_attempt FOR UPDATE SKIP LOCKED LIMIT 1) "
+                        "UPDATE derivatives_monitor.alerts a SET lease_token=%s::uuid,lease_until=%s,attempts=attempts+1 "
+                        "FROM due WHERE a.alert_id=due.alert_id RETURNING a.alert_id,a.code,a.attempts",
+                        (now,now,token,stamp(now)+timedelta(minutes=2)))
+            row = cur.fetchone()
+            return (*row,token) if row else None
+
+    def finish_email(self, key, token, now, *, success, attempts):
+        delay = 21600 if success else min(3600,60 * 2**min(attempts,6))
+        with self.connect() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE derivatives_monitor.alerts SET lease_token=NULL,lease_until=NULL,next_attempt=%s,"
+                        "delivered_at=CASE WHEN %s THEN %s ELSE delivered_at END,last_error=%s WHERE alert_id=%s AND lease_token=%s::uuid",
+                        (stamp(now)+timedelta(seconds=delay),success,now,None if success else 'EMAIL_DELIVERY_FAILED',key,token))
 
     @staticmethod
     def _health(cur, kind, trading_date, status, now, source_hash=None):

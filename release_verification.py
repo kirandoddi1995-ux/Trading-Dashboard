@@ -189,14 +189,25 @@ def verify_archive(archive, *, timeout=120):
                    LOCALAPPDATA=str(home), TMP=str(home), TEMP=str(home),
                    MPLCONFIGDIR=str(home / "matplotlib"),
                    STREAMLIT_BROWSER_GATHER_USAGE_STATS="false")
-        try:
-            result = subprocess.run(
+        with subprocess.Popen(
                 [sys.executable, "-I", "-B", "-c", IMPORT_PROBE, str(extracted), json.dumps(local_names)],
-                cwd=extracted, env=env, capture_output=True, text=True,
-                timeout=timeout, check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("Extracted release import timed out; release not published") from exc
-        if result.returncode != 0 or "RELEASE_IMPORT_VERIFIED" not in result.stdout.splitlines():
-            raise RuntimeError("Extracted release import failed; release not published\n" + result.stderr[-12000:])
+                cwd=extracted, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        ) as process:
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                # Windows venv launchers can have a child interpreter holding the
+                # extraction directory open. Stop this specific process tree
+                # before removing its temporary files, not just the launcher.
+                if os.name == 'nt':
+                    subprocess.run(
+                        [str(Path(os.environ['SystemRoot']) / 'System32' / 'taskkill.exe'),
+                         '/PID', str(process.pid), '/T', '/F'],
+                        capture_output=True, timeout=10, check=False)
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=10)
+                raise RuntimeError("Extracted release import timed out; release not published") from exc
+            if process.returncode != 0 or "RELEASE_IMPORT_VERIFIED" not in stdout.splitlines():
+                raise RuntimeError("Extracted release import failed; release not published\n" + stderr[-12000:])
         return {"files": len(manifest), "import_verified": True}
