@@ -148,3 +148,52 @@ def test_successful_build_publishes_only_verified_bundle(tmp_path, monkeypatch):
     with zipfile.ZipFile(target) as bundle:
         assert set(bundle.namelist()) == {"app.py", "new_module.py", MANIFEST}
         assert bundle.read(MANIFEST) == (tmp_path / MANIFEST).read_bytes()
+
+
+def test_permission_preparation_failure_preserves_both_old_artifacts(tmp_path,monkeypatch):
+    source(tmp_path,'app.py','pass\n')
+    old=tmp_path/'release-v22.5.7-futures-history-hotfix.zip'
+    old.write_bytes(b'old-release')
+    sidecar=tmp_path/MANIFEST
+    sidecar.write_bytes(b'old-manifest')
+    monkeypatch.setattr(package_release,'FILES',['app.py'])
+    monkeypatch.setattr(package_release,'run_canaries',lambda root:{'ok':True})
+    def fail(*args): raise RuntimeError('permission preparation failed')
+    monkeypatch.setattr(package_release,'prepare_artifact_permissions',fail)
+    with pytest.raises(RuntimeError,match='permission preparation'):
+        package_release.package(tmp_path)
+    assert old.read_bytes()==b'old-release' and sidecar.read_bytes()==b'old-manifest'
+
+
+def test_artifact_permissions_preserve_bytes_and_private_directory(tmp_path):
+    import os
+    import tempfile
+    if os.name != 'nt':
+        pytest.skip('Windows artifact DACL regression')
+    with tempfile.TemporaryDirectory(dir=tmp_path) as stage:
+        staged=Path(stage)/'release.zip'
+        staged.write_bytes(b'immutable-fixture')
+        def acl(path):
+            return package_release._dacl_bytes(package_release._file_access_descriptor(path))
+        before=acl(stage)
+        expected_file=tmp_path/'destination-acl-fixture'
+        expected_file.write_bytes(b'')
+        expected=acl(expected_file)
+        package_release.prepare_artifact_permissions(staged,tmp_path)
+        assert staged.read_bytes()==b'immutable-fixture'
+        assert acl(staged)==expected
+        assert acl(stage)==before
+        assert not list(tmp_path.glob('.release-acl-probe-*'))
+
+
+def test_current_release_in_disposable_copy_includes_monitor_and_imports(tmp_path):
+    # Never rebuild/replace the user's existing release artifact during tests.
+    root=Path(__file__).resolve().parents[1]
+    for name in release_members(root,package_release.FILES):
+        destination=tmp_path/name
+        destination.parent.mkdir(parents=True,exist_ok=True)
+        destination.write_bytes((root/name).read_bytes())
+    target=package_release.package(tmp_path)
+    with zipfile.ZipFile(target) as bundle:
+        assert {'derivative_monitor.py','derivative_settlement.py','derivative_corporate_actions.py',
+                'sql/derivative_monitor_review_only.sql'}.issubset(bundle.namelist())

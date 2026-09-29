@@ -35,7 +35,14 @@ def inputs():
              oi=1000, iv=".2", greeks=dict(delta=".5", gamma=".1", theta="-.1", vega=".2"))
     underlying = dict(q, key=master["underlying_key"], reference=80, bid="99.95", ask="100.05")
     ban = parse_ban(b"SYMBOL\n", trading_date=NOW.date(), source=ban_url(NOW.date()), received_at=NOW)
-    return dict(master=master, rules=rules, quotes={q["key"]: q, underlying["key"]: underlying},
+    lifecycle = dict(status='READY',checked_at=NOW,valid_until=NOW+timedelta(minutes=5),unresolved_critical=False,
+        broker_policy=dict(reviewed=True,source='https://upstox.com/announcements/physical-settlement/',
+          source_sha256='a'*64,contract_version=digest(master),expiry_at=rules['expiry_at'],
+          known_at=NOW,valid_until=NOW+timedelta(hours=1),entry_cutoff=NOW+timedelta(minutes=30),
+          exit_by=NOW+timedelta(minutes=40),broker_deadline=NOW+timedelta(minutes=50)),
+        adjustment_review=dict(status='VERIFIED',contract_version=digest(master),rule_version=digest(rules),
+          checked_at=NOW,valid_until=NOW+timedelta(hours=1),quotes_after=NOW-timedelta(seconds=2),event_version='b'*64))
+    return dict(master=master, rules=rules, quotes={q["key"]: q, underlying["key"]: underlying}, lifecycle=lifecycle,
                 now=NOW, generation=1, quantity=10, side="BUY",
                 policy=QuotePolicy(5, 2, Decimal(".02"), "test-v1"), ban=ban)
 
@@ -171,6 +178,8 @@ def test_jsonb_numeric_representation_is_not_a_contract_change():
 def test_index_reference_has_no_executable_book_but_needs_value_timestamp(inputs):
     inputs['master']['underlying_type'] = 'INDEX'
     inputs['rules']['master_hash'] = digest(inputs['master'])
+    inputs['lifecycle']['broker_policy']['contract_version'] = digest(inputs['master'])
+    inputs['lifecycle']['adjustment_review'].update(contract_version=digest(inputs['master']),rule_version=digest(inputs['rules']))
     q = inputs['quotes'][inputs['master']['underlying_key']]
     q.update(bid=None, ask=None, last_trade_at=int(NOW.timestamp()*1000))
     assert evaluate(**inputs).eligible
