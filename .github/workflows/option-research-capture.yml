@@ -14,10 +14,12 @@ on:
         default: '1015'
         options: ['1015', '1145', '1345', '1500']
   schedule:
-    - cron: '45 4 * * 1-5'
-    - cron: '15 6 * * 1-5'
-    - cron: '15 8 * * 1-5'
-    - cron: '30 9 * * 1-5'
+    # Start five minutes early for dependency setup; Python waits until target.
+    # GitHub still cannot guarantee punctuality or execution.
+    - cron: '40 4 * * 1-5'
+    - cron: '10 6 * * 1-5'
+    - cron: '10 8 * * 1-5'
+    - cron: '25 9 * * 1-5'
     - cron: '30 11 * * 1-5' # 17:00 IST: read-only completeness audit
 
 permissions:
@@ -31,7 +33,7 @@ jobs:
   capture:
     if: github.event_name == 'workflow_dispatch' || vars.OPTION_CAPTURE_ENABLED == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
         with:
@@ -63,10 +65,10 @@ jobs:
           import os
           from option_capture_job import main
           if os.environ['EVENT_NAME'] == 'schedule':
-              slots = {'45 4 * * 1-5': '1015', '15 6 * * 1-5': '1145',
-                       '15 8 * * 1-5': '1345', '30 9 * * 1-5': '1500'}
+              slots = {'40 4 * * 1-5': '1015', '10 6 * * 1-5': '1145',
+                       '10 8 * * 1-5': '1345', '25 9 * * 1-5': '1500'}
               cron = os.environ['CRON']
-              args = ['--audit-today'] if cron == '30 11 * * 1-5' else ['--slot', slots[cron]]
+              args = ['--audit-today'] if cron == '30 11 * * 1-5' else ['--slot', slots[cron], '--wait-for-slot']
           else:
               mode = os.environ['REQUESTED_MODE']
               if mode not in {'preview', 'capture', 'audit'}:
