@@ -33,6 +33,7 @@ from equity_manual_review import (
 from provider_contracts import OptionGreeks, OptionMarketData, ProviderContractError, ProviderErrorKind
 from quantitative_services import estimate_execution_cost, cross_sectional_scores
 from iv_surface import normalize_iv_surface
+from volatility_research_ui import render_volatility_research
 from model_registry import ModelRegistry
 from mf_archive import MutualFundArchive
 from risk_engine import RiskEngine
@@ -7480,6 +7481,9 @@ elif selected_tab == "Options & Derivatives Chain":
             blocking_reasons=option_reasons,
             context=option_context,
         ))
+
+    # Display-only research: no output is handed to candidate selection or preflight.
+    render_volatility_research(st)
 
     with st.expander("📊 Detailed Options Analytics (Advanced / Optional)"):
         col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
