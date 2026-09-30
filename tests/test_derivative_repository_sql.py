@@ -184,3 +184,68 @@ def test_owner_adjustment_preserves_both_versions_and_runtime_cannot_publish(db,
     db.execute('SET ROLE quant_app_runtime')
     with pytest.raises(RuntimeError,match='permission denied'):
         repo.publish_adjustment(event,old,new,rules,review)
+
+
+def inventory(db):
+    return db.execute((ROOT/'sql/derivative_readiness_inventory_read_only.sql').read_text()).fetchone()[0]
+
+
+def test_read_only_inventory_and_runtime_smoke(db):
+    before = inventory(db)
+    assert all(row['present'] for row in before['expected_derivative_tables'])
+    assert len(before['expected_derivative_tables']) == 9
+    assert all(t['rls_enabled'] for t in before['tables'])
+    for row in before['derivative_effective_privileges']:
+        if row['role'] in ('equity_research_collector','anon','authenticated'):
+            assert not row['schema_usage'] and not row['table_privileges'] and not row['column_writes']
+        if row['role'] == 'quant_app_runtime':
+            assert not set(row['table_privileges']) & {'DELETE','TRUNCATE','UPDATE'}
+    script = (ROOT/'sql/derivative_runtime_smoke_read_only.sql').read_text()
+    db.send({'script': script})
+    # Execute SELECT separately to assert the displayed results as well.
+    db.execute('BEGIN READ ONLY')
+    db.execute('SET LOCAL ROLE quant_app_runtime')
+    rows = db.execute(script.split('SET LOCAL ROLE quant_app_runtime;',1)[1].split('ROLLBACK;',1)[0]).fetchall()
+    db.execute('ROLLBACK')
+    assert len(rows) == 9 and all(r[0]=='quant_app_runtime' and r[2] and r[3]==0 for r in rows)
+    after = inventory(db)
+    assert before['tables'] == after['tables']
+    assert before['derivative_effective_privileges'] == after['derivative_effective_privileges']
+
+
+def test_foundations_repairs_missing_read_policy_without_broadening_grants(db):
+    db.execute('DROP POLICY ingest_read ON derivatives_reference.contract_versions')
+    db.execute('CREATE TABLE derivatives_reference.unrelated_private_table (id integer)')
+    db.send({'script': (ROOT/'sql/derivative_foundations_review_only.sql').read_text()})
+    assert db.execute("SELECT count(*) FROM pg_policies WHERE schemaname='derivatives_reference' "
+                      "AND tablename='contract_versions' AND policyname='ingest_read'").fetchone()[0] == 1
+    assert not db.execute("SELECT has_table_privilege('quant_app_runtime',"
+                          "'derivatives_reference.unrelated_private_table','SELECT')").fetchone()[0]
+
+
+@pytest.mark.parametrize('draft,expected', [
+    ('derivative_foundations_review_only.sql','Prerequisite missing'),
+    ('derivative_monitor_review_only.sql','foundations prerequisite missing')])
+def test_missing_prerequisites_rollback_without_partial_schema(draft, expected):
+    pg = Pg()
+    try:
+        assert not any(r['present'] for r in inventory(pg)['expected_derivative_tables'])
+        with pytest.raises(RuntimeError, match=expected):
+            pg.send({'script': (ROOT/'sql'/draft).read_text()})
+        pg.execute('ROLLBACK')
+        assert not pg.execute("SELECT EXISTS(SELECT FROM pg_namespace WHERE nspname LIKE 'derivatives_%')").fetchone()[0]
+    finally:
+        pg.send({'close':True})
+        pg.process.stdin.close()
+        pg.process.wait(timeout=10)
+
+
+@pytest.mark.parametrize('draft,role', [('derivative_foundations_review_only.sql','quant_derivative_ingestor'),
+    ('derivative_monitor_review_only.sql','quant_derivative_monitor'),
+    ('derivative_monitor_review_only.sql','quant_derivative_watchdog')])
+def test_unsafe_existing_role_rejected_not_silently_altered(db, draft, role):
+    db.execute('ALTER ROLE '+role+' BYPASSRLS')
+    with pytest.raises(RuntimeError, match='Unsafe existing'):
+        db.send({'script': (ROOT/'sql'/draft).read_text()})
+    db.execute('ROLLBACK')
+    assert db.execute('SELECT rolbypassrls FROM pg_roles WHERE rolname=%s',(role,)).fetchone()[0]
