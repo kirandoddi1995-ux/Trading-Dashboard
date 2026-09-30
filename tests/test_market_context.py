@@ -235,3 +235,116 @@ def test_ui_integration_is_statement_not_decision_and_no_database_imports():
     assert 'DATABASE_URL' not in workflow and 'UPSTOX' not in workflow
     assert 'contents: read' in workflow
     assert 'MARKET_CONTEXT_ARCHIVE_ENABLED' in workflow
+
+
+def test_vix_uses_prior_ist_session_and_exposes_exact_baseline(monkeypatch):
+    import pandas as pd
+    import prospective_collection as p
+    import market_context_sources as s
+    monkeypatch.setattr(s, 'now', lambda: NOW)
+    monkeypatch.setattr(p, '_fetch_instrument_master', lambda *a: [])
+    monkeypatch.setattr(p, 'fetch_global_quotes', lambda *a: {'quotes': {s.VIX: dict(
+        last_price='13.42', timestamp=NOW.isoformat(), last_trade_time=int(NOW.timestamp()*1000),
+        _received_at=NOW.isoformat())}})
+    # UTC midnight boundary: the second candle belongs to TODAY in India.
+    history = pd.DataFrame({'Close': ['13.41', '999']}, index=pd.to_datetime(
+        ['2026-09-28T18:30:00Z', '2026-09-29T18:30:00Z']))
+    packet = s.collect_quotes(None, 'fake-token', vix_history=lambda: history)
+    current = m.latest(packet['records'], 'VIX', NOW)
+    comparison = m.vix_close_comparison(current, packet['records'], NOW)
+    assert comparison['change'] == Decimal('0.01')
+    assert comparison['close'] == Decimal('13.41')
+    assert comparison['session_date'] == '2026-09-29'
+    assert comparison['calendar_days'] == 1
+
+
+def test_vix_comparison_excludes_current_session_other_series_and_future_availability():
+    current = value()
+    def close(day, series='VIX', received=NOW):
+        raw = value('VIX_CLOSE', '17', NOW-timedelta(days=1), session_date=day)
+        return m.record(dict(raw, series=series), received_at=received)
+    assert m.vix_close_comparison(current, [close('2026-09-30')], NOW) is None
+    assert m.vix_close_comparison(current, [close('2026-09-29', 'OTHER')], NOW) is None
+    assert m.vix_close_comparison(current, [close('2026-09-29', received=NOW+timedelta(seconds=1))], NOW) is None
+
+
+@pytest.mark.parametrize('input_value,code', [(None, 'MISSING'), ('credential-secret', 'INVALID'),
+    (0, 'INVALID'), (True, 'INVALID'), (int((NOW+timedelta(seconds=1)).timestamp()*1000), 'IN_FUTURE')])
+def test_quote_time_specific_sanitized_diagnostics(input_value, code):
+    from market_context_sources import quote_time
+    with pytest.raises(m.ContextError) as error:
+        quote_time({'last_trade_time': input_value}, 'last_trade_time', NOW)
+    assert str(error.value) == 'LAST_TRADE_TIME_'+code
+    assert 'credential-secret' not in str(error.value)
+
+
+def test_quote_missing_time_remains_unavailable_with_field_reason(monkeypatch):
+    import prospective_collection as p
+    import market_context_sources as s
+    monkeypatch.setattr(p, '_fetch_instrument_master', lambda *a: [])
+    monkeypatch.setattr(p, 'fetch_global_quotes', lambda *a: {'quotes': {s.VIX: dict(
+        last_price=13.42, timestamp=NOW.isoformat(), _received_at=NOW.isoformat())}})
+    result = s.collect_quotes(None, 'fake-token')
+    assert not result['records']
+    assert 'VIX_LAST_TRADE_TIME_MISSING' in result['issues']
+
+
+def app_function(name, namespace):
+    """Exercise the actual function without importing the network-capable dashboard."""
+    import copy
+    tree = ast.parse((ROOT/'app.py').read_text(encoding='utf-8'))
+    node = copy.deepcopy(next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name))
+    decorators = node.decorator_list
+    node.decorator_list = []
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])), 'app.py', 'exec'), namespace)
+    return namespace[name], decorators
+
+
+def test_websocket_fragment_rereads_live_memory_without_api_calls():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    status = dict(connected=False, subscribed=2, quotes=2, auth_failed=False)
+    st = Mock()
+    render, decorators = app_function('render_websocket_status', dict(st=st, MARKET_OPEN=True,
+        UPSTOX_API_HEALTH=SimpleNamespace(snapshot=lambda: {'status': 200}),
+        get_market_data_buffer=lambda token: SimpleNamespace(status=lambda: dict(status))))
+    assert decorators[0].func.attr == 'fragment'
+    assert decorators[0].keywords[0].value.value == '2s'
+    render('fake-token')
+    assert 'CONNECTING' in st.info.call_args.args[0]
+    status['connected'] = True
+    render('fake-token')
+    assert 'LIVE' in st.success.call_args.args[0]
+    status['auth_failed'] = True
+    render('fake-token')
+    assert 'TOKEN REJECTED' in st.error.call_args.args[0]
+
+
+def test_missing_derivative_schema_every_check_blocks_but_logs_throttled():
+    import datetime as dt
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from psycopg.errors import UndefinedTable
+    from derivative_preflight import PreflightResult
+    repo = Mock()
+    repo.load.side_effect = UndefinedTable('private SQL and credentials must not appear')
+    logger = Mock()
+    state = {}
+    clock = Mock(side_effect=[0, 1, 2, 61])
+    check, _ = app_function('derivative_entry_preflight', dict(
+        datetime=dt, IST=timezone.utc, DURABLE_REPOSITORY=SimpleNamespace(configured=True, connect=Mock()),
+        DerivativeRepository=lambda *a: repo, PreflightResult=PreflightResult, LOGGER=logger,
+        time=SimpleNamespace(monotonic=clock), st=SimpleNamespace(session_state=state)))
+    for _ in range(4):
+        result = check('NSE_FO|test', 'fake-token')
+        assert not result.eligible and 'tables are missing' in result.reasons[0]
+    assert repo.load.call_count == 4  # Never cache the failure or skip a safety check.
+    assert logger.warning.call_count == 2
+    assert 'private SQL' not in str(logger.warning.call_args_list)
+
+
+def test_pyarrow_runtime_and_all_pins_match_cloud():
+    import pyarrow
+    assert pyarrow.__version__ == '24.0.0'
+    for name in ('requirements.txt', 'requirements-archive.txt', 'constraints.txt'):
+        assert 'pyarrow==24.0.0' in (ROOT/name).read_text(encoding='utf-8')
