@@ -2,6 +2,6 @@
 # These versions already exist in the application's tested dependency set.
 -c constraints.txt
 psycopg[binary]==3.3.5
-pyarrow==25.0.1
+pyarrow==24.0.0
 google-auth==2.57.0
 requests==2.34.2

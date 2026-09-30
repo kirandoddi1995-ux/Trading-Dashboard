@@ -195,6 +195,22 @@ def yield_change_bp(current, previous, at):
     return (number(current['payload']['value'])-number(previous['payload']['value']))*100
 
 
+def vix_close_comparison(current, rows, at):
+    """Last supplied PRIOR session, never today's candle or an unrelated series."""
+    if not current or current['kind'] != 'VIX' or not known([current], at):
+        return None
+    quote_day = stamp(current['source_at']).astimezone(ZoneInfo('Asia/Kolkata')).date()
+    prior = [r for r in known(rows, at) if r['kind'] == 'VIX_CLOSE'
+             and r['series'] == current['series'] and r['payload'].get('session_date')
+             and date.fromisoformat(r['payload']['session_date']) < quote_day]
+    if not prior:
+        return None
+    close = max(prior, key=lambda r: (r['payload']['session_date'], stamp(r['available_at'])))
+    return dict(change=number(current['payload']['value'])-number(close['payload']['value']),
+                close=number(close['payload']['value']), session_date=close['payload']['session_date'],
+                quote_at=current['source_at'], calendar_days=(quote_day-date.fromisoformat(close['payload']['session_date'])).days)
+
+
 def event_state(row, at):
     if not known([row], at):
         return 'NOT_YET_AVAILABLE'

@@ -6,7 +6,7 @@ import streamlit as st
 import requests
 
 from market_context import (bundle, canonical, latest, known, freshness, gift_overnight,
-    vix_percentile, yield_change_bp, event_state, SECTOR_TAGS, stamp, number)
+    vix_percentile, yield_change_bp, event_state, SECTOR_TAGS, stamp, vix_close_comparison)
 from market_context_sources import collect_quotes, import_manual, parse_participant_oi, IST
 
 
@@ -15,6 +15,8 @@ def render_market_context(token, vix_history=None):
         st.caption('No trade votes, position sizing, entry permission or event blackout is produced here. '
                    'GIFT, US futures and Asian markets can reflect the same news, not independent confirmations.')
         st.warning('A missing calendar is UNKNOWN, not “no event risk”. Event warnings below do not enforce a trading blackout.')
+        st.caption('Context is loaded only when you click Refresh; it is not the live ticker feed. '
+                   'Before the first refresh, Unavailable means not loaded. Quotes keep their source timestamps.')
         state_key = 'market_context_bundle'
         current = datetime.now(timezone.utc)
         if state_key not in st.session_state:
@@ -81,10 +83,13 @@ def render_market_context(token, vix_history=None):
         vix = latest(rows, 'VIX', current)
         pct = vix_percentile(vix, rows, current)
         st.write('VIX trailing 252-session percentile:', f'{pct:.1f}' if pct is not None else 'Unavailable — insufficient distinct prior sessions')
-        closes = [r for r in known(rows, current) if r['kind'] == 'VIX_CLOSE' and vix and stamp(r['source_at']) < stamp(vix['source_at'])]
-        previous_vix = max(closes, key=lambda r: stamp(r['source_at'])) if closes else None
+        comparison = vix_close_comparison(vix, rows, current)
         st.write('VIX change versus last supplied completed close (points):',
-                 str(number(vix['payload']['value'])-number(previous_vix['payload']['value'])) if vix and previous_vix else 'Unavailable')
+                 f"{comparison['change']:+.2f}" if comparison else 'Unavailable')
+        if comparison:
+            st.caption(f"Baseline session: {comparison['session_date']} · close: {comparison['close']} · "
+                       f"quote: {vix['payload']['value']} at {comparison['quote_at']} · "
+                       f"{comparison['calendar_days']} calendar day(s) apart. Latest supplied session, not verified holiday-calendar coverage.")
         st.caption('VIX describes implied volatility, not direction. Percentile uses distinct supplied prior sessions; inspect gaps and stale inputs.')
         y = latest(rows, 'GSEC10Y', current)
         past = [r for r in known(rows, current) if r['kind'] == 'GSEC10Y' and y and stamp(r['source_at']) < stamp(y['source_at'])]

@@ -3896,6 +3896,26 @@ def get_live_market_quotes_chunked(keys_list, token, chunk_size=500):
         result.update(get_live_market_quotes(keys_list[i:i+chunk_size], token))
     return result
 
+@st.fragment(run_every="2s")
+def render_websocket_status(token):
+    """Poll in-memory health only; no REST probe, subscription or full-page rerun."""
+    try:
+        health = UPSTOX_API_HEALTH.snapshot()
+        status = get_market_data_buffer(token).status()
+        if health.get("status") in (401, 403):
+            st.error("WEBSOCKET: NOT STARTED · TOKEN INVALID")
+        elif not MARKET_OPEN:
+            st.info("WEBSOCKET: MARKET CLOSED · REST snapshot active")
+        elif status.get("auth_failed"):
+            st.error("WEBSOCKET: TOKEN REJECTED")
+        elif status["connected"]:
+            st.success(f"WEBSOCKET: LIVE · {status['subscribed']:,} active / {status['quotes']:,} cached")
+        else:
+            st.info("WEBSOCKET: CONNECTING / REST fills initial misses")
+    except Exception:
+        st.info("WEBSOCKET: status unavailable / REST fallback")
+
+
 if UPSTOX_SDK_AVAILABLE and access_token and _NEEDS_EXCHANGE_STATUS:
     try:
         # Verify the configured token before rendering connection status. The
@@ -3911,7 +3931,6 @@ if UPSTOX_SDK_AVAILABLE and access_token and _NEEDS_EXCHANGE_STATUS:
             _rest_market_quotes([NIFTY_INDEX_KEY], access_token)
             _api_health = UPSTOX_API_HEALTH.snapshot()
 
-        _md_status = get_market_data_buffer(access_token).status()
         _api_guidance = _provider_failure_guidance(_api_health)
         if _api_health.get("status") in (401, 403):
             st.sidebar.error("UPSTOX REST API: TOKEN REJECTED / EXPIRED")
@@ -3919,19 +3938,8 @@ if UPSTOX_SDK_AVAILABLE and access_token and _NEEDS_EXCHANGE_STATUS:
             st.sidebar.success("UPSTOX REST API: VERIFIED")
         elif _api_guidance:
             st.sidebar.warning("UPSTOX REST API: CONNECTION PROBLEM")
-        if _api_health.get("status") in (401, 403):
-            st.sidebar.error("WEBSOCKET: NOT STARTED · TOKEN INVALID")
-        elif not MARKET_OPEN:
-            st.sidebar.info("WEBSOCKET: MARKET CLOSED · REST snapshot active")
-        elif _md_status["connected"]:
-            st.sidebar.success(
-                f"WEBSOCKET: LIVE · {_md_status['subscribed']:,} active / "
-                f"{_md_status['quotes']:,} cached"
-            )
-        elif _md_status.get("auth_failed"):
-            st.sidebar.error("WEBSOCKET: TOKEN REJECTED")
-        else:
-            st.sidebar.info("WEBSOCKET: CONNECTING / REST fills initial misses")
+        with st.sidebar:
+            render_websocket_status(access_token)
     except Exception as e:
         LOGGER.debug("Suppressed exception: %s", e)
         st.sidebar.info("WEBSOCKET: startup pending / REST fallback")
@@ -4532,8 +4540,19 @@ def derivative_entry_preflight(instrument_key, token, *, quantity=None, side="BU
             repo.record_snapshot(result, now=now)
         return result
     except Exception as exc:
-        LOGGER.warning("Derivative preflight unavailable: %s", type(exc).__name__)
-        return PreflightResult(False, ("Derivative reference/feed verification unavailable",))
+        missing_schema = getattr(exc, 'sqlstate', None) == '42P01'
+        message = ("Derivative database tables are missing. Review/apply the derivative SQL migrations "
+                   "to the configured database; entries remain blocked. No migration runs automatically."
+                   if missing_schema else "Derivative reference/feed verification unavailable")
+        # Suppress duplicate LOGS only, never cache/skip the safety check or its rejection.
+        warning_key = 'derivative_preflight_warning_' + ('schema' if missing_schema else 'other')
+        checked = time.monotonic()
+        prior = st.session_state.get(warning_key)
+        if prior is None or checked - prior >= 60:
+            LOGGER.warning("Derivative preflight unavailable: %s. %s (repeat logs limited to once/60s/session)",
+                           type(exc).__name__, message)
+            st.session_state[warning_key] = checked
+        return PreflightResult(False, (message,))
 
 
 def render_derivative_monitor_panel(panel_key):

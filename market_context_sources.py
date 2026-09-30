@@ -8,7 +8,7 @@ import json
 import re
 from zoneinfo import ZoneInfo
 
-from market_context import ContextError, record, bundle, MAX_BYTES, MAX_RECORDS, stamp
+from market_context import ContextError, record, bundle, MAX_BYTES, MAX_RECORDS, stamp, number
 
 IST = ZoneInfo('Asia/Kolkata')
 VIX = 'NSE_INDEX|India VIX'
@@ -27,9 +27,26 @@ def now():
 def provider_time(value):
     # Provider quote timestamp contract: ISO with zone or epoch milliseconds;
     # no local timezone assumption and never substitute receipt for source time.
+    if isinstance(value, bool):
+        raise ContextError('INVALID_PROVIDER_TIME')
     if isinstance(value, (int, float)) or (isinstance(value, str) and value.isdigit()):
+        if number(value) <= 0:
+            raise ContextError('INVALID_PROVIDER_TIME')
         return datetime.fromtimestamp(float(value)/1000, timezone.utc)
     return stamp(value)
+
+
+def quote_time(quote, field, received):
+    """Field-specific fixed codes only; never echo response bodies or substitute receipt."""
+    if quote.get(field) in (None, ''):
+        raise ContextError(field.upper()+'_MISSING')
+    try:
+        result = provider_time(quote[field])
+    except Exception:
+        raise ContextError(field.upper()+'_INVALID') from None
+    if result > received:
+        raise ContextError(field.upper()+'_IN_FUTURE')
+    return result
 
 
 def collect_quotes(client, token, *, vix_history=None):
@@ -70,9 +87,16 @@ def collect_quotes(client, token, *, vix_history=None):
             received = stamp(q['_received_at'])
             # LTP age uses the last-trade timestamp, not a newly generated packet
             # wrapping an old price. Missing trade time remains unavailable.
-            effective = provider_time(q['last_trade_time'])
-            payload = dict(value=q['last_price'], instrument_key=key,
-                           provider_packet_at=provider_time(q['timestamp']).isoformat(),
+            effective = quote_time(q, 'last_trade_time', received)
+            packet_at = quote_time(q, 'timestamp', received)
+            try:
+                price = number(q.get('last_price'))
+                if price <= 0:
+                    raise ValueError
+            except (ValueError, TypeError):
+                raise ContextError('LAST_PRICE_MISSING_OR_INVALID') from None
+            payload = dict(value=str(price), instrument_key=key,
+                           provider_packet_at=packet_at.isoformat(),
                            declared_latency=instrument.get('latency'),
                            common_factor_group='GLOBAL_RISK_CONTEXT' if kind == 'GIFT' else 'LOCAL_CONTEXT')
             if kind == 'GIFT':
@@ -85,14 +109,18 @@ def collect_quotes(client, token, *, vix_history=None):
                 source_url='https://upstox.com/developer/api-documentation/market-quote/',
                 unit={'GIFT': 'POINTS', 'VIX': 'VIX_POINTS', 'USDINR': 'INR_PER_USD'}[kind], payload=payload),
                 received_at=received, origin='UPSTOX_OBSERVED'))
+        except ContextError as exc:
+            issues.append(kind+'_'+str(exc))  # Only fixed codes raised by our validators.
         except Exception:
-            issues.append(kind+'_PRICE_OR_TIMESTAMP_UNVERIFIED')
+            issues.append(kind+'_QUOTE_METADATA_OR_SCHEMA_UNVERIFIED')
     if vix_history is not None:
         try:
             frame = vix_history()
             receipt = now()
             for index, item in frame.tail(500).iterrows():
-                day = index.date()
+                # App cache uses naive IST wall times; aware inputs must first
+                # be converted (UTC 18:30 is the FOLLOWING session in India).
+                day = (index.astimezone(IST) if index.tzinfo is not None else index).date()
                 if day >= receipt.astimezone(IST).date():
                     continue  # Exclude the current incomplete daily candle.
                 effective = datetime.combine(day, datetime.min.time(), IST)

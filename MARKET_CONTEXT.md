@@ -146,7 +146,7 @@ out-of-sample regimes and costs; and missing/late feed behavior. These files
 provide no promotion switch. Any future decision integration needs explicit
 code review and tests; manual review flags cannot unlock approvals.
 
-## Local verification and upload checklist (2026-09-30)
+## Initial release verification (2026-09-30; superseded by follow-up below)
 
 Full suite: **994 passed, 4 skipped, 2 subtests passed**, 109.59 seconds, including
 the installed PGlite SQL harness. Pyflakes passed for changed Python files;
@@ -165,11 +165,69 @@ Upload these 10 files, preserving their paths:
 - `tests/test_market_context.py`
 - `MARKET_CONTEXT.md`
 
-For this exact local release, update Streamlit's `EXPECTED_EQUITY_CODE_SHA256`
-after uploading the matching files:
+Historical initial-release fingerprint (do NOT use for the follow-up):
 ```
 e6af7f13e19c5f2eb3bc691291221f257e04efdfb950c8b656d94f1bc3f8bfa8
 ```
 No other release secret or policy hash is changed by this feature. The runtime
 manifest now covers the three new UI/context source modules. No SQL migration,
 dependency-file change or packaged release artifact is needed for this upload.
+
+## Market-hours diagnostics follow-up
+
+The websocket sidebar now refreshes its in-memory status every two seconds using
+a Streamlit fragment, without re-running the page, probing REST or resubscribing.
+It reports connection state, not a guarantee that every cached quote is fresh.
+
+Context remains explicit-refresh by design; an explanation distinguishes this
+from the live ticker feed. Rejected quote timestamps now identify the missing,
+invalid or future field; invalid prices and metadata have separate safe codes.
+No fallback substitutes local receipt time for last-trade time. The observed
+USD/INR rejection cannot be diagnosed to a specific field from the old aggregate
+message alone. The next refresh supplies that diagnostic, not a guessed fix.
+
+VIX change now displays the baseline session date/value, quote value/time and
+calendar-day separation. Only the same series and a strictly earlier IST session
+are eligible; current-session and not-yet-available records are excluded. Aware
+history timestamps are converted to IST before deriving their session date.
+The previous automatic loader already excluded today's candles, so a 0.01 move
+is not itself evidence of an incorrect baseline. These changes expose the inputs;
+they do not assert that the reported live 13.42/0.01 pair was independently checked.
+
+Missing derivative tables (PostgreSQL SQLSTATE 42P01) now produce an explicit
+on-screen migration/configured-database explanation and continued rejection.
+Identical warning categories log at most once per 60 seconds per session.
+Every preflight still runs and rejects failures; the result is NOT cached.
+No migration or permission change was made.
+
+PyArrow is pinned to 24.0.0 in requirements.txt, requirements-archive.txt and
+constraints.txt to match the reported Cloud override. Local tests also use 24.0.0.
+Apache issue https://github.com/apache/arrow/issues/50471 describes the 25.0.0
+thread-initialization crash, is now closed and has milestone 25.0.1; that does
+not establish that the currently observed Cloud override has been removed.
+We align with the actual hosted version instead of bypassing its safeguard.
+
+Upload these NINE changed files, preserving paths (other initial-release files
+are unchanged):
+- `app.py`
+- `market_context.py`
+- `market_context_sources.py`
+- `market_context_ui.py`
+- `requirements.txt`
+- `requirements-archive.txt`
+- `constraints.txt`
+- `tests/test_market_context.py`
+- `MARKET_CONTEXT.md`
+
+New `EXPECTED_EQUITY_CODE_SHA256` for the matching local source:
+```
+9daafa21bf9556e087114b2512bc099f3661257fad7254759c1eadc540287b05
+```
+After upload: verify the label changes without clicking, refresh context and
+inspect the dated VIX baseline and any precise USD/INR rejection code. Confirm
+Cloud keeps Arrow 24.0.0 and derivative failures show the missing-schema reason.
+Those hosted checks have not been performed locally.
+
+Follow-up verification: **1005 passed, 4 skipped, 2 subtests passed** in 112.89s,
+with the PGlite harness enabled and PyArrow 24.0.0 installed. The 36 focused
+context/diagnostic tests, changed-file Pyflakes and `pip check` also passed.
