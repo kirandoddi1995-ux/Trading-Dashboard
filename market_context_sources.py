@@ -49,6 +49,24 @@ def quote_time(quote, field, received):
     return result
 
 
+def quote_price(quote):
+    """Classify unusable prices without exposing response text or inventing a proxy."""
+    if 'last_price' not in quote:
+        raise ContextError('LAST_PRICE_MISSING')
+    raw = quote['last_price']
+    if raw is None:
+        raise ContextError('LAST_PRICE_NULL')
+    try:
+        price = number(raw)
+    except (ValueError, TypeError):
+        raise ContextError('LAST_PRICE_INVALID_NUMBER') from None
+    if price == 0:
+        raise ContextError('LAST_PRICE_ZERO')
+    if price < 0:
+        raise ContextError('LAST_PRICE_NEGATIVE')
+    return price
+
+
 def collect_quotes(client, token, *, vix_history=None):
     from prospective_collection import (
         _fetch_instrument_master, _nearest_future, GLOBAL_INSTRUMENTS, NSE_INSTRUMENTS,
@@ -77,11 +95,15 @@ def collect_quotes(client, token, *, vix_history=None):
         issues.append('USDINR_FUTURES_PROXY_UNAVAILABLE')
     quotes = fetch_global_quotes(client, token, [r['instrument_key'] for r in instruments])
     rows = []
+    diagnostics = []
     for instrument in instruments:
         key, kind = instrument['instrument_key'], instrument['kind']
         q = quotes['quotes'].get(key)
+        detail = dict(kind=kind, instrument_key=key, selected_expiry=instrument.get('selected_expiry'),
+                      quote_received=bool(q), account_entitlement='NOT_ESTABLISHED')
         if not q:
             issues.append(kind+'_QUOTE_UNAVAILABLE')
+            diagnostics.append(dict(detail, status='QUOTE_UNAVAILABLE'))
             continue
         try:
             received = stamp(q['_received_at'])
@@ -89,12 +111,7 @@ def collect_quotes(client, token, *, vix_history=None):
             # wrapping an old price. Missing trade time remains unavailable.
             effective = quote_time(q, 'last_trade_time', received)
             packet_at = quote_time(q, 'timestamp', received)
-            try:
-                price = number(q.get('last_price'))
-                if price <= 0:
-                    raise ValueError
-            except (ValueError, TypeError):
-                raise ContextError('LAST_PRICE_MISSING_OR_INVALID') from None
+            price = quote_price(q)
             payload = dict(value=str(price), instrument_key=key,
                            provider_packet_at=packet_at.isoformat(),
                            declared_latency=instrument.get('latency'),
@@ -109,10 +126,13 @@ def collect_quotes(client, token, *, vix_history=None):
                 source_url='https://upstox.com/developer/api-documentation/market-quote/',
                 unit={'GIFT': 'POINTS', 'VIX': 'VIX_POINTS', 'USDINR': 'INR_PER_USD'}[kind], payload=payload),
                 received_at=received, origin='UPSTOX_OBSERVED'))
+            diagnostics.append(dict(detail, status='OBSERVED'))
         except ContextError as exc:
             issues.append(kind+'_'+str(exc))  # Only fixed codes raised by our validators.
+            diagnostics.append(dict(detail, status=str(exc)))
         except Exception:
             issues.append(kind+'_QUOTE_METADATA_OR_SCHEMA_UNVERIFIED')
+            diagnostics.append(dict(detail, status='QUOTE_METADATA_OR_SCHEMA_UNVERIFIED'))
     if vix_history is not None:
         try:
             frame = vix_history()
@@ -131,7 +151,9 @@ def collect_quotes(client, token, *, vix_history=None):
                     received_at=receipt, origin='RETROSPECTIVE_HISTORY_RETRIEVAL'))
         except Exception:
             issues.append('VIX_HISTORY_UNAVAILABLE_OR_PARTIAL')
-    return bundle(rows, now(), issues)
+    result = bundle(rows, now(), issues)
+    result['quote_diagnostics'] = diagnostics
+    return result
 
 
 def parse_participant_oi(data, report_date, received_at):

@@ -4558,6 +4558,12 @@ def derivative_entry_preflight(instrument_key, token, *, quantity=None, side="BU
 def render_derivative_monitor_panel(panel_key):
     """Read retained positions even when trading, auth or current references fail."""
     st.markdown('#### Settlement and corporate-action monitor')
+    st.caption('Monitoring is not trade approval. The option-entry hold remains in force; '
+               'tables, reviewed rules, a running monitor and delivered alerts must be commissioned separately.')
+    if not DURABLE_REPOSITORY.configured:
+        st.error('Derivative monitor database is not configured. Broker positions are UNKNOWN; '
+                 'check them directly. New derivative entries remain blocked.')
+        return
     try:
         repo = DerivativeRepository(DURABLE_REPOSITORY.connect)
         state = repo.monitor_state()
@@ -4567,7 +4573,7 @@ def render_derivative_monitor_panel(panel_key):
             return
         fresh = derivative_stamp(state['checked_at']) <= now < derivative_stamp(state['valid_until'])
         status = state['status'] if fresh else 'MONITOR STALE — BROKER STATE UNKNOWN'
-        st.write(status)
+        st.write('Broker polling state: '+status+' — not funding, settlement or trade clearance')
         st.caption('Last broker check: ' + str(state['checked_at']) + '. No automatic liquidation. Acknowledgement does not resolve obligations.')
         positions = list(repo.positions().values())
         if positions:
@@ -4580,8 +4586,18 @@ def render_derivative_monitor_panel(panel_key):
             if st.button('Acknowledge (does not resolve)',key=panel_key+'-derivative-alert-'+alert['alert_id']):
                 repo.acknowledge(alert['alert_id'],now)
                 st.info('Acknowledged; monitoring and unresolved obligations remain active.')
-    except Exception:
-        st.error('Settlement monitor unavailable. Check broker positions directly; new entries remain blocked.')
+    except Exception as exc:
+        if getattr(exc, 'sqlstate', None) == '42P01':
+            st.error('Settlement monitor NOT COMMISSIONED: required database tables are missing in the configured database. '
+                     'Broker positions are UNKNOWN. Check your broker directly; new derivative entries remain blocked.')
+            st.caption('Review sql/derivative_foundations_review_only.sql first, then '
+                       'sql/derivative_monitor_review_only.sql. Nothing is applied automatically. '
+                       'Creating tables alone does not populate reviewed rules, start the monitor or verify email delivery.')
+        elif getattr(exc, 'sqlstate', None) == '42501':
+            st.error('Settlement monitor database access denied. Review the intended restricted-role grants/RLS; '
+                     'do not bypass them with an admin connection. Broker positions remain UNKNOWN and entries blocked.')
+        else:
+            st.error('Settlement monitor unavailable. Check broker positions directly; new entries remain blocked.')
 
 
 def get_available_expiries(contracts):

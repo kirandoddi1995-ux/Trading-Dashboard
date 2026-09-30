@@ -29,6 +29,8 @@ def render_market_context(token, vix_history=None):
             sources = {s['sha256']: s for s in st.session_state[state_key].get('source_files', [])}
             sources.update({s['sha256']: s for s in incoming.get('source_files', [])})
             combined['source_files'] = list(sources.values())
+            combined['quote_diagnostics'] = incoming.get('quote_diagnostics',
+                st.session_state[state_key].get('quote_diagnostics', []))
             canonical(combined)  # Bound the whole session before replacing it.
             st.session_state[state_key] = combined
 
@@ -64,6 +66,14 @@ def render_market_context(token, vix_history=None):
         rows = packet['records']
         for issue in packet.get('issues', []):
             st.caption('Source status: '+issue)
+        if packet.get('quote_diagnostics'):
+            with st.expander('Quote diagnostics — no credentials or raw responses'):
+                st.dataframe(packet['quote_diagnostics'], hide_index=True)
+                st.caption('USD/INR is an experimental nearest-expiry NSE currency-futures proxy, not spot. '
+                           'A master listing does not prove this account/feed supplies a usable price. '
+                           'No usable price means unavailable: no zero, old-price, other-expiry or spot substitution. '
+                           'The contract key, expiry and status can be used for a broker support check; '
+                           'account entitlement is not established by this diagnostic.')
         cards = st.columns(4)
         for column, kind, title in zip(cards, ('GIFT', 'VIX', 'GSEC10Y', 'USDINR'),
                                        ('GIFT indicator', 'India VIX', 'India 10Y yield', 'USD/INR / labelled proxy')):
