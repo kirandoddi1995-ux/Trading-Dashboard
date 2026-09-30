@@ -34,6 +34,7 @@ from provider_contracts import OptionGreeks, OptionMarketData, ProviderContractE
 from quantitative_services import estimate_execution_cost, cross_sectional_scores
 from iv_surface import normalize_iv_surface
 from volatility_research_ui import render_volatility_research
+from market_context_ui import render_market_context
 from model_registry import ModelRegistry
 from mf_archive import MutualFundArchive
 from risk_engine import RiskEngine
@@ -5891,6 +5892,11 @@ st.markdown("<hr style='border: 1px solid #1f1f1f; margin: 5px 0px 15px 0px;'>",
 # ==========================================
 # SETTINGS
 # ==========================================
+if selected_tab in {"Equities Screener & Risk", "Options & Derivatives Chain",
+                    "Futures & Derivatives", "SMC & Technical Analysis"}:
+    render_market_context(access_token, vix_history=lambda: get_cached_history(
+        "NSE_INDEX|India VIX", access_token, days=400, fetch_fn=fetch_upstox_history))
+
 if selected_tab == "Settings":
     st.subheader("Settings")
     st.caption("Risk, data-source and production-safety configuration.")

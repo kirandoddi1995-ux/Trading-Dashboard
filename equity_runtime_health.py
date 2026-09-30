@@ -39,6 +39,7 @@ RELEASE_FILES = (
     "derivative_settlement.py", "derivative_corporate_actions.py", "derivative_monitor.py",
     "volatility_research.py", "volatility_research_ui.py",
     "secure_upstox_stream.py",
+    "market_context.py", "market_context_sources.py", "market_context_ui.py",
 )
 
 
