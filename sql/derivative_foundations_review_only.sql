@@ -1,8 +1,20 @@
 -- REVIEW ONLY. Apply manually; never executed by application startup.
--- No existing tables or roles are altered. Provision a password privately for
+-- Existing derivative tables have RLS/grants updated; existing role attributes
+-- and passwords are NOT changed. Provision a password privately for
 -- quant_derivative_ingestor after review. Rules must be populated by the owner
 -- from reviewed exchange sources, not fabricated from broker expiry markers.
 BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '60s';
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='quant_app_runtime') THEN
+    RAISE EXCEPTION 'Prerequisite missing: quant_app_runtime. Stop and review the existing application role; do not replay unrelated drafts.';
+  END IF;
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname IN ('quant_app_runtime','quant_derivative_ingestor')
+      AND (rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication)) THEN
+    RAISE EXCEPTION 'Unsafe existing derivative/application role attributes. Stop for role review; no role was changed.';
+  END IF;
+END $$;
 CREATE SCHEMA IF NOT EXISTS derivatives_reference;
 DO $$ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='quant_derivative_ingestor') THEN
@@ -45,7 +57,9 @@ CREATE TABLE IF NOT EXISTS derivatives_reference.decision_snapshots (
 REVOKE ALL ON SCHEMA derivatives_reference FROM PUBLIC;
 REVOKE ALL ON ALL TABLES IN SCHEMA derivatives_reference FROM PUBLIC;
 GRANT USAGE ON SCHEMA derivatives_reference TO quant_derivative_ingestor, quant_app_runtime;
-GRANT SELECT ON ALL TABLES IN SCHEMA derivatives_reference TO quant_app_runtime;
+GRANT SELECT ON derivatives_reference.contract_versions, derivatives_reference.source_snapshots,
+  derivatives_reference.source_health, derivatives_reference.exchange_rules,
+  derivatives_reference.decision_snapshots TO quant_app_runtime;
 GRANT INSERT ON derivatives_reference.decision_snapshots TO quant_app_runtime;
 GRANT SELECT,INSERT ON derivatives_reference.contract_versions,
   derivatives_reference.source_snapshots, derivatives_reference.source_health TO quant_derivative_ingestor;
@@ -66,6 +80,9 @@ DO $$ DECLARE t text; r text; BEGIN
     IF t IN ('contract_versions','source_snapshots','source_health') AND NOT EXISTS(
         SELECT FROM pg_policies WHERE schemaname='derivatives_reference' AND tablename=t AND policyname='ingest_insert') THEN
       EXECUTE format('CREATE POLICY ingest_insert ON derivatives_reference.%I FOR INSERT TO quant_derivative_ingestor WITH CHECK(true)',t);
+    END IF;
+    IF t IN ('contract_versions','source_snapshots','source_health') AND NOT EXISTS(
+        SELECT FROM pg_policies WHERE schemaname='derivatives_reference' AND tablename=t AND policyname='ingest_read') THEN
       EXECUTE format('CREATE POLICY ingest_read ON derivatives_reference.%I FOR SELECT TO quant_derivative_ingestor USING(true)',t);
     END IF;
   END LOOP;

@@ -2,6 +2,23 @@
 -- No existing data/columns changed. Adds monitor SELECT policies to the two
 -- existing reference tables below. No startup migration or research grants.
 BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '60s';
+DO $$ BEGIN
+ IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='quant_app_runtime')
+    OR to_regclass('derivatives_reference.contract_versions') IS NULL
+    OR to_regclass('derivatives_reference.exchange_rules') IS NULL
+    OR to_regclass('derivatives_reference.source_snapshots') IS NULL
+    OR to_regclass('derivatives_reference.source_health') IS NULL
+    OR to_regclass('derivatives_reference.decision_snapshots') IS NULL THEN
+  RAISE EXCEPTION 'Derivative foundations prerequisite missing. Stop; review/apply foundations before monitoring.';
+ END IF;
+ IF EXISTS (SELECT FROM pg_roles WHERE rolname IN
+     ('quant_app_runtime','quant_derivative_monitor','quant_derivative_watchdog')
+     AND (rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication)) THEN
+  RAISE EXCEPTION 'Unsafe existing monitor/application role attributes. Stop for role review; no role was changed.';
+ END IF;
+END $$;
 CREATE SCHEMA IF NOT EXISTS derivatives_monitor;
 DO $$ BEGIN
  IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='quant_derivative_monitor') THEN
@@ -51,7 +68,8 @@ REVOKE ALL ON ALL TABLES IN SCHEMA derivatives_monitor FROM PUBLIC;
 GRANT USAGE ON SCHEMA derivatives_monitor TO quant_app_runtime,quant_derivative_monitor;
 GRANT USAGE ON SCHEMA derivatives_monitor TO quant_derivative_watchdog;
 GRANT SELECT ON derivatives_monitor.state TO quant_derivative_watchdog;
-GRANT SELECT ON ALL TABLES IN SCHEMA derivatives_monitor TO quant_app_runtime,quant_derivative_monitor;
+GRANT SELECT ON derivatives_monitor.records,derivatives_monitor.state,
+ derivatives_monitor.positions,derivatives_monitor.alerts TO quant_app_runtime,quant_derivative_monitor;
 GRANT UPDATE(acknowledged_at) ON derivatives_monitor.alerts TO quant_app_runtime;
 GRANT INSERT,UPDATE ON derivatives_monitor.state,derivatives_monitor.positions,derivatives_monitor.alerts
  TO quant_derivative_monitor;
