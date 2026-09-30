@@ -348,3 +348,51 @@ def test_pyarrow_runtime_and_all_pins_match_cloud():
     assert pyarrow.__version__ == '24.0.0'
     for name in ('requirements.txt', 'requirements-archive.txt', 'constraints.txt'):
         assert 'pyarrow==24.0.0' in (ROOT/name).read_text(encoding='utf-8')
+
+
+@pytest.mark.parametrize('quote,code', [({}, 'MISSING'), ({'last_price': None}, 'NULL'),
+    ({'last_price': 0}, 'ZERO'), ({'last_price': -1}, 'NEGATIVE'),
+    ({'last_price': True}, 'INVALID_NUMBER'), ({'last_price': 'secret-value'}, 'INVALID_NUMBER'),
+    ({'last_price': 'NaN'}, 'INVALID_NUMBER')])
+def test_quote_price_fixed_codes_no_substitution_or_raw_output(quote, code):
+    from market_context_sources import quote_price
+    with pytest.raises(m.ContextError) as error:
+        quote_price(quote)
+    assert str(error.value) == 'LAST_PRICE_'+code
+
+
+def test_quote_price_preserves_decimal():
+    from market_context_sources import quote_price
+    assert quote_price({'last_price': '83.125'}) == Decimal('83.125')
+
+
+@pytest.mark.parametrize('error_type,expected', [
+    ('UndefinedTable', 'NOT COMMISSIONED'), ('InsufficientPrivilege', 'access denied'),
+    ('generic', 'monitor unavailable')])
+def test_monitor_panel_explains_own_failure_without_raw_error(error_type, expected):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    import psycopg.errors
+    repo, st = Mock(), Mock()
+    exception = getattr(psycopg.errors, error_type, RuntimeError)
+    repo.monitor_state.side_effect = exception('PRIVATE SQL CREDENTIAL')
+    render, _ = app_function('render_derivative_monitor_panel', dict(st=st,
+        DURABLE_REPOSITORY=SimpleNamespace(configured=True, connect=Mock()),
+        DerivativeRepository=lambda *a: repo))
+    render('test')
+    assert expected in st.error.call_args.args[0]
+    assert 'PRIVATE SQL CREDENTIAL' not in str(st.mock_calls)
+    repo.positions.assert_not_called()
+    if error_type == 'UndefinedTable':
+        assert 'derivative_monitor_review_only.sql' in str(st.caption.call_args_list)
+
+
+def test_monitor_unconfigured_never_queries_or_claims_empty_portfolio():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    st, factory = Mock(), Mock()
+    render, _ = app_function('render_derivative_monitor_panel', dict(st=st,
+        DURABLE_REPOSITORY=SimpleNamespace(configured=False), DerivativeRepository=factory))
+    render('test')
+    factory.assert_not_called()
+    assert 'UNKNOWN' in st.error.call_args.args[0]
