@@ -303,6 +303,94 @@ def test_incomplete_horizon_keeps_new_coverage_cutoff():
     assert ResearchRepository(conn).save_outcome(revised) is True
 
 
+def gap_outcome():
+    payload = research_outcome()
+    payload.update(horizon_complete=False,
+                   tracking_start='2026-09-25T09:15:00+05:30',
+                   horizon_close='2026-09-29T15:30:00+05:30',
+                   requested_data_through='2026-09-26T00:00:00+05:30',
+                   expected_minutes=375,
+                   session_calendar={'source': 'reviewed fixture',
+                                     'reviewed_at': '2026-09-24T00:00:00+05:30',
+                                     'sessions': [
+                                         {'open': f'2026-09-{day}T09:15:00+05:30',
+                                          'close': f'2026-09-{day}T15:30:00+05:30'}
+                                         for day in ('25', '28', '29')]})
+    return payload
+
+
+@pytest.mark.parametrize('holiday', [False, True])
+def test_non_session_cutoff_deduplicates_without_mutation(holiday):
+    from copy import deepcopy
+    previous = gap_outcome()
+    if holiday:
+        previous['session_calendar']['sessions'].pop(1)
+    original = deepcopy(previous)
+    revised = dict(previous, requested_data_through=(
+        '2026-09-29T00:00:00+05:30' if holiday else '2026-09-28T00:00:00+05:30'))
+    revised_original = deepcopy(revised)
+    conn = OutcomeConnection(previous)
+    assert ResearchRepository(conn).save_outcome(revised) is False
+    assert conn.calls == ['lock', 'read']
+    assert previous == original and revised == revised_original
+
+
+@pytest.mark.parametrize('through,expected', [
+    ('2026-09-28T09:16:00+05:30', 376),
+    ('2026-09-28T15:30:00+05:30', 750),
+    ('2026-09-29T00:00:00+05:30', 750),
+])
+def test_new_coverage_stored_even_without_new_provider_candles(through, expected):
+    previous = gap_outcome()
+    revised = dict(previous, requested_data_through=through, expected_minutes=expected)
+    conn = OutcomeConnection(previous)
+    assert ResearchRepository(conn).save_outcome(revised) is True
+    assert conn.inserted == [revised]
+
+
+@pytest.mark.parametrize('field,value', [
+    ('source_sha256', 'revision'), ('source_candles', []),
+    ('missing_minutes', []), ('status', 'TARGET_TOUCHED'),
+    ('horizon_complete', True), ('coverage_complete', True),
+    ('invalid_candles', 1),
+])
+def test_non_session_real_changes_are_not_suppressed(field, value):
+    previous = gap_outcome()
+    revised = dict(previous, requested_data_through='2026-09-28T00:00:00+05:30',
+                   **{field: value})
+    conn = OutcomeConnection(previous)
+    assert ResearchRepository(conn).save_outcome(revised) is True
+
+
+@pytest.mark.parametrize('field,value', [
+    ('session_calendar', None), ('session_calendar', {'sessions': []}),
+    ('tracking_start', 'bad'), ('horizon_close', 'bad'),
+    ('expected_minutes', 999), ('expected_minutes', '375'),
+    ('fetched_at', '2026-09-25T00:00:00+05:30'),
+])
+def test_invalid_gap_provenance_keeps_cutoff(field, value):
+    previous = dict(gap_outcome(), **{field: value})
+    revised = dict(previous, requested_data_through='2026-09-28T00:00:00+05:30')
+    conn = OutcomeConnection(previous)
+    assert ResearchRepository(conn).save_outcome(revised) is True
+
+
+def test_changed_calendar_is_not_suppressed_in_gap():
+    from copy import deepcopy
+    previous = gap_outcome()
+    revised = deepcopy(previous)
+    revised['requested_data_through'] = '2026-09-28T00:00:00+05:30'
+    revised['session_calendar']['source'] = 'new reviewed source'
+    assert ResearchRepository(OutcomeConnection(previous)).save_outcome(revised) is True
+
+
+def test_partial_session_cutoffs_remain_distinct():
+    previous = dict(gap_outcome(), requested_data_through='2026-09-28T09:16:10+05:30',
+                    expected_minutes=376)
+    revised = dict(previous, requested_data_through='2026-09-28T09:16:20+05:30')
+    assert ResearchRepository(OutcomeConnection(previous)).save_outcome(revised) is True
+
+
 def test_first_outcome_is_stored_with_full_original_provenance():
     outcome = research_outcome()
     conn = OutcomeConnection()
