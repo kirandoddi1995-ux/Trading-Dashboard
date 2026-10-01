@@ -1,4 +1,4 @@
-name: Verified Drive archive (protected 14-day retention)
+name: Verified Drive archive (7-day outcomes, 14-day other sources)
 
 on:
   workflow_dispatch:
@@ -12,11 +12,19 @@ on:
         description: Approved source table
         type: choice
         default: mf_nav
-        options: [mf_nav, market_quotes, universe_membership_versions, scanner_observations, equity_research.outcomes]
+        options: [mf_nav, market_quotes, universe_membership_versions, scanner_observations, equity_research.outcomes, universe_membership]
       nav_cutoff:
         description: Optional one-time NAV cutoff YYYY-MM-DD (blank = 14 days)
         type: string
         default: ''
+      batch_size:
+        description: Optional batch size 1–2000 (blank = safe per-table default)
+        type: string
+        default: ''
+      max_batches:
+        description: Manual batch limit 1–200 (use 1 for the first deletion trial)
+        type: string
+        default: '1'
   schedule:
     - cron: '15 20 * * *'
 
@@ -56,6 +64,8 @@ jobs:
           REQUESTED_MODE: ${{ inputs.mode }}
           REQUESTED_TABLE: ${{ inputs.table }}
           NAV_CUTOFF: ${{ inputs.nav_cutoff }}
+          REQUESTED_BATCH_SIZE: ${{ inputs.batch_size }}
+          REQUESTED_MAX_BATCHES: ${{ inputs.max_batches }}
         # Inputs are argv, never interpolated into shell source. No secret files
         # or data artifacts are uploaded to GitHub Actions.
         run: |
@@ -66,7 +76,7 @@ jobs:
               # Fail closed in Python if the deletion switch is not enabled;
               # never silently report a scheduled export as storage cleanup.
               mode = 'delete'
-              for table in ('mf_nav', 'market_quotes', 'universe_membership_versions', 'scanner_observations', 'equity_research.outcomes'):
+              for table in ('mf_nav', 'market_quotes', 'universe_membership_versions', 'scanner_observations', 'equity_research.outcomes', 'universe_membership'):
                   result = main(['--mode', mode, '--table', table])
                   if result:
                       raise SystemExit(result)
@@ -74,5 +84,8 @@ jobs:
               args = ['--mode', os.environ['REQUESTED_MODE'], '--table', os.environ['REQUESTED_TABLE']]
               if os.environ.get('NAV_CUTOFF'):
                   args += ['--nav-cutoff', os.environ['NAV_CUTOFF']]
+              if os.environ.get('REQUESTED_BATCH_SIZE', '').strip():
+                  args += ['--batch-size', os.environ['REQUESTED_BATCH_SIZE'].strip()]
+              args += ['--max-batches', os.environ.get('REQUESTED_MAX_BATCHES', '').strip() or '1']
               raise SystemExit(main(args))
           PY
