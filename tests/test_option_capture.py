@@ -401,8 +401,8 @@ def test_workflow_is_disabled_by_default_and_has_no_database_secret():
     assert 'default: preview' in text and 'cancel-in-progress: false' in text
     assert 'DATABASE_URL' not in text and 'contents: read' in text
     assert 'upload-artifact' not in text and '--audit-today' in text
-    script = text.split('        run: |', 1)[1]
-    assert '${{' not in script
+    for script in text.split("python - <<'PY'\n")[1:]:
+        assert '${{' not in script.split('          PY', 1)[0]
     for name in ('option_capture.py', 'option_capture_archive.py', 'option_capture_job.py'):
         source = (root/name).read_text()
         assert 'import app' not in source and 'import derivative_preflight' not in source
