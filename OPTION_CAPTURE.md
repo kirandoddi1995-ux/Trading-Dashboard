@@ -99,7 +99,8 @@ GitHub Actions **secrets**:
 
 GitHub Actions **variables**:
 
-- `OPTION_CAPTURE_ENABLED`: leave absent/false for review; set `true` to enable.
+- `OPTION_CAPTURE_ENABLED`: controls scheduled runs only; keep `false` for the
+  supervised pilot. Set `true` only after separately approving recurring capture.
 - `OPTION_CAPTURE_LICENSE_ACK`: `true` only after checking permitted private retention.
 - `OPTION_CAPTURE_TOKEN_EXPIRES_AT`: actual expiry from Upstox, ISO8601 with timezone
   (do not use an invented future date).
@@ -114,12 +115,25 @@ before expiry and maintain GitHub Actions failure notifications.
 
 1. Upload the seven new files, run normal CI, then manually dispatch `preview`.
    Preview prints policy only: no broker or Drive access.
-2. Configure credentials/variables. Run `capture` during one of the configured slots.
+2. Configure credentials/variables, leaving OPTION_CAPTURE_ENABLED=false. Manually
+   dispatch mode=capture, select the slot and tick confirm_one_run. This boolean
+   authorizes this run only; it does not change repository settings. Manual audit
+   also requires confirmation; preview remains offline without it. Unconfirmed
+   capture/audit fails CAPTURE_DISABLED even if recurring collection is enabled.
+   Authorization accepts a JSON boolean true, never the strings "true" or "false".
+   Authorized manual capture uses the existing bounded wait: Python may start at
+   most ten minutes before the slot, with the unchanged ten-minute late admission
+   window. Job timeout is 25 minutes for setup, bounded wait, capture and upload;
+   it does not extend sampling limits. Dispatch shortly before the slot, allowing
+   setup time; GitHub queue delays can still cause failure. Do not rush review/CI
+   to meet a slot. Both manual and scheduled runs share one concurrency group.
 3. Inspect logs and the downloaded Parquet/manifest: status, selected keys, master
    terms, timestamps, actual missing reasons and file size. This live check has NOT
    been run by the coding agent. Treat repeated PARTIAL as a diagnostic, not a reason
    to loosen filters blindly.
-4. Enable scheduling. At 17:00 IST an audit downloads/verifies all four expected
+4. Only after a separate commissioning decision, set OPTION_CAPTURE_ENABLED=true
+   to enable scheduling. A manual audit of a one-slot pilot legitimately reports
+   DAY_INCOMPLETE for missing slots. At 17:00 IST an audit downloads/verifies all four expected
    files; absent/partial/unverified/delayed slots fail as `DAY_INCOMPLETE`. A late
    first deployment may legitimately have missed earlier slots; do not fill those
    with later observations just to obtain a green audit.
