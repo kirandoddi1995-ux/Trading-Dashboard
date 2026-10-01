@@ -19,10 +19,21 @@ UTC = dt.timezone.utc
 HOT_RETENTION_DAYS = 14  # Eligibility below additionally protects live dependencies.
 
 
+def batch_size_for(table, requested=None):
+    if table not in SPECS:
+        raise ArchiveError('UNSUPPORTED_TABLE')
+    if requested is not None:
+        if not 1 <= requested <= 2000:
+            raise ArchiveError('INVALID_BATCH_LIMIT')
+        return requested
+    return {'equity_research.outcomes': 100, 'universe_membership': 500}.get(table, 1000)
+
+
 def cutoff_for(table, today, nav_cutoff=None):
     if table not in SPECS:
         raise ArchiveError('UNSUPPORTED_TABLE')
-    normal = today - dt.timedelta(days=HOT_RETENTION_DAYS)
+    days = 7 if table == 'equity_research.outcomes' else HOT_RETENTION_DAYS
+    normal = today - dt.timedelta(days=days)
     if nav_cutoff is None:
         return normal
     if table != 'mf_nav' or nav_cutoff >= today:
@@ -31,6 +42,16 @@ def cutoff_for(table, today, nav_cutoff=None):
 
 
 def predicate(table):
+    if table == 'universe_membership':
+        return """s.snapshot_date < %(cutoff)s
+            AND s.observed_at < (%(cutoff)s::date::timestamp AT TIME ZONE 'UTC')
+            AND EXISTS (SELECT 1 FROM quant_app.universe_snapshots h
+                WHERE h.snapshot_date=s.snapshot_date
+                  AND h.observed_at < (%(cutoff)s::date::timestamp AT TIME ZONE 'UTC'))
+            AND s.snapshot_date < (SELECT max(snapshot_date) FROM quant_app.universe_snapshots)
+            AND s.snapshot_date < (SELECT max(snapshot_date) FROM quant_app.universe_snapshots WHERE is_complete)
+            AND NOT EXISTS (SELECT 1 FROM quant_app.scanner_observations o
+                WHERE o.universe_snapshot_date=s.snapshot_date)"""
     if table == 'equity_research.outcomes':
         # Match ResearchRepository.report's deterministic latest-row ordering.
         return """s.recorded_at < (%(cutoff)s::date::timestamp AT TIME ZONE 'UTC')
@@ -94,7 +115,7 @@ class ArchiveRepository:
                   AND c.relkind IN ('r','p','v','m')
                   AND NOT (n.nspname='quant_app' AND c.relname IN
                       ('mf_nav','market_quotes','market_daily_volumes','archive_manifests',
-                       'universe_membership_versions','scanner_observations')
+                       'universe_membership_versions','universe_membership','scanner_observations')
                        OR n.nspname='equity_research' AND c.relname='outcomes')
                   AND (has_table_privilege(current_user,c.oid,'SELECT')
                     OR has_table_privilege(current_user,c.oid,'INSERT')
@@ -117,6 +138,16 @@ class ArchiveRepository:
             conn.execute('SELECT observation_id FROM quant_app.prediction_targets LIMIT 0')
             conn.execute('SELECT snapshot_id,snapshot_date,observed_at,is_complete '
                          'FROM quant_app.universe_snapshot_versions LIMIT 0')
+            conn.execute('SELECT snapshot_date,observed_at,is_complete '
+                         'FROM quant_app.universe_snapshots LIMIT 0')
+            if not conn.execute("""SELECT EXISTS (SELECT 1 FROM pg_trigger
+                WHERE tgrelid='quant_app.universe_membership'::regclass
+                  AND tgname='canonical_archive_row_guard' AND tgtype=11
+                  AND tgenabled IN ('O','A') AND NOT tgisinternal
+                  AND tgfoid='quant_app.guard_canonical_archive_delete()'::regprocedure)
+                AND has_function_privilege(current_user,
+                    'quant_app.lock_canonical_archive_dependencies()', 'EXECUTE')""").fetchone()[0]:
+                raise ArchiveError('CANONICAL_ARCHIVE_GUARDS_REQUIRED')
             safe_fk = conn.execute("""SELECT EXISTS (SELECT 1 FROM pg_constraint
                 WHERE conrelid='quant_app.prediction_targets'::regclass
                   AND confrelid='quant_app.scanner_observations'::regclass
@@ -147,6 +178,7 @@ class ArchiveRepository:
     def select(self, table, cutoff, limit):
         condition = predicate(table)
         order = {'mf_nav': 's.nav_date,s.scheme_code',
+                 'universe_membership': 's.snapshot_date,s.instrument_key',
                  'market_quotes': 's.observed_at,s.instrument_key',
                  'universe_membership_versions': 's.observed_at,s.snapshot_id,s.instrument_key',
                  'scanner_observations': 's.as_of_date,s.observation_id',
@@ -186,6 +218,7 @@ class ArchiveRepository:
                 cur.executemany('INSERT INTO verified_archive_rows VALUES (%s::jsonb)',
                                 [(text,) for text in texts])
             key_match = {
+                'universe_membership': "s.snapshot_date=(v.original->>'snapshot_date')::date AND s.instrument_key=v.original->>'instrument_key'",
                 'mf_nav': "s.scheme_code=v.original->>'scheme_code' AND s.nav_date=(v.original->>'nav_date')::date",
                 'market_quotes': "s.instrument_key=v.original->>'instrument_key' AND s.observed_at=(v.original->>'observed_at')::timestamptz",
                 'universe_membership_versions': "s.snapshot_id=v.original->>'snapshot_id' AND s.instrument_key=v.original->>'instrument_key'",
@@ -202,6 +235,10 @@ class ArchiveRepository:
                         AND d.max_captured_volume>=s.volume)""").fetchone()[0]
                 if missing:
                     raise ArchiveError('DAILY_VOLUME_COVERAGE_MISSING')
+            if table == 'universe_membership':
+                # Stage verified rows before blocking scanner/universe writers.
+                # Recheck dependencies and exact payloads under these locks below.
+                conn.execute('SELECT quant_app.lock_canonical_archive_dependencies()')
             count = conn.execute(f"""WITH removed AS (
                 DELETE FROM {RELATIONS[table]} s USING verified_archive_rows v
                 WHERE {key_match} AND to_jsonb(s)=v.original AND {condition}
@@ -237,12 +274,14 @@ def main(argv=None):
     parser.add_argument('--table', choices=tuple(SPECS), default='mf_nav')
     parser.add_argument('--nav-cutoff', type=dt.date.fromisoformat,
                         help='Manual one-time NAV cleanup only; normal policy is 14 days')
-    parser.add_argument('--batch-size', type=int, default=1000)
+    parser.add_argument('--batch-size', type=int, default=None,
+                        help='1–2000; default outcomes=100, canonical universe=500, others=1000')
     parser.add_argument('--max-batches', type=int, default=20)
     args = parser.parse_args(argv)
     drive = None
     try:
-        if not 1 <= args.batch_size <= 2000 or not 1 <= args.max_batches <= 200:
+        args.batch_size = batch_size_for(args.table, args.batch_size)
+        if not 1 <= args.max_batches <= 200:
             raise ArchiveError('INVALID_BATCH_LIMIT')
         deleting = args.mode == 'delete'
         if deleting and os.environ.get('ARCHIVE_DELETE_ENABLED') != 'true':

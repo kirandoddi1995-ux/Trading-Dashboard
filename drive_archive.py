@@ -25,6 +25,12 @@ API = 'https://www.googleapis.com/drive/v3/files'
 MAX_BYTES = 32 * 1024 * 1024
 FORMAT_VERSION = 'quant-archive-v1'
 SPECS = {
+    'universe_membership': {
+        'snapshot_date': 'date', 'instrument_key': 'text', 'trading_symbol': 'text',
+        'isin': 'text', 'name': 'text', 'exchange': 'text', 'segment': 'text',
+        'instrument_type': 'text', 'security_type': 'text', 'sector': 'text',
+        'source': 'text', 'observed_at': 'timestamptz', 'raw': 'jsonb',
+    },
     'equity_research.outcomes': {
         'snapshot_id': 'text', 'decision_id': 'text', 'payload': 'jsonb',
         'recorded_at': 'timestamptz',
@@ -56,6 +62,7 @@ SPECS = {
     },
 }
 KEYS = {'mf_nav': ('scheme_code', 'nav_date'),
+        'universe_membership': ('snapshot_date', 'instrument_key'),
         'equity_research.outcomes': ('snapshot_id',),
         'market_quotes': ('observed_at', 'instrument_key'),
         'universe_membership_versions': ('snapshot_id', 'instrument_key'),
