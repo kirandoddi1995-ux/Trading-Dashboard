@@ -13,6 +13,10 @@ on:
         type: choice
         default: '1015'
         options: ['1015', '1145', '1345', '1500']
+      confirm_one_run:
+        description: Authorize this manual capture or audit only (does not enable scheduling)
+        type: boolean
+        default: false
   schedule:
     # Start five minutes early for dependency setup; Python waits until target.
     # GitHub still cannot guarantee punctuality or execution.
@@ -31,10 +35,36 @@ concurrency:
 
 jobs:
   capture:
-    if: github.event_name == 'workflow_dispatch' || vars.OPTION_CAPTURE_ENABLED == 'true'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && vars.OPTION_CAPTURE_ENABLED == 'true')
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Includes dependency setup, up to 610s bounded wait, 60s capture and upload.
+    timeout-minutes: 25
     steps:
+      - name: Compute one-run authorization (no secrets)
+        id: authorization
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE_ENABLED: ${{ vars.OPTION_CAPTURE_ENABLED }}
+          REQUESTED_MODE: ${{ inputs.mode }}
+          CONFIRMATION_JSON: ${{ toJSON(inputs.confirm_one_run) }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          try:
+              confirmation = json.loads(os.environ.get('CONFIRMATION_JSON', 'null'))
+          except (ValueError, TypeError):
+              confirmation = None
+          event = os.environ.get('EVENT_NAME', '')
+          authorized = (
+              (event == 'schedule' and os.environ.get('SCHEDULE_ENABLED') == 'true')
+              or (event == 'workflow_dispatch'
+                  and os.environ.get('REQUESTED_MODE') in {'capture', 'audit'}
+                  and confirmation is True)
+          )
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('authorized=' + ('true' if authorized else 'false') + '\n')
+          PY
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
@@ -52,7 +82,7 @@ jobs:
           UPSTOX_ANALYTICS_TOKEN: ${{ secrets.UPSTOX_ANALYTICS_TOKEN }}
           DRIVE_OAUTH_TOKEN_JSON: ${{ secrets.DRIVE_OAUTH_TOKEN_JSON }}
           OPTION_CAPTURE_DRIVE_FOLDER_ID: ${{ secrets.OPTION_CAPTURE_DRIVE_FOLDER_ID }}
-          OPTION_CAPTURE_ENABLED: ${{ vars.OPTION_CAPTURE_ENABLED }}
+          OPTION_CAPTURE_ENABLED: ${{ steps.authorization.outputs.authorized || 'false' }}
           OPTION_CAPTURE_LICENSE_ACK: ${{ vars.OPTION_CAPTURE_LICENSE_ACK }}
           OPTION_CAPTURE_TOKEN_EXPIRES_AT: ${{ vars.OPTION_CAPTURE_TOKEN_EXPIRES_AT }}
           OPTION_CAPTURE_UNDERLYINGS_JSON: ${{ vars.OPTION_CAPTURE_UNDERLYINGS_JSON || '["NSE_INDEX|Nifty 50"]' }}
@@ -69,7 +99,7 @@ jobs:
                        '10 8 * * 1-5': '1345', '25 9 * * 1-5': '1500'}
               cron = os.environ['CRON']
               args = ['--audit-today'] if cron == '30 11 * * 1-5' else ['--slot', slots[cron], '--wait-for-slot']
-          else:
+          elif os.environ['EVENT_NAME'] == 'workflow_dispatch':
               mode = os.environ['REQUESTED_MODE']
               if mode not in {'preview', 'capture', 'audit'}:
                   raise SystemExit('Invalid mode')
@@ -78,5 +108,9 @@ jobs:
                   args += ['--preview']
               elif mode == 'audit':
                   args += ['--audit-today']
+              elif os.environ.get('OPTION_CAPTURE_ENABLED') == 'true':
+                  args += ['--wait-for-slot']
+          else:
+              raise SystemExit('Unsupported event')
           raise SystemExit(main(args))
           PY
