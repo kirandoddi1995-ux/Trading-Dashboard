@@ -10,7 +10,7 @@ def outcome_evidence(payload):
     """Compare evidence, not the time an identical provider response was fetched.
 
     Preserve raw candles, hashes, calendar, gaps, provenance and classifications.
-    Past the fixed horizon, a later requested cutoff adds no price-touch evidence.
+    Non-session time adds no coverage; only normalize validated session gaps.
     Stored records are never changed; the first fetch provenance remains intact.
     """
     evidence = dict(payload)
@@ -24,6 +24,34 @@ def outcome_evidence(payload):
                 evidence['requested_data_through'] = close.isoformat()
         except (KeyError, ValueError, TypeError):
             pass  # Malformed/absent provenance never earns normalization.
+    elif evidence.get('horizon_complete') is False:
+        try:
+            from equity_research_outcomes import sessions_for
+            calendar = evidence['session_calendar']
+            start = aware(evidence['tracking_start'])
+            through = aware(evidence['requested_data_through'])
+            fetched = aware(payload['fetched_at'])
+            assessed = aware(payload['assessed_at'])
+            # Reuse the evaluator's calendar validation; tracking_start must be
+            # an eligible minute in its first session. Ambiguity means no dedup.
+            sessions = sessions_for({'decision_at': start.isoformat(),
+                                     'horizon_sessions': len(calendar['sessions'])}, calendar)
+            close = aware(evidence['horizon_close'])
+            if (start.second or start.microsecond or close != sessions[-1][1]
+                    or not start <= through <= fetched <= assessed or through >= close):
+                return evidence
+            # Within a session retain the exact cutoff. Across weekends/holidays,
+            # normalize only after confirming the expected coverage count agrees.
+            if any(opening < through < closing for opening, closing in sessions):
+                return evidence
+            completed = [(opening, closing) for opening, closing in sessions if closing <= through]
+            expected = sum(int((closing - max(opening, start)).total_seconds() // 60)
+                           for opening, closing in completed)
+            if (completed and type(evidence['expected_minutes']) is int
+                    and evidence['expected_minutes'] == expected):
+                evidence['requested_data_through'] = completed[-1][1].isoformat()
+        except (KeyError, ValueError, TypeError, IndexError, AttributeError, OverflowError):
+            pass  # Keep original cutoff if calendar or provenance cannot be verified.
     return evidence
 
 
