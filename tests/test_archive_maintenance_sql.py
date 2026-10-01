@@ -168,6 +168,15 @@ def pg(monkeypatch):
         protection = protection.split('REVOKE ALL ON ALL TABLES', 1)[0]
         db.send({'script': 'CREATE FUNCTION equity_research.reject_mutation()' + protection})
         db.send({'script': (ROOT / 'sql/drive_archive_research_outcomes_draft.sql').read_text()})
+        columns = ','.join(f'{name} {kind}' for name, kind in SPECS['universe_membership'].items())
+        db.execute(f'CREATE TABLE quant_app.universe_membership ({columns}, PRIMARY KEY(snapshot_date,instrument_key))')
+        db.send({'script': """
+            CREATE TABLE quant_app.universe_snapshots(snapshot_date date PRIMARY KEY,
+                observed_at timestamptz,is_complete boolean);
+            GRANT SELECT,INSERT,UPDATE,DELETE ON quant_app.universe_membership,
+                quant_app.universe_snapshots TO quant_app_runtime;
+        """})
+        db.send({'script': (ROOT / 'sql/drive_archive_storage_relief_draft.sql').read_text()})
         # PGlite has no shared processes; replace ONLY this lock in the harness.
         original = db.execute
         def execute(sql, params=()):
@@ -462,7 +471,7 @@ def test_research_archive_preserves_latest_per_entity_and_timestamp_ties(pg):
 
 
 def test_research_age_boundary_and_latest_are_enforced_by_trigger(pg):
-    cutoff = pg.execute("SELECT (((statement_timestamp() AT TIME ZONE 'UTC')::date - 14)"
+    cutoff = pg.execute("SELECT (((statement_timestamp() AT TIME ZONE 'UTC')::date - 7)"
                         "::timestamp AT TIME ZONE 'UTC')").fetchone()[0]
     research_snapshot(pg, 'boundary', 'a', cutoff)
     research_snapshot(pg, 'newer', 'a', '2099-01-01Z')
@@ -524,7 +533,7 @@ def test_research_failed_verification_never_deletes_and_export_retry_is_safe(pg)
 
 
 def test_research_migration_rerunnable_and_disabled_guard_fails_check(pg):
-    pg.send({'script': (ROOT / 'sql/drive_archive_research_outcomes_draft.sql').read_text()})
+    pg.send({'script': (ROOT / 'sql/drive_archive_storage_relief_draft.sql').read_text()})
     pg.execute('SET ROLE quant_archive_worker')
     repo = ArchiveRepository('postgres://test-only')
     repo.check()

@@ -153,7 +153,7 @@ def workflow_script():
     return textwrap.dedent(text.split("python - <<'PY'\n", 1)[1].rsplit('          PY', 1)[0])
 
 
-def test_schedule_requests_deletion_for_all_five_tables(monkeypatch):
+def test_schedule_requests_deletion_for_all_six_tables(monkeypatch):
     calls = []
     monkeypatch.setenv('EVENT_NAME', 'schedule')
     monkeypatch.setenv('ARCHIVE_DELETE_ENABLED', 'true')
@@ -163,7 +163,66 @@ def test_schedule_requests_deletion_for_all_five_tables(monkeypatch):
                      ['--mode', 'delete', '--table', 'market_quotes'],
                      ['--mode', 'delete', '--table', 'universe_membership_versions'],
                      ['--mode', 'delete', '--table', 'scanner_observations'],
-                     ['--mode', 'delete', '--table', 'equity_research.outcomes']]
+                     ['--mode', 'delete', '--table', 'equity_research.outcomes'],
+                     ['--mode', 'delete', '--table', 'universe_membership']]
+
+
+def test_manual_batch_input_is_passed_as_data(monkeypatch):
+    calls = []
+    monkeypatch.setenv('EVENT_NAME', 'workflow_dispatch')
+    monkeypatch.setenv('REQUESTED_MODE', 'preview')
+    monkeypatch.setenv('REQUESTED_TABLE', 'equity_research.outcomes')
+    monkeypatch.setenv('REQUESTED_BATCH_SIZE', ' 50 ')
+    monkeypatch.setenv('NAV_CUTOFF', '')
+    monkeypatch.setattr(maintenance, 'main', lambda args: calls.append(args) or 0)
+    with pytest.raises(SystemExit) as caught:
+        exec(compile(workflow_script(), '<archive-workflow>', 'exec'), {})
+    assert caught.value.code == 0
+    assert calls == [['--mode','preview','--table','equity_research.outcomes','--batch-size','50', '--max-batches', '1']]
+
+
+@pytest.mark.parametrize('limit', ['0', '-1', '201'])
+def test_invalid_max_batches_never_connects(monkeypatch, limit):
+    repo = Mock()
+    monkeypatch.setattr(maintenance, 'ArchiveRepository', repo)
+    assert maintenance.main(['--mode', 'preview', '--max-batches', limit]) == 1
+    repo.assert_not_called()
+
+
+def test_manual_max_batches_forwarded_as_data(monkeypatch):
+    calls = []
+    monkeypatch.setenv('EVENT_NAME', 'workflow_dispatch')
+    monkeypatch.setenv('REQUESTED_MODE', 'delete')
+    monkeypatch.setenv('REQUESTED_TABLE', 'universe_membership')
+    monkeypatch.setenv('REQUESTED_BATCH_SIZE', '')
+    monkeypatch.setenv('NAV_CUTOFF', '')
+    monkeypatch.setenv('REQUESTED_MAX_BATCHES', ' 2 ')
+    monkeypatch.setattr(maintenance, 'main', lambda args: calls.append(args) or 0)
+    with pytest.raises(SystemExit) as caught:
+        exec(compile(workflow_script(), '<archive-workflow>', 'exec'), {})
+    assert caught.value.code == 0
+    assert calls == [['--mode', 'delete', '--table', 'universe_membership', '--max-batches', '2']]
+
+
+def test_one_batch_stops_with_backlog(monkeypatch):
+    repo = Mock()
+    repo.preview.return_value = 100
+    monkeypatch.setattr(maintenance, 'ArchiveRepository', lambda url: repo)
+    monkeypatch.setattr(maintenance, 'build_drive_credentials', Mock())
+    monkeypatch.setattr(maintenance, 'DriveArchive', Mock())
+    monkeypatch.setenv('ARCHIVE_DELETE_ENABLED', 'true')
+    batch = Mock(return_value={'selected': 25, 'verified': 25, 'deleted': 25, 'retained': 0})
+    monkeypatch.setattr(maintenance, 'run_batch', batch)
+    assert maintenance.main(['--mode', 'delete', '--batch-size', '25', '--max-batches', '1']) == 0
+    assert batch.call_count == 1
+
+
+@pytest.mark.parametrize('size', ['0','2001','-1'])
+def test_invalid_batch_limit_never_connects(monkeypatch, size):
+    repo = Mock()
+    monkeypatch.setattr(maintenance, 'ArchiveRepository', repo)
+    assert maintenance.main(['--mode','preview','--batch-size',size]) == 1
+    repo.assert_not_called()
 
 
 def test_research_preview_has_no_drive_export_or_deletion(monkeypatch, capsys):
