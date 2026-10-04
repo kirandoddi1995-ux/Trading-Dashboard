@@ -508,12 +508,17 @@ class ImmutableEvidenceLedger:
         observed_at = _iso(now)
         conn = self._connect()
         try:
-            row = conn.execute("""
-                SELECT COUNT(*), MIN(created_at), MAX(attempts)
+            lane_rows = conn.execute("""
+                SELECT delivery_lane,COUNT(*),MIN(created_at),MAX(attempts)
                 FROM evidence_delivery_outbox WHERE delivered_at IS NULL
-            """).fetchone()
+                GROUP BY delivery_lane
+            """).fetchall()
         finally:
             conn.close()
+        # One SELECT snapshot: concurrent delivery cannot make totals disagree with lanes.
+        row = (sum(item[1] for item in lane_rows),
+               min((item[2] for item in lane_rows), default=None),
+               max((item[3] or 0 for item in lane_rows), default=0))
         pending = int(row[0] or 0)
         oldest_seconds = 0.0
         if pending and row[1]:
@@ -526,6 +531,12 @@ class ImmutableEvidenceLedger:
             "oldest_pending_seconds": oldest_seconds,
             "maximum_attempts": int(row[2] or 0),
             "observed_at": observed_at,
+            "by_lane": {lane: {
+                "pending": int(count),
+                "oldest_pending_seconds": max(
+                    (_utc_datetime_for_outbox(observed_at) - _utc_datetime_for_outbox(created)).total_seconds(), 0.0),
+                "maximum_recorded_failures": int(attempts or 0),
+            } for lane, count, created, attempts in lane_rows},
         }
 
 

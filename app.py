@@ -6037,12 +6037,19 @@ if selected_tab == "Settings":
         rs2.metric("Policy", RESILIENCE_CONTROL_PLANE.policy.version)
         rs3.metric("Pending evidence", outbox_health["pending"])
         st.caption(f"Policy hash: {RESILIENCE_CONTROL_PLANE.policy.digest}")
+        st.caption("Pending evidence includes all delivery lanes. maximum_attempts counts recorded failures/retries on pending rows, not successful network calls.")
+        _outbox_policy = RESILIENCE_CONTROL_PLANE.policy.section("outbox")
+        if (outbox_health["pending"] > _outbox_policy["maximum_pending_events"]
+                or outbox_health["oldest_pending_seconds"] > _outbox_policy["maximum_oldest_pending_seconds"]):
+            st.warning("Evidence delivery backlog exceeds the safety policy: new approvals are blocked when evaluated. Background delivery continues; do not raise the limit to bypass it.")
         st.json({
             "new_trades": resilience_state.value < 2,
             "writes": resilience_state.value < 3,
             "exits": True,
             "audit_reads": True,
             "outbox": outbox_health,
+            "equity_sender": (get_equity_sender(EVIDENCE_LEDGER, DURABLE_REPOSITORY).snapshot()
+                              if DURABLE_REPOSITORY.configured else {"configured": False}),
         }, expanded=False)
         st.info(
             "Independent quote reconciliation, external telemetry export, automated Streamlit rollback, "
@@ -8211,14 +8218,27 @@ elif selected_tab == "Equities Screener & Risk":
 
     _job = _jobs.snapshot(CURRENT_USER_ID, _signature)
     _recovery_source = None
+    _recovery_delivery_pending = False
     if not (_job and not _job.get("complete")):
         try:
             _recovery_source = _jobs.recoverable(CURRENT_USER_ID, _signature)
+            if _recovery_source:
+                _recovery_diagnostics = _jobs.recovery_diagnostics(CURRENT_USER_ID, _signature, _recovery_source)
+                _recovery_delivery_pending = _recovery_diagnostics["delivery_pending"]
+                st.caption(f"Recovery scan ID: {_recovery_source['id']} · remote status: {_recovery_source['status']}")
+                st.json(_recovery_diagnostics, expanded=False)
+                if _recovery_delivery_pending:
+                    st.info("Checkpoint delivery pending. The remote unacknowledged count is not a count of unfinished analyses. Recovery must wait for delivery acknowledgment.")
+                if _recovery_diagnostics["checkpoint_conflicts"]:
+                    st.error("Checkpoint conflicts require operator investigation; conflicting records have not been discarded.")
         except Exception as recovery_lookup_exc:
+            _recovery_source = None
             LOGGER.error("Equity recovery lookup failed: %s", type(recovery_lookup_exc).__name__)
+            st.warning("Recovery status could not be verified. No recovery action is available until the lookup succeeds.")
         if _recovery_source and st.button(
-            f"Recover interrupted scan ({len(_recovery_source.get('unfinished', []))} unfinished)",
+            f"Recover scan ({len(_recovery_source.get('unfinished', []))} candidates require recovery after sync)",
             key=f"recover_equity_scan_{_diag_suffix}",
+            disabled=_recovery_delivery_pending,
         ):
             run_scan_now = True
             st.session_state[f"recover_equity_scan_request_{_diag_suffix}"] = _recovery_source["id"]

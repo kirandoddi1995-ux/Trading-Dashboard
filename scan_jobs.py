@@ -259,6 +259,34 @@ class ScanJobs:
         finally:
             conn.close()
 
+    def recovery_diagnostics(self, owner, signature, source):
+        """Read-only local delivery status; never reinterpret remote receipts as analysis failures."""
+        report = {"scan_id": source["id"], "remote_status": source["status"],
+                  "remote_unacknowledged": len(source.get("unfinished", [])),
+                  "local_status": None, "local_completed": None, "local_total": None,
+                  "checkpoint_pending": 0, "checkpoint_conflicts": 0,
+                  "delivery_pending": False}
+        if not self._db_path:
+            return report
+        conn = self._connect()
+        try:
+            local = conn.execute("""SELECT status,processed,total FROM durable_scan_jobs
+                WHERE job_id=? AND owner=? AND signature=?""",
+                (source["id"], owner, signature)).fetchone()
+            # Do not expose another owner's local status for an unexpected source.
+            if not local:
+                return report
+            pending, conflicts = conn.execute("""SELECT COUNT(*),
+                COALESCE(SUM(CASE WHEN last_error='CONFLICT' THEN 1 ELSE 0 END),0)
+                FROM checkpoint_outbox WHERE scan_id=? AND delivered_at IS NULL""",
+                (source["id"],)).fetchone()
+            report.update(local_status=local[0], local_completed=int(local[1]),
+                          local_total=int(local[2]), checkpoint_pending=int(pending),
+                          checkpoint_conflicts=int(conflicts), delivery_pending=bool(pending))
+            return report
+        finally:
+            conn.close()
+
     def start(self, owner, signature, items, worker, workers=6, timeout=90, metadata=None):
         items = tuple(items)
         with self._lock:
