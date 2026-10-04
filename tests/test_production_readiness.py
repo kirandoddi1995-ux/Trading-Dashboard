@@ -130,7 +130,7 @@ def test_trade_thresholds_and_default_non_equity_policy_are_unchanged():
     assert signature.parameters["quote_verification_policy"].default == "automated"
     source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
     options_start = source.index('option_aggregate = (')
-    options_end = source.index('st.caption("Fresh proposal', options_start)
+    options_end = source.index('st.caption("Research proposal', options_start)
     options_evidence = source[options_start:options_end]
     assert '"minimum_net_reward_risk": 2.0' in options_evidence
     assert "trade_contracts.EQUITY_MIN_NET_REWARD_RISK" not in options_evidence

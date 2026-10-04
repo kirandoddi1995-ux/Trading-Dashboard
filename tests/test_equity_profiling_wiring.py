@@ -131,7 +131,7 @@ def test_remote_retry_instrumentation_preserves_attempts_sleep_and_errors():
 
 def test_app_wiring_and_release_manifest():
     source = (ROOT / "app.py").read_text(encoding="utf-8")
-    for stage in ("history_retrieval", "history_live_bar", "indicator_enrichment",
+    for stage in ("history_retrieval", "history_completed_bars", "indicator_enrichment",
                   "indicator_weekly_trend", "indicator_relative_strength", "clock_measurement"):
         assert f'profile_call("{stage}"' in source
     assert '@observe_health_cache\n@st.cache_data(ttl=30, show_spinner=False)' in source

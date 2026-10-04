@@ -3,6 +3,7 @@ import ast
 from contextlib import nullcontext
 import datetime
 import logging
+import json
 import math
 from pathlib import Path
 import threading
@@ -412,6 +413,11 @@ def test_option_costs_depth_and_capital_use_one_execution_model():
                       iv_percentile_proxy=20,trade_contracts=contracts,
                       IST=datetime.timezone(datetime.timedelta(hours=5,minutes=30)))
     ctx['risk_engine']=RiskEngine(investment_capital=1000000,max_risk_pct=2,max_position_pct=20)
+    # Isolate sizing from dated tariff commissioning (tested independently).
+    ctx.update(os=SimpleNamespace(environ={}), json=json,
+        st=SimpleNamespace(secrets={'INTRADAY_FO_COST_POLICY_JSON': json.dumps({
+            'policy': {}, 'exit_deadline': '2099-01-01T15:00:00+05:30', 'deadline_source': 'SYNTHETIC'})}),
+        fo_costs=SimpleNamespace(round_trip=lambda **kw: {'charges': 18}))
     row={'Strike':'24000','Put LTP':'38.80','_put_bid':38.75,'_put_ask':38.85,
          '_put_ask_qty':100000,'_put_bid_qty':100000,'_put_volume':1000000}
     # This test isolates sizing; production foundation validation has its own tests.
@@ -425,7 +431,7 @@ def test_option_costs_depth_and_capital_use_one_execution_model():
     ctx.update(selected_opt_asset='TEST', using_live_chain=True, MARKET_OPEN=True)
     result=ctx['build_option_recommendation']('Bearish',best_row=row)
     assert result is not None
-    cost=result['premium']*.007
+    cost=18 / 65
     net_risk=(result['premium']-result['stop_premium']+cost)*result['lots']*65
     assert result['total_risk']==pytest.approx(round(net_risk,2))
     assert result['total_risk']<=20000 and result['required_capital']<=200000
@@ -437,6 +443,53 @@ def test_option_costs_depth_and_capital_use_one_execution_model():
     assert ctx['build_option_recommendation']('Bearish',best_row=row)['lots']==1
     row['_put_bid']=40
     assert ctx['build_option_recommendation']('Bearish',best_row=row) is None
+
+
+def test_margin_helper_reads_required_funds_not_final_or_legacy_fields():
+    import intraday_fo_costs
+    bodies = [dict(status='success', data={'required_margin': 123, 'final_margin': 12,
+        'total_margin': 999, 'margins': [{}]}), dict(status='success', data={'total_margin': 999})]
+    ctx = app_functions('fetch_upstox_instrument_margin', fo_costs=intraday_fo_costs,
+        get_robust_session=lambda: nullcontext(object()),
+        upstox_request=lambda *a, **kw: SimpleNamespace(status_code=200, json=lambda: bodies.pop(0)))
+    helper = ctx['fetch_upstox_instrument_margin']
+    assert helper('K', 50, 'BUY', 'I', 'SYNTHETIC') == 123
+    assert helper('K', 50, 'BUY', 'I', 'SYNTHETIC') is None
+    assert helper('K', 1.5, 'BUY', 'I', 'SYNTHETIC') is None
+
+
+def test_fo_bias_uses_completed_intraday_not_daily_or_index_volume():
+    tz = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+    fixed = datetime.datetime(2026, 10, 1, 12, 12, tzinfo=tz)
+    class Clock(datetime.datetime):
+        @classmethod
+        def now(cls, zone=None):
+            return fixed.astimezone(zone) if zone else fixed.replace(tzinfo=None)
+    daily = pd.DataFrame({'Close': [24000, 99999]}, index=pd.to_datetime(['2026-09-30', '2026-10-01']))
+    def history(key, token, unit, interval, days_back):
+        minutes = interval * (60 if unit == 'hours' else 1)
+        index = pd.date_range('2026-10-01 09:15', '2026-10-01 12:10', freq=f'{minutes}min', tz='Asia/Kolkata')
+        values = np.arange(len(index)) + 24000
+        frame = pd.DataFrame({'Close': values, 'High': values + 1, 'Low': values - 1, 'Volume': 1_000_000}, index=index)
+        if interval == 5:
+            frame.iloc[-1, frame.columns.get_loc('Close')] = 99999  # forming
+        return frame
+    calls = []
+    scorer = SimpleNamespace(**{name: getattr(runtime, name) for name in
+        ('completed_daily_bars', 'completed_intraday_bars', 'market_date')},
+        score_option_direction=lambda **kw: calls.append(kw) or {'bias': 'Bullish'})
+    ctx = app_functions('determine_market_bias', datetime=SimpleNamespace(datetime=Clock), IST=tz,
+        runtime=scorer, live_key='NSE_INDEX|Nifty 50', access_token='SYNTHETIC',
+        fetch_upstox_history=lambda *a, **kw: daily, live_quotes={},
+        fetch_upstox_intraday_series=history, get_timeframe_trend_label=lambda frame: 'Bullish',
+        pcr_val=None, oi_change_details={}, MARKET_OPEN=True, options_no_trade_threshold=25)
+    _, result = ctx['determine_market_bias']()
+    assert calls and calls[0]['price'] == 24034
+    assert calls[0]['previous_close'] == 24000
+    assert calls[0]['volume_confirmed'] is False
+    assert calls[0]['vwap'] is None
+    assert result['daily_probability_applicable'] is False
+    assert result['calibrated_probability'] is None
 
 
 def test_option_recommendation_governance_exception_becomes_no_trade():
@@ -473,6 +526,10 @@ def test_option_recommendation_governance_exception_becomes_no_trade():
     ctx['risk_engine'] = RiskEngine(
         investment_capital=1000000, max_risk_pct=2, max_position_pct=20
     )
+    ctx.update(os=SimpleNamespace(environ={}), json=json,
+        st=SimpleNamespace(secrets={'INTRADAY_FO_COST_POLICY_JSON': json.dumps({
+            'policy': {}, 'exit_deadline': '2099-01-01T15:00:00+05:30', 'deadline_source': 'SYNTHETIC'})}),
+        fo_costs=SimpleNamespace(round_trip=lambda **kw: {'charges': 18}))
     ctx['evaluate_live_governance_contract'] = (
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError('unexpected governance failure'))
     )

@@ -27,6 +27,59 @@ def signals(directions):
     return [{"direction": d, "available": d is not None} for d in directions]
 
 
+@pytest.mark.parametrize('reset', [False, True])
+def test_optimized_decisions_exactly_match_prefix_reference(reset):
+    import technical_indicators as ta
+    from intraday_directional_replay import trend
+    from app_runtime import score_option_direction
+    bars, sessions = fixture(6)
+    # Oscillations exercise both directions and near-neutral crossings.
+    bars['Close'] += np.sin(np.arange(len(bars)) / 6) * 40
+    bars['High'] = bars[['Open', 'Close']].max(axis=1) + 3
+    bars['Low'] = bars[['Open', 'Close']].min(axis=1) - 3
+    accepted, _ = validate(bars, sessions)
+    if reset:
+        accepted[3][0]['reset_warmup'] = True
+    optimized = decisions(accepted)
+    history, closes = [], []
+    for day, (session, frame) in enumerate(accepted):
+        if session.get('reset_warmup'):
+            history, closes = [], []
+        expected = []
+        for i in range(len(frame)):
+            closes.append(float(frame.Close.iloc[i]))
+            series = pd.Series(closes)
+            ema = float(ta.ema(series, 20).iloc[-1])
+            rsi = float(ta.rsi(series, 14).iloc[-1])
+            histogram = float(ta.macd(series, 12, 26, 9).filter(like='MACDh_').iloc[-1, 0])
+            current = history + [(session['open'], frame.iloc[:i + 1])]
+            t15, t60 = trend(current, 15, session['open']), trend(current, 60, session['open'])
+            detail = ({'bias': 'Unavailable', 'decision_reason': 'INDICATOR_OR_SESSION_TREND_WARMUP'}
+                if not all(np.isfinite([ema, rsi, histogram])) or t15 is None else
+                score_option_direction(price=float(frame.Close.iloc[i]), previous_close=session['previous_close'],
+                    ema20=ema, rsi=rsi, macd_hist=histogram, trend_15m=t15, trend_1h=t60,
+                    volume_confirmed=False, market_open=True, minimum_score=25))
+            bias = detail['bias']
+            expected.append({'at': frame.end.iloc[i].isoformat(), 'direction':
+                1 if bias in {'Bullish', 'Mildly Bullish'} else -1 if bias in {'Bearish', 'Mildly Bearish'} else 0,
+                'available': bias != 'Unavailable', 'detail': detail})
+        assert optimized[day][2] == expected
+        history.append((session['open'], frame))
+
+
+def test_indicator_pass_count_does_not_grow_per_bar(monkeypatch):
+    import technical_indicators as ta
+    calls = []
+    original = ta.ema
+    def counted(*args, **kwargs):
+        calls.append(len(args[0]))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(ta, 'ema', counted)
+    accepted, _ = validate(*fixture(20))
+    decisions(accepted)
+    assert len(calls) <= 10  # fixed passes, not 1,500 full-history rebuilds
+
+
 def test_missing_bar_excludes_whole_session():
     bars, sessions = fixture()
     accepted, excluded = validate(bars.drop(bars.index[20]), sessions)
@@ -34,19 +87,15 @@ def test_missing_bar_excludes_whole_session():
     assert excluded[0]["reason"] == "INCOMPLETE_OR_MISALIGNED_SESSION"
 
 
-def test_excluded_trading_date_resets_warmup(monkeypatch):
+def test_excluded_trading_date_resets_warmup():
     import intraday_directional_replay as replay
     bars, sessions = fixture(3)
     accepted, excluded = validate(bars.drop(bars.index[90]), sessions)
     assert len(excluded) == 1
     assert accepted[1][0]["reset_warmup"]
-    lengths = []
-    def observe(history, minutes, today):
-        lengths.append(len(history))
-        return None
-    monkeypatch.setattr(replay, "trend", observe)
-    replay.decisions(accepted)
-    assert set(lengths) == {1}
+    all_rows = replay.decisions(accepted)
+    standalone = replay.decisions([accepted[1]])
+    assert all_rows[1][2] == standalone[0][2]
 
 
 def test_forming_bar_is_rejected():
