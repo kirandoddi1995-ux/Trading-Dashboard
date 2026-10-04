@@ -174,3 +174,27 @@ def test_check_is_first_cli_run(tmp_path, monkeypatch, capsys):
 def test_project_output_rejected_before_auth(capsys):
     assert history.main(["check", "--date", str(DAY), "--root", str(history.Path(history.__file__).parent)]) == 1
     assert "DATA_MUST_BE_OUTSIDE_PROJECT" in capsys.readouterr().out
+
+
+def test_daily_range_allows_previous_year_without_weakening_minutes():
+    earlier = date(2021, 12, 1)
+    with pytest.raises(history.HistoryError, match="INVALID_HISTORY_RANGE"):
+        list(history.monthly(earlier, DAY))
+    assert len(list(history.monthly(earlier, date(2022, 1, 31), date(2000, 1, 1)))) == 2
+
+
+def test_daily_cli_does_not_export_five_minute_availability(tmp_path, monkeypatch, capsys):
+    reader = history.Reader(SECRET, Session([Response()]))
+    history.acquire(reader, tmp_path, DAY, DAY)
+    history.immutable(tmp_path / "session-check.json", history.encoded(history.check_session(rows(), DAY)))
+    monkeypatch.setenv("UPSTOX_ANALYTICS_TOKEN", SECRET)
+    daily = [[f"{DAY}T00:00:00+05:30", 25000, 25002, 24998, 25001, 0, 0]]
+    reader = history.Reader(SECRET, Session([Response(body={"status": "success", "data": {"candles": daily}})]))
+    monkeypatch.setattr(history, "Reader", lambda *_: reader)
+    assert history.main(["download-daily", "--root", str(tmp_path), "--start", str(DAY),
+        "--end", str(DAY), "--licence-confirmed", "--reviewed-session-check"]) == 0
+    assert reader.session.calls[0][0].endswith(f"/days/1/{DAY}/{DAY}")
+    assert not list(tmp_path.glob("*.csv"))
+    assert (tmp_path / f"daily-{DAY}-{DAY}.manifest.json").exists()
+    captured = capsys.readouterr()
+    assert SECRET not in captured.out + captured.err

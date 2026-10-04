@@ -34,6 +34,21 @@ def test_missing_bar_excludes_whole_session():
     assert excluded[0]["reason"] == "INCOMPLETE_OR_MISALIGNED_SESSION"
 
 
+def test_excluded_trading_date_resets_warmup(monkeypatch):
+    import intraday_directional_replay as replay
+    bars, sessions = fixture(3)
+    accepted, excluded = validate(bars.drop(bars.index[90]), sessions)
+    assert len(excluded) == 1
+    assert accepted[1][0]["reset_warmup"]
+    lengths = []
+    def observe(history, minutes, today):
+        lengths.append(len(history))
+        return None
+    monkeypatch.setattr(replay, "trend", observe)
+    replay.decisions(accepted)
+    assert set(lengths) == {1}
+
+
 def test_forming_bar_is_rejected():
     bars, sessions = fixture()
     bars.loc[bars.index[0], "available_at"] = bars.index[0]
