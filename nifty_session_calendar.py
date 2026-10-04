@@ -37,12 +37,25 @@ SPECIAL = {
     "2025-02-01": (None, circular("CMTR65587")),
     "2025-10-21": ([("13:45", "14:45")], circular("CMTR70319")),
     "2026-02-01": ([("09:15", "15:30")], circular("CMTR72349")),
+    # Announced session, but never guess its hours before reviewing the notice.
+    "2026-11-08": (None, circular("CMTR71775")),
 }
 
 
 def session(day):
     if not date(2022, 1, 1) <= day <= date(2026, 9, 30):
         raise ValueError("CALENDAR_OUTSIDE_REVIEWED_STUDY_RANGE")
+    return cash_session(day)
+
+
+def cash_session(day):
+    """NSE cash cache calendar; annual coverage only, not broker order authority.
+
+    Separate from the frozen replay interval. Unknown years fail explicitly;
+    callers must not interpret an unavailable calendar as an open weekday.
+    """
+    if day.year not in ANNUAL:
+        raise ValueError("NSE_CASH_CALENDAR_YEAR_UNREVIEWED")
     code, holidays = ANNUAL[day.year]
     source = AMENDMENTS.get(str(day), circular(code))
     if str(day) in SPECIAL:

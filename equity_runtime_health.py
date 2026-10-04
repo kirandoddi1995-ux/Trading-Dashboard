@@ -41,6 +41,7 @@ RELEASE_FILES = (
     "secure_upstox_stream.py",
     "market_context.py", "market_context_sources.py", "market_context_ui.py",
     "intraday_fo_costs.py",
+    "nifty_session_calendar.py",
 )
 
 

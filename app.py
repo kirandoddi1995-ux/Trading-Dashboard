@@ -2,6 +2,7 @@ import streamlit as st
 import technical_indicators as ta
 import mf_research as mfr
 import app_runtime as runtime
+import nifty_session_calendar as nse_calendar
 import dataclasses
 import intraday_fo_costs as fo_costs
 import trade_contracts
@@ -547,14 +548,31 @@ def _previous_weekday(day):
     return day
 
 
-def _expected_latest_completed_session_date(now=None):
-    """Conservative expected date for a completed daily candle.
+def _expected_latest_completed_session_date(now=None, instrument_key=None):
+    """NSE cash sessions only; unknown calendars never certify cache freshness.
 
-    Holidays may cause an extra refresh attempt, which is safer than marking
-    stale data as current. During the trading session, yesterday is the newest
-    candle expected from the historical endpoint.
+    Other exchanges retain their existing weekday refresh policy; NSE holiday
+    assumptions must not be applied to BSE, NSE IX or commodities.
     """
     now = now or datetime.datetime.now(IST)
+    if now.tzinfo is None:
+        raise ValueError("Aware freshness clock required")
+    now = now.astimezone(IST)
+    if instrument_key is None or str(instrument_key).startswith(("NSE_EQ|", "NSE_INDEX|")):
+        day = now.date()
+        for _ in range(370):
+            try:
+                record = nse_calendar.cash_session(day)
+            except ValueError:
+                return None
+            if record["kind"] != "CLOSED":
+                if not record["windows"]:
+                    return None  # special-session close not reviewed
+                close_time = max(datetime.time.fromisoformat(end) for _, end in record["windows"])
+                if day < now.date() or now.time().replace(tzinfo=None) >= close_time:
+                    return day
+            day -= datetime.timedelta(days=1)
+        return None
     if now.weekday() >= 5:
         return _previous_weekday(now.date())
     market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
@@ -612,14 +630,16 @@ def _serialize_history(instrument_key, df, db_path=DEFAULT_DB_PATH):
                       oi=excluded.oi
                 """, rows)
                 latest_date = pd.to_datetime(df.index, errors="coerce").max()
-                latest_date = latest_date.date() if pd.notna(latest_date) else None
-                expected_date = _expected_latest_completed_session_date()
-                if latest_date is not None and latest_date >= expected_date:
+                latest_date = runtime.market_date(latest_date) if pd.notna(latest_date) else None
+                expected_date = _expected_latest_completed_session_date(instrument_key=instrument_key)
+                if expected_date is not None and latest_date is not None and latest_date >= expected_date:
                     conn.execute(
                         "INSERT INTO sync_meta(instrument_key, last_sync_date) VALUES (?, ?) "
                         "ON CONFLICT(instrument_key) DO UPDATE SET last_sync_date=excluded.last_sync_date",
                         (instrument_key, datetime.datetime.now(IST).date().isoformat()),
                     )
+                elif expected_date is None:
+                    LOGGER.warning("History for %s: NSE session calendar unavailable/unreviewed; freshness marker not advanced.", instrument_key)
                 else:
                     LOGGER.warning(
                         "History for %s ended at %s; expected at least %s. Freshness marker not advanced.",
@@ -690,7 +710,12 @@ def get_cached_history(instrument_key, token, days=365, fetch_fn=None, db_path=D
     sync_date = _cache_last_sync_date(instrument_key, db_path)
 
     required_rows = min(max(int(days * 0.55), 60), int(days))
-    if sync_date == today and len(cached) >= required_rows:
+    expected = _expected_latest_completed_session_date(instrument_key=instrument_key)
+    latest_cached = runtime.market_date(cached.index.max()) if not cached.empty else None
+    is_nse_cash = str(instrument_key).startswith(("NSE_EQ|", "NSE_INDEX|"))
+    fresh_through_expected = (not is_nse_cash or
+        (expected is not None and latest_cached is not None and latest_cached >= expected))
+    if sync_date == today and len(cached) >= required_rows and fresh_through_expected:
         OBSERVABILITY.record("cache", "sqlite_history", time.perf_counter() - cache_started, cache_hit=True)
         return cached
 
@@ -7892,7 +7917,9 @@ elif selected_tab == "Equities Screener & Risk":
                 step=1, key="eq_days_input",
             )
         with col_h2:
-            max_stock_price = st.number_input("Max Stock Price Filter (₹)", min_value=10.0, value=50000.0, step=500.0, key="eq_price_filter",
+            if "eq_price_filter" not in st.session_state:
+                st.session_state.eq_price_filter = 50000.0
+            max_stock_price = st.number_input("Max Stock Price Filter (₹)", min_value=10.0, step=500.0, key="eq_price_filter",
                                                 help="Default is ₹50,000 — effectively no cap. Lowering this excludes higher-priced stocks like RELIANCE, TCS, etc.")
         with col_h3:
             require_weekly_align = st.checkbox("Require Weekly Uptrend Confirmation", value=False, key="eq_weekly_filter",
