@@ -117,24 +117,49 @@ def trend(history, minutes, today):
     return "Bullish" if gap > .05 else "Bearish" if gap < -.05 else "Neutral"
 
 
-def decisions(accepted):
-    """Candidate C input adapter; five-minute indicators, no volume/PCR/OI/VWAP."""
-    prior = []
+def _trend_labels(segment, minutes):
+    """One causal EWM pass over completed, session-anchored buckets.
+
+    Mapping uses only buckets complete at each five-minute bar. The trailing
+    partial closing hour is omitted, exactly as in the reference trend helper.
+    """
+    count = minutes // 5
+    bucket_closes = [float(frame.Close.iloc[i]) for _, frame in segment
+                     for i in range(count - 1, len(frame), count)]
+    averages = ta.ema(pd.Series(bucket_closes, dtype=float), 20)
+    labels = []
+    offset = 0
+    for _, frame in segment:
+        day = []
+        for i in range(len(frame)):
+            completed = (i + 1) // count
+            index = offset + completed - 1
+            if not completed or index < 19:
+                day.append(None)
+            else:
+                gap = (bucket_closes[index] / averages.iloc[index] - 1) * 100
+                day.append("Bullish" if gap > .05 else "Bearish" if gap < -.05 else "Neutral")
+        labels.append(day)
+        offset += len(frame) // count
+    return labels
+
+
+def _segment_decisions(segment):
+    # EWM/RSI/MACD are causal: batch computation does not change any prefix.
+    # Calculate once per uninterrupted segment, not once per session/bar.
+    closes = pd.concat([frame.Close for _, frame in segment], ignore_index=True)
+    ema, rsi, macd = ta.ema(closes, 20), ta.rsi(closes, 14), ta.macd(closes, 12, 26, 9)
+    histogram = macd.filter(like="MACDh_").iloc[:, 0]
+    trends15, trends60 = _trend_labels(segment, 15), _trend_labels(segment, 60)
     result = []
-    for session, frame in accepted:
-        if session.get("reset_warmup"):
-            prior = []
-        opening = stamp(session["open"])
-        closes = pd.concat([*[old.Close for _, old in prior], frame.Close], ignore_index=True)
-        ema, rsi, macd = ta.ema(closes, 20), ta.rsi(closes, 14), ta.macd(closes, 12, 26, 9)
-        offset = len(closes) - len(frame)
+    offset = 0
+    for day, (session, frame) in enumerate(segment):
         rows = []
         for i in range(len(frame)):
             j = offset + i
-            mh = float(macd.filter(like="MACDh_").iloc[j, 0])
+            mh = float(histogram.iloc[j])
             inputs = (float(ema.iloc[j]), float(rsi.iloc[j]), mh)
-            history = prior + [(opening, frame.iloc[:i + 1])]
-            t15, t60 = trend(history, 15, opening), trend(history, 60, opening)
+            t15, t60 = trends15[day][i], trends60[day][i]
             if not all(np.isfinite(inputs)) or t15 is None:
                 detail = {"bias": "Unavailable", "decision_reason": "INDICATOR_OR_SESSION_TREND_WARMUP"}
             else:
@@ -148,7 +173,20 @@ def decisions(accepted):
             rows.append({"at": frame.end.iloc[i].isoformat(), "direction": direction,
                          "available": bias != "Unavailable", "detail": detail})
         result.append((session, frame, rows))
-        prior.append((opening, frame))
+        offset += len(frame)
+    return result
+
+
+def decisions(accepted):
+    """Candidate C, identical causal math with linear-time trend preparation."""
+    result, segment = [], []
+    for item in accepted:
+        if item[0].get("reset_warmup") and segment:
+            result.extend(_segment_decisions(segment))
+            segment = []
+        segment.append(item)
+    if segment:
+        result.extend(_segment_decisions(segment))
     return result
 
 

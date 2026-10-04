@@ -231,6 +231,7 @@ def _scheduled_stage1(repo, client, token: str, run_id: str, *, now=None) -> dic
         tickers, instrument_dict, fresh_quotes, top_n,
         average_volumes=average_volumes,
         elapsed_fraction=session_elapsed_fraction(current),
+        as_of=current,
     )
     evidence = list(stats.pop("_evidence", []))
     records = []

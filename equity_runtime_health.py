@@ -40,6 +40,7 @@ RELEASE_FILES = (
     "volatility_research.py", "volatility_research_ui.py",
     "secure_upstox_stream.py",
     "market_context.py", "market_context_sources.py", "market_context_ui.py",
+    "intraday_fo_costs.py",
 )
 
 

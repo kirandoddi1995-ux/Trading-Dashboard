@@ -2,6 +2,8 @@ import streamlit as st
 import technical_indicators as ta
 import mf_research as mfr
 import app_runtime as runtime
+import dataclasses
+import intraday_fo_costs as fo_costs
 import trade_contracts
 import observability as observability
 import smc_analysis as smc
@@ -2031,8 +2033,8 @@ def compute_volume_quality_score(df):
     calls, no duplicate volume fetching.
 
     Components (each 0-100, weighted):
-    1. Session-Adjusted RVOL (25%) — see formula below. Corrected in this pass
-       to account for what fraction of the trading day has elapsed.
+    1. Session-Adjusted RVOL (25%) — uniform-time heuristic, NOT a validated
+       opening/midday seasonal volume curve. Completed prior days stay raw.
     2. Volume percentile (25%) — real percentile rank vs the stock's own
        252-day volume history.
     3. Volume acceleration (20%) — 5-day average volume vs the PRIOR 5-day
@@ -2066,11 +2068,10 @@ def compute_volume_quality_score(df):
     1.0x just because 70% of the day's volume hasn't happened yet, wrongly
     reading as weak participation.
 
-    LOOK-AHEAD BIAS CHECK: elapsed_session_fraction uses only the current wall-
-    clock time (datetime.now) and current_volume uses only data already patched
-    into df up to and including right now (via prepare_live_daily_bar upstream,
-    confirmed in this pass to include Volume, not just price) — no future data
-    of any kind is used. Session-adjustment is applied ONLY when the market is
+    SOURCE-DATE CHECK: elapsed_session_fraction uses the current wall-clock
+    time. The daily equity scanner now supplies completed prior-date bars,
+    which are NOT paced. Other callers must supply a verified current-date
+    volume observation. Session-adjustment is applied ONLY when the market is
     genuinely open AND df's last row is dated today; otherwise (market closed,
     weekend, stale/unpatched data) it falls back to the plain, unadjusted
     ratio, since a fraction-of-day adjustment is meaningless on a day that's
@@ -2094,13 +2095,14 @@ def compute_volume_quality_score(df):
         session_adjusted_rvol = raw_rvol
         is_session_adjusted = False
         try:
-            last_row_is_today = d.index[-1].date() == datetime.datetime.now(IST).date()
+            last_row_is_today = runtime.market_date(d.index[-1]) == datetime.datetime.now(IST).date()
         except Exception:
             last_row_is_today = False
         if MARKET_OPEN and last_row_is_today and avg_vol20 > 0:
             elapsed_fraction = _session_elapsed_fraction()
             if elapsed_fraction is not None and elapsed_fraction > 0:
-                session_adjusted_rvol = min(current_vol / avg_vol20 / elapsed_fraction, 5.0)
+                session_adjusted_rvol = runtime.volume_pace(current_vol / avg_vol20,
+                    d.index[-1], datetime.datetime.now(IST), elapsed_fraction, MARKET_OPEN)
                 is_session_adjusted = True
 
         # Session-adjusted RVOL is the correct number to score on during live
@@ -2647,12 +2649,16 @@ def fetch_upstox_funds_and_margin(token):
 # ==========================================
 # ACTUAL UPSTOX INSTRUMENT MARGIN API (/v2/charges/margin)
 # ==========================================
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=30)
 def fetch_upstox_instrument_margin(instrument_key, quantity, transaction_type, product, token):
     """Query Upstox Margin Details API to get exact required margin for an instrument."""
     if not token or not instrument_key:
         return None
     try:
+        if isinstance(quantity, bool) or int(quantity) <= 0 or float(quantity) != int(quantity):
+            return None
+        if str(transaction_type).upper() not in {"BUY", "SELL"} or str(product).upper() not in {"I", "D", "CO", "MTF"}:
+            return None
         url = "https://api.upstox.com/v2/charges/margin"
         headers = {"Accept": "application/json", "Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         payload = {
@@ -2668,13 +2674,9 @@ def fetch_upstox_instrument_margin(instrument_key, quantity, transaction_type, p
         with get_robust_session() as session:
             res = upstox_request("POST", url, session=session, headers=headers, json=payload, timeout=(3, 6))
             if res.status_code == 200:
-                data = res.json().get("data", {})
-                total_margin = data.get("total_margin") or data.get("margin")
-                if total_margin is not None:
-                    return float(total_margin)
-    except Exception as e:
-        LOGGER.debug("Suppressed exception: %s", e)
-        pass
+                return float(fo_costs.margin_response(res.json())["required_margin"])
+    except Exception:
+        LOGGER.debug("Broker margin unavailable; no estimate substituted")
     return None
 
 # ==========================================
@@ -4025,11 +4027,8 @@ def _legacy_stage1_multi_bucket_prefilter(tickers, instrument_dict, quotes, top_
             avg_vol = avg_vols_map.get(key)
             if avg_vol and avg_vol > 0 and day_volume > 0:
                 raw_daily_ratio = day_volume / avg_vol
-                volume_pace_ratio = (
-                    min(raw_daily_ratio / elapsed_fraction, 5.0)
-                    if elapsed_fraction is not None and elapsed_fraction > 0
-                    else raw_daily_ratio
-                )
+                volume_pace_ratio = runtime.volume_pace(raw_daily_ratio,
+                    runtime.quote_volume_date(quote), datetime.datetime.now(IST), elapsed_fraction, MARKET_OPEN)
             else:
                 raw_daily_ratio = None
                 volume_pace_ratio = None
@@ -4172,6 +4171,7 @@ def stage1_multi_bucket_prefilter(tickers, instrument_dict, quotes, top_n,
         top_n,
         average_volumes=average_volumes,
         elapsed_fraction=_session_elapsed_fraction(),
+        as_of=datetime.datetime.now(IST),
     )
     OBSERVABILITY.record(
         "calculation", "stage1_prefilter", time.perf_counter() - started,
@@ -4288,9 +4288,7 @@ def compute_historical_setup_probability(df, horizon_days=15, min_samples=20, tr
         d = df.copy()
         if isinstance(d.index, pd.DatetimeIndex):
             # Never include an unfinished current-session candle in evidence.
-            cutoff = pd.Timestamp.now(tz="Asia/Kolkata").normalize().tz_localize(None)
-            dates = d.index.tz_localize(None) if d.index.tz is not None else d.index
-            d = d.loc[dates < cutoff]
+            d = runtime.completed_daily_bars(d)
         d['EMA_20'] = ta.ema(d['Close'], length=20)
         d['EMA_50'] = ta.ema(d['Close'], length=50)
         adx_df = ta.adx(d['High'], d['Low'], d['Close'], length=14)
@@ -6665,26 +6663,24 @@ elif selected_tab == "Options & Derivatives Chain":
         guard. Neutral always means NO TRADE downstream.
         """
         try:
-            idx_hist_short = fetch_upstox_history(live_key, access_token, days=60)
-            if idx_hist_short.empty or len(idx_hist_short) < 20:
+            observed_at = datetime.datetime.now(IST)
+            daily_context = runtime.completed_daily_bars(
+                fetch_upstox_history(live_key, access_token, days=60), observed_at)
+            if daily_context.empty:
                 return "Neutral", {}
             live_quote = live_quotes.get(live_key, {}) if live_quotes else {}
             previous_close = (live_quote.get("ohlc") or {}).get("close")
             if previous_close is None:
-                hist_dates = idx_hist_short.index.date if isinstance(idx_hist_short.index, pd.DatetimeIndex) else []
-                closes = idx_hist_short["Close"]
-                previous_close = (
-                    float(closes.iloc[-2])
-                    if len(closes) >= 2 and len(hist_dates) and hist_dates[-1] == datetime.datetime.now(IST).date()
-                    else float(closes.iloc[-1])
-                )
-            # CRITICAL: Upstox's daily historical-candle endpoint does NOT include
-            # today's still-forming candle during live market hours — without this,
-            # EMA/RSI/MACD are frozen on yesterday's close all day, which is why the
-            # bias barely changed even as the market moved. Patch in today's live
-            # price so these indicators actually react to today's session.
-            if live_quote:
-                idx_hist_short = prepare_live_daily_bar(idx_hist_short, live_quote)
+                previous_close = float(daily_context["Close"].iloc[-1])
+            # Intraday F&O candidates use completed five-minute inputs, not a
+            # forming daily candle or a daily historical equity win rate.
+            idx_hist_short = runtime.completed_intraday_bars(fetch_upstox_intraday_series(
+                live_key, access_token, unit="minutes", interval=5, days_back=10), 5, observed_at)
+            if (idx_hist_short.empty or len(idx_hist_short) < 35 or
+                    runtime.market_date(idx_hist_short.index[-1]) != observed_at.date()):
+                return "Neutral", {"reason": "COMPLETED_CURRENT_SESSION_5M_BARS_UNAVAILABLE",
+                                   "calibrated_probability": None}
+            signal_price = float(idx_hist_short['Close'].iloc[-1])
             ema20_series = ta.ema(idx_hist_short['Close'], length=20).dropna()
             if ema20_series.empty:
                 return "Neutral", {}
@@ -6712,22 +6708,8 @@ elif selected_tab == "Options & Derivatives Chain":
             macd_bearish = macd_hist_last is not None and macd_hist_last < 0
 
             volume_confirmed = False
-            try:
-                if 'Volume' in idx_hist_short.columns and len(idx_hist_short) >= 20:
-                    vol_avg20 = idx_hist_short['Volume'].rolling(20).mean().iloc[-1]
-                    vol_last = idx_hist_short['Volume'].iloc[-1]
-                    if MARKET_OPEN:
-                        now_ist = datetime.datetime.now(IST)
-                        session_start = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
-                        session_end = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
-                        elapsed_frac = min(max((now_ist - session_start).total_seconds() / (session_end - session_start).total_seconds(), 0.05), 1.0)
-                    else:
-                        elapsed_frac = 1.0
-                    expected_vol_so_far = (vol_avg20 or 0) * elapsed_frac
-                    volume_confirmed = bool(expected_vol_so_far and vol_last >= expected_vol_so_far)
-            except Exception as e:
-                LOGGER.debug("Suppressed exception: %s", e)
-                volume_confirmed = False
+            # Index volume is not traded volume; a matured, contract-aware futures
+            # baseline has not been commissioned. No synthetic confirmation.
 
             # Current-session direction must come from the dedicated intraday
             # endpoint. Prior candles in these merged frames only warm the EMA.
@@ -6740,9 +6722,13 @@ elif selected_tab == "Options & Derivatives Chain":
                 intraday_1h = fetch_upstox_intraday_series(
                     live_key, access_token, unit="hours", interval=1, days_back=20,
                 )
-                trend_15m = get_timeframe_trend_label(intraday_15m)
-                trend_1h = get_timeframe_trend_label(intraday_1h)
-                if not intraday_15m.empty:
+                intraday_15m = runtime.completed_intraday_bars(intraday_15m, 15, observed_at)
+                intraday_1h = runtime.completed_intraday_bars(intraday_1h, 60, observed_at)
+                trend_15m = (get_timeframe_trend_label(intraday_15m) if not intraday_15m.empty
+                    and runtime.market_date(intraday_15m.index[-1]) == observed_at.date() else None)
+                trend_1h = (get_timeframe_trend_label(intraday_1h) if not intraday_1h.empty
+                    and runtime.market_date(intraday_1h.index[-1]) == observed_at.date() else None)
+                if not intraday_15m.empty and not str(live_key).startswith("NSE_INDEX|"):
                     today_ist = datetime.datetime.now(IST).date()
                     todays_bars = intraday_15m[intraday_15m.index.date == today_ist] if hasattr(intraday_15m.index, 'date') else intraday_15m
                     if not todays_bars.empty and 'Volume' in todays_bars.columns:
@@ -6757,7 +6743,7 @@ elif selected_tab == "Options & Derivatives Chain":
                 vwap_last = None
 
             score_details = runtime.score_option_direction(
-                price=underlying_ltp,
+                price=signal_price,
                 previous_close=previous_close,
                 ema20=ema20_last,
                 vwap=vwap_last,
@@ -6772,6 +6758,9 @@ elif selected_tab == "Options & Derivatives Chain":
                 minimum_score=options_no_trade_threshold,
             )
             score_details.update({
+                "signal_basis": "COMPLETED_5_MINUTE_BAR", "calibrated_probability": None,
+                "signal_bar_start": str(idx_hist_short.index[-1]),
+                "daily_probability_applicable": False,
                 "ema20": round(float(ema20_last), 2), "vwap": round(vwap_last, 2) if vwap_last is not None else None,
                 "rsi": round(rsi_last, 1) if rsi_last is not None else None,
                 "macd_bullish": macd_bullish, "macd_bearish": macd_bearish,
@@ -6941,9 +6930,23 @@ elif selected_tab == "Options & Derivatives Chain":
             target_premium = round(premium * target_mult, 2)
             stop_premium = round(premium * stop_mult, 2)
 
-            ESTIMATED_ROUND_TRIP_COST_PCT = 0.7
-            cost_buffer_per_unit = premium * (ESTIMATED_ROUND_TRIP_COST_PCT / 100.0)
-            estimated_costs_per_lot = cost_buffer_per_unit * lot_size
+            # No arbitrary premium percentage. Commission dated NSE tariffs
+            # and broker deadline evidence separately; entry hold stays intact.
+            try:
+                cost_config = json.loads(os.environ.get("INTRADAY_FO_COST_POLICY_JSON") or
+                                         st.secrets.get("INTRADAY_FO_COST_POLICY_JSON", "{}"))
+                entered = datetime.datetime.now(IST)
+                deadline = datetime.datetime.fromisoformat(cost_config["exit_deadline"])
+                scenarios = [fo_costs.round_trip(entry=str(premium), exit=str(price),
+                    quantity=lot_size, lot_size=lot_size, kind="OPTION", policy=cost_config["policy"],
+                    entered_at=entered, exited_at=deadline, exit_deadline=deadline,
+                    deadline_source=cost_config["deadline_source"]) for price in (stop_premium, target_premium)]
+                estimated_costs_per_lot = float(max(item["charges"] for item in scenarios))
+                cost_buffer_per_unit = estimated_costs_per_lot / lot_size
+                ESTIMATED_ROUND_TRIP_COST_PCT = 100.0 * cost_buffer_per_unit / premium
+            except (KeyError, TypeError, ValueError):
+                return reject_candidate("intraday_cost_policy_unverified",
+                    "Dated intraday tariff and broker exit-deadline evidence unavailable; no cost default")
 
             # Keep the IV/DTE target unchanged. If needed, tighten the old
             # percentage stop to the nearest stop that can still deliver at
@@ -7089,10 +7092,10 @@ elif selected_tab == "Options & Derivatives Chain":
                     cost_breakdown={
                         "round_trip_bps": ESTIMATED_ROUND_TRIP_COST_PCT * 100,
                         "spread_bps": spread_rupees / premium * 10_000.0,
-                        "slippage_bps": ESTIMATED_ROUND_TRIP_COST_PCT * 100,
-                        "impact_bps": 0.0, "statutory_bps": None, "brokerage_bps": None,
+                        "slippage_bps": None,
+                        "impact_bps": None, "statutory_bps": None, "brokerage_bps": None,
                         "breakdown_complete": False,
-                        "assumptions": "Entry uses ask and barriers use bid; remaining 70 bps is an aggregate fee/slippage allowance.",
+                        "assumptions": "Dated tariff scenario; bid/ask reference only. Slippage/impact evidence missing, not zero.",
                     },
                     universe_lineage={
                         "unavailable_reason": "A PIT derivative-contract universe snapshot is not available",
@@ -7347,7 +7350,7 @@ elif selected_tab == "Options & Derivatives Chain":
                 f"Exit earlier when target/stop trades; otherwise exit no later than **{best['mandatory_exit_at_text']} IST**."
             )
 
-            st.caption("Fresh proposal, not an executed trade. Entry uses the ask; exits use bid-price barriers. Sizing and net R:R include the same 0.7% illustrative fees, not guaranteed actual costs. Quantity is capped by visible ask depth; fills and gaps are not guaranteed.")
+            st.caption("Research proposal, not an executed trade. Completed five-minute signals have no calibrated daily win probability. Dated tariff scenarios include charges, not guaranteed fills or slippage; broker margin is not a loss limit. Existing option-entry hold remains in force.")
             if best.get("stop_was_tightened"):
                 st.warning(
                     f"Risk/reward correction applied: the previous ₹{best['original_stop_premium']:.2f} stop "
@@ -7666,9 +7669,31 @@ elif selected_tab == "Futures & Derivatives":
             hist_for_atr = fut_evidence.get("history", pd.DataFrame())
             atr_series = ta.atr(hist_for_atr['High'], hist_for_atr['Low'], hist_for_atr['Close'], length=14).dropna() if not hist_for_atr.empty else pd.Series(dtype=float)
 
+            futures_tariff = None
+            if futures_foundation.eligible and not atr_series.empty and lot_size and fut_bias != "Neutral":
+                try:
+                    cost_config = json.loads(os.environ.get("INTRADAY_FO_COST_POLICY_JSON") or
+                                             st.secrets.get("INTRADAY_FO_COST_POLICY_JSON", "{}"))
+                    scenario_entry = float(futures_foundation.snapshot["reference_price"])
+                    scenario_direction = "long" if fut_bias == "Bullish" else "short"
+                    entered = datetime.datetime.now(IST)
+                    deadline = datetime.datetime.fromisoformat(cost_config["exit_deadline"])
+                    exits = [risk_engine.calculate_stop(scenario_entry, atr_series.iloc[-1], scenario_direction, 1.0),
+                             risk_engine.calculate_target(scenario_entry, atr_series.iloc[-1], scenario_direction, 2.5)]
+                    futures_tariff = max((fo_costs.round_trip(entry=str(scenario_entry), exit=str(price),
+                        quantity=lot_size, lot_size=lot_size, kind="FUTURE", policy=cost_config["policy"],
+                        entered_at=entered, exited_at=deadline, exit_deadline=deadline,
+                        deadline_source=cost_config["deadline_source"],
+                        entry_side="BUY" if fut_bias == "Bullish" else "SELL") for price in exits),
+                        key=lambda result: result["charges"])
+                except (KeyError, TypeError, ValueError):
+                    futures_tariff = None
+
             st.markdown("### 🎯 Recommended Futures Trade")
-            if not futures_foundation.eligible or fut_bias == "Neutral" or atr_series.empty or not spot_quote_available or not lot_size or not fut_ltp or not MARKET_OPEN:
+            if not futures_foundation.eligible or fut_bias == "Neutral" or atr_series.empty or not spot_quote_available or not lot_size or not fut_ltp or not MARKET_OPEN or futures_tariff is None:
                 futures_reasons = list(futures_foundation.reasons)
+                if futures_tariff is None:
+                    futures_reasons.append("Dated intraday futures tariff/deadline evidence unavailable; no fee default")
                 if fut_bias == "Neutral":
                     futures_reasons.append(fut_evidence.get("reason") or "Directional evidence is neutral")
                 if atr_series.empty:
@@ -7705,6 +7730,12 @@ elif selected_tab == "Futures & Derivatives":
                     price=entry, bid=futures_market_data.get("bid_price"), ask=futures_market_data.get("ask_price"),
                     order_value=entry * lot_size, average_daily_value=futures_adv, asset_class="futures",
                 )
+                # Keep liquidity/spread/impact estimates separate from dated
+                # statutory fees; discard this helper's generic fee component.
+                tariff_brokerage = futures_tariff["entry_charges"]["brokerage"] + futures_tariff["exit_charges"]["brokerage"]
+                futures_cost = dataclasses.replace(futures_cost,
+                    statutory_bps=float(futures_tariff["charges"] - tariff_brokerage) / (entry * lot_size) * 10_000.0,
+                    brokerage_bps=float(tariff_brokerage) / (entry * lot_size) * 10_000.0)
                 futures_math = trade_contracts.calculate_trade_math(
                     entry, stop, target, direction=engine_direction,
                     round_trip_cost_bps=futures_cost.round_trip_bps,
@@ -8500,10 +8531,12 @@ elif selected_tab == "Equities Screener & Risk":
                     analysis_timing_log.append(("history_retrieval", time.perf_counter() - _hist_t0))
                     return _reject("Data", "Insufficient price history (need 210+ trading days)")
 
-                df = profile_call("history_live_bar", prepare_live_daily_bar, df, raw_quote)
+                # Daily setups must match completed-bar historical evidence.
+                # The live quote remains the entry reference, not an indicator candle.
+                df = profile_call("history_completed_bars", runtime.completed_daily_bars, df)
                 analysis_timing_log.append(("history_retrieval", time.perf_counter() - _hist_t0))
                 if df.empty or len(df) < 210:
-                    return _reject("Data", "Insufficient price history after live update")
+                    return _reject("Data", "Insufficient completed daily price history")
 
                 price = float(live_price) if live_price and float(live_price) > 0 else float(df['Close'].iloc[-1])
 
@@ -8529,8 +8562,8 @@ elif selected_tab == "Equities Screener & Risk":
 
                 if price > max_stock_price:
                     return _reject("Price Filter", f"Price ₹{price:,.2f} exceeds your ₹{max_stock_price:,.0f} filter")
-                if price < float(latest['EMA_50']):
-                    return _reject("Trend", "Price is below the 50-day EMA")
+                if float(latest['Close']) < float(latest['EMA_50']):
+                    return _reject("Trend", "Completed daily close is below the 50-day EMA")
                 if require_weekly_align and weekly_trend != "Bullish (Weekly)":
                     return _reject("Weekly Trend", f"Weekly trend is '{weekly_trend}', not confirmed Bullish")
 
@@ -8631,17 +8664,15 @@ elif selected_tab == "Equities Screener & Risk":
                 volume_series = pd.to_numeric(df_clean['Volume'], errors='coerce').dropna() if 'Volume' in df_clean.columns else pd.Series(dtype=float)
                 current_day_volume = float(volume_series.iloc[-1]) if not volume_series.empty else 0.0
                 last_volume_is_today = (
-                    not volume_series.empty and pd.Timestamp(volume_series.index[-1]).date() == datetime.datetime.now(IST).date()
+                    not volume_series.empty and runtime.market_date(volume_series.index[-1]) == datetime.datetime.now(IST).date()
                 )
                 historical_volume = volume_series.iloc[-21:-1] if last_volume_is_today else volume_series.iloc[-20:]
                 avg_vol20 = float(historical_volume.mean()) if not historical_volume.empty else 0.0
                 elapsed_fraction = _session_elapsed_fraction()
                 raw_volume_ratio = current_day_volume / avg_vol20 if avg_vol20 > 0 else None
-                volume_pace_ratio = (
-                    min(raw_volume_ratio / elapsed_fraction, 5.0)
-                    if raw_volume_ratio is not None and elapsed_fraction is not None and elapsed_fraction > 0
-                    else raw_volume_ratio
-                )
+                volume_pace_ratio = runtime.volume_pace(raw_volume_ratio,
+                    volume_series.index[-1] if not volume_series.empty else None,
+                    datetime.datetime.now(IST), elapsed_fraction, MARKET_OPEN)
 
                 # Historical frequency of this fixed setup. This is not labelled
                 # as trained/OOS probability, and insufficient evidence is N/A.
@@ -8894,6 +8925,8 @@ elif selected_tab == "Equities Screener & Risk":
                     "_system_action": action,
                     "Target Move (scenario)": f"+{exp_return_pct:.2f}%",
                     "Historical Win Rate": f"{historical_win_prob:.1f}%" if historical_win_prob is not None else "N/A",
+                    "Evidence Scope": "Completed daily equity base rule only; not intraday or F&O probability",
+                    "Setup Bar Date": str(runtime.market_date(df_clean.index[-1])),
                     "Probability 95% CI": probability_ci,
                     "Sample Tier": sample_tier,
                     "Beta": round(stock_beta, 2),
@@ -9195,7 +9228,7 @@ elif selected_tab == "Equities Screener & Risk":
         # details. Uses the EXISTING "Signal Strength" field unchanged — this
         # only changes how results are DISPLAYED, not which stocks passed or
         # what their score is.
-        st.caption("Scores rank rule-based setups, not predicted win probabilities. Targets are scenarios, not expected returns. Historical win rates test a base EMA/ADX setup, not this entire ranking strategy.")
+        st.caption("Daily setups use completed prior-session bars; live prices are entry references. Historical win rates test a daily equity base EMA/ADX rule, not intraday, F&O or this ranking strategy. Volume pacing is a uniform-time heuristic, not a validated time-of-day volume baseline.")
         if any(s["Sector"] == "Unclassified" for s in valid_signals):
             st.warning("Some industries are unclassified. Unknown names share one capped bucket; verified sector diversification cannot be claimed.")
         st.markdown(f"##### {len(valid_signals)} Screened Equities — {custom_days}-Day Horizon (Under ₹{max_stock_price:,.0f})")

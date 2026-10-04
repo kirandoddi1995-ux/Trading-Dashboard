@@ -13,6 +13,36 @@ from equity_research_outcomes import evaluate_touches, sessions_for
 from equity_research_repository import ResearchRepository
 
 
+def summarize_outcomes(rows):
+    """Latest stored snapshots, not inserts this run; unknown is never false."""
+    summary = {'basis': 'LATEST_STORED_SNAPSHOT_PER_DECISION', 'outcomes': len(rows),
+        'horizons_complete': 0, 'horizons_pending': 0, 'horizons_unknown': 0,
+        'coverage_complete': 0, 'coverage_incomplete': 0, 'coverage_unknown': 0,
+        'completed_horizon_coverage_complete': 0, 'completed_horizon_coverage_incomplete': 0,
+        'completed_horizon_coverage_unknown': 0,
+        'target': {'touched': 0, 'not_touched': 0, 'unknown': 0},
+        'stop': {'touched': 0, 'not_touched': 0, 'unknown': 0},
+        'first_touch': {'TARGET': 0, 'STOP': 0, 'AMBIGUOUS_SAME_BAR': 0,
+                        'NO_TOUCH_CONFIRMED': 0, 'UNKNOWN': 0}}
+    for row in rows:
+        horizon, coverage = row.get('horizon_complete'), row.get('coverage_complete')
+        summary['horizons_complete' if horizon is True else
+                'horizons_pending' if horizon is False else 'horizons_unknown'] += 1
+        state = 'complete' if coverage is True else 'incomplete' if coverage is False else 'unknown'
+        summary['coverage_' + state] += 1
+        if horizon is True:
+            summary['completed_horizon_coverage_' + state] += 1
+        for name in ('target', 'stop'):
+            value = row.get(name + '_touched')
+            summary[name]['touched' if value is True else 'not_touched' if value is False else 'unknown'] += 1
+        first = row.get('first_observed_touch')
+        if first not in ('TARGET', 'STOP', 'AMBIGUOUS_SAME_BAR'):
+            first = ('NO_TOUCH_CONFIRMED' if horizon is True and coverage is True
+                     and row.get('target_touched') is False and row.get('stop_touched') is False else 'UNKNOWN')
+        summary['first_touch'][first] += 1
+    return summary
+
+
 def fetch_minutes(client, token, instrument_key, start, end):
     """Preserve original API candles; no synthetic candles, volume or timestamps."""
     candles = []
@@ -66,8 +96,9 @@ def collect(repo, client, token, calendar, *, clock=None):
         except Exception as exc:
             repo.connection.rollback()
             failures.append({'instrument': observation['instrument'], 'error_type': type(exc).__name__})
+    latest = repo.report()
     return {'purpose': 'RESEARCH_ONLY_PRICE_TOUCH', 'stored': stored, 'unchanged': unchanged, 'failures': failures,
-            'observations': repo.report()}
+            'summary': summarize_outcomes(latest), 'observations': latest}
 
 
 def main():

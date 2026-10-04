@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
+import app_runtime as runtime
 
 
 def _clamp(value, lo=0.0, hi=100.0):
@@ -36,12 +37,14 @@ def stage1_prefilter(
     *,
     average_volumes: Mapping[str, float | None] | None = None,
     elapsed_fraction: float | None = None,
+    as_of=None,
 ):
     """Rank one immutable quote snapshot without changing any trade gate.
 
     ``elapsed_fraction`` must describe the market-session progress measured by
-    the caller at quote capture time.  Passing ``None`` intentionally disables
-    intraday volume pacing rather than inventing a timestamp.
+    the caller at quote capture time. Adjustment additionally requires a
+    provider timestamp on the same IST date as ``as_of``. Missing dates disable
+    intraday pacing rather than inventing one; uniform-time pacing is a heuristic.
     """
     average_volumes = dict(average_volumes or {})
     evidence_by_ticker: dict[str, dict] = {}
@@ -112,11 +115,8 @@ def stage1_prefilter(
                 avg_vol = None
             if avg_vol is not None and day_volume > 0:
                 raw_daily_ratio = day_volume / float(avg_vol)
-                volume_pace_ratio = (
-                    min(raw_daily_ratio / float(elapsed_fraction), 5.0)
-                    if elapsed_fraction is not None and float(elapsed_fraction) > 0
-                    else raw_daily_ratio
-                )
+                volume_pace_ratio = runtime.volume_pace(raw_daily_ratio,
+                    runtime.quote_volume_date(quote), as_of, elapsed_fraction, as_of is not None)
             else:
                 raw_daily_ratio = None
                 volume_pace_ratio = None

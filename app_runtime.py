@@ -5,11 +5,83 @@ import logging
 import re
 import secrets
 import time
+from zoneinfo import ZoneInfo
 from email.utils import parsedate_to_datetime
 
 
 FUTURES_TREND_MIN_BARS = 50
 FUTURES_TREND_LOOKBACK_CALENDAR_DAYS = 120
+
+
+def market_date(value):
+    """Aware values convert to IST; documented naive dashboard times ARE IST."""
+    import pandas as pd
+    stamp = pd.Timestamp(value)
+    if pd.isna(stamp):
+        raise ValueError("Market timestamp missing")
+    return (stamp.tz_convert("Asia/Kolkata") if stamp.tzinfo is not None else stamp).date()
+
+
+def volume_pace(raw_ratio, bar_at, now, elapsed_fraction, market_open):
+    """Uniform-time heuristic only for today's volume; not a U-curve model."""
+    raw = None
+    try:
+        raw = float(raw_ratio)
+        if not math.isfinite(raw) or raw < 0:
+            return None
+        fraction = float(elapsed_fraction) if elapsed_fraction is not None else None
+        if (market_open and market_date(bar_at) == market_date(now) and fraction is not None
+                and math.isfinite(fraction) and 0 < fraction <= 1):
+            return min(raw / fraction, 5.0)
+        return raw
+    except (ValueError, TypeError, OverflowError):
+        return raw if raw is not None and math.isfinite(raw) and raw >= 0 else None
+
+
+def quote_volume_date(quote):
+    """Provider quote time, never local retrieval time as a substitute."""
+    import pandas as pd
+    value = quote.get('last_trade_time')
+    if value is None:
+        value = quote.get('timestamp')
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        if isinstance(value, (int, float)) or (isinstance(value, str) and value.isdigit()):
+            stamp = pd.to_datetime(float(value), unit='ms', utc=True)
+        else:
+            stamp = pd.Timestamp(value)
+            if stamp.tzinfo is None:
+                return None
+        return stamp
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def completed_daily_bars(frame, now=None):
+    """Exclude same-date/future bars: a closed clock is not proof of EOD finality."""
+    now = now or dt.datetime.now(ZoneInfo("Asia/Kolkata"))
+    cutoff = market_date(now)
+    return frame.loc[[market_date(t) < cutoff for t in frame.index]].copy()
+
+
+def completed_intraday_bars(frame, minutes, now=None):
+    """Provider timestamps are starts; never use forming/post-session bars."""
+    import pandas as pd
+    if type(minutes) is not int or minutes <= 0:
+        raise ValueError("Positive integral bar interval required")
+    now = pd.Timestamp(now or dt.datetime.now(ZoneInfo("Asia/Kolkata")))
+    if now.tzinfo is None:
+        raise ValueError("Aware observation time required")
+    starts = pd.DatetimeIndex(frame.index)
+    if starts.empty:
+        return frame.copy()
+    starts = starts.tz_localize("Asia/Kolkata") if starts.tz is None else starts.tz_convert("Asia/Kolkata")
+    ends = starts + pd.Timedelta(minutes=minutes)
+    # Regular NSE adapter only; no implicit permission for special sessions.
+    opening = starts.normalize() + pd.Timedelta(hours=9, minutes=15)
+    closing = starts.normalize() + pd.Timedelta(hours=15, minutes=30)
+    return frame.loc[(starts >= opening) & (ends <= closing) & (ends <= now)].copy()
 
 
 def fetch_futures_trend_history(fetch_history, underlying_key, token, *,
