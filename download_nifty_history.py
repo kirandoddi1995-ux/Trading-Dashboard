@@ -37,8 +37,8 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def monthly(start, end):
-    if start < date(2022, 1, 1) or start > end:
+def monthly(start, end, earliest=date(2022, 1, 1)):
+    if start < earliest or start > end:
         raise HistoryError("INVALID_HISTORY_RANGE")
     while start <= end:
         last = date(start.year, start.month, calendar.monthrange(start.year, start.month)[1])
@@ -211,7 +211,7 @@ def export(rows):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["check", "download"])
+    parser.add_argument("mode", choices=["check", "download", "download-daily"])
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--date", type=date.fromisoformat)
     parser.add_argument("--start", type=date.fromisoformat, default=date(2022, 1, 1))
@@ -229,7 +229,7 @@ def main(argv=None):
         today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
         if args.mode == "check" and (not args.date or args.date >= today):
             raise HistoryError("COMPLETED_SESSION_DATE_REQUIRED")
-        if args.mode == "download":
+        if args.mode in {"download", "download-daily"}:
             receipt = json.loads((root / "session-check.json").read_text()) if (root / "session-check.json").exists() else {}
             if not args.reviewed_session_check or receipt.get("status") != "PASS":
                 raise HistoryError("REVIEWED_SESSION_CHECK_REQUIRED")
@@ -239,7 +239,8 @@ def main(argv=None):
                 raise HistoryError("SESSION_RECEIPT_INVALID")
             if args.end >= today:
                 raise HistoryError("COMPLETED_HISTORY_ONLY")
-            ranges = list(monthly(args.start, args.end))
+            ranges = list(monthly(args.start, args.end,
+                date(2000, 1, 1) if args.mode == "download-daily" else date(2022, 1, 1)))
         else:
             ranges = [(args.date, args.date)]
         token = os.environ.get("UPSTOX_ANALYTICS_TOKEN") or getpass.getpass("Analytics token (hidden): ")
@@ -247,7 +248,9 @@ def main(argv=None):
             reader = Reader(token, session)
             all_rows = []
             for start, end in ranges:
-                rows, _ = acquire(reader, root, start, end)
+                rows, _ = acquire(reader, root, start, end,
+                    "days" if args.mode == "download-daily" else "minutes",
+                    1 if args.mode == "download-daily" else 5)
                 all_rows.extend(rows)
                 print(json.dumps({"status": "CHUNK_VERIFIED", "start": str(start), "end": str(end), "rows": len(rows)}))
             if args.mode == "check":
@@ -256,6 +259,14 @@ def main(argv=None):
                 print(json.dumps(report))
                 return 0 if report["status"] == "PASS" else 1
             all_rows = candles({"status": "success", "data": {"candles": all_rows}}, args.start, args.end)
+            if args.mode == "download-daily":
+                # Daily source artifacts retain provider timestamps. Never label
+                # daily closes as available five minutes after midnight.
+                immutable(root / f"daily-{args.start}-{args.end}.manifest.json", encoded({
+                    "version": VERSION, "key": KEY, "row_count": len(all_rows),
+                    "rows_sha256": sha(encoded(all_rows)), "source": "UPSTOX_DAILY_NOT_INDEPENDENT_PROVIDER"}))
+                print(json.dumps({"status": "DAILY_DOWNLOAD_VERIFIED", "rows": len(all_rows)}))
+                return 0
             csv, parquet = export(all_rows)
             stem = f"nifty-five-minute-{args.start}-{args.end}"
             immutable(root / (stem + ".csv"), csv)

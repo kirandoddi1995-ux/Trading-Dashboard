@@ -87,11 +87,48 @@ holiday, outage or missing history. Obtain the official session calendar for
 75 five-minute starts; retain missing, extra and unsupported special-session dates.
 Never build a calendar only from dates that happened to return bars.
 
-The replay also needs the preceding official completed daily NIFTY close per
-session. Download/review that separately with a daily-history adapter before
-creating session JSON. Do not use the last five-minute close as a substitute.
-The downloader's Reader supports the same fixed instrument at days/1 for that
-future adapter, but this CLI deliberately fetches ONLY five-minute history.
+The replay needs the preceding completed daily NIFTY close, INCLUDING special
+sessions. December 2021 supplies the first prior close. These are Upstox daily
+closes, NOT independently verified exchange prices. Daily timestamps are never
+labelled as availability five minutes after midnight.
+
+```powershell
+.venv\Scripts\python.exe download_nifty_history.py download-daily --root "$env:USERPROFILE\Documents\TradingResearch\nifty-v1" --start 2021-12-01 --end 2026-09-30 --licence-confirmed --reviewed-session-check
+```
+
+Review `nifty_session_calendar.py`: annual circulars, amended closures and special
+sessions have source links. The 2022 Muhurat and 2025 Budget sessions have
+UNVERIFIED timing and remain excluded rather than guessed. Review the first prior
+session anchor, 2021-12-31, too. Then use a NEW derived-output directory:
+
+```powershell
+.venv\Scripts\python.exe prepare_nifty_replay.py --root "$env:USERPROFILE\Documents\TradingResearch\nifty-v1" --output "$env:USERPROFILE\Documents\TradingResearch\nifty-ready-v2" --calendar-reviewed
+```
+
+Without `--calendar-reviewed`, the tool writes an audit but exits 1 and issues no
+eligible replay sessions. Missing daily closes exclude affected dates; it NEVER
+falls back to an older row or the last five-minute close. `quality.json` includes
+every calendar date, missing/unexpected starts, counts and eligibility.
+`sessions.json` retains excluded trading dates. Specials are not scored, even
+when they contain 75 bars. Warm-up resets after excluded trading dates.
+For regular sessions, only starts in [09:15,15:30) IST enter indicators/replay.
+Complete sessions with additional outside starts are retained and labelled
+REGULAR_COMPLETE_WITH_OUT_OF_SESSION_BARS. Each outside timestamp remains in
+both reports and source files; replay rechecks that the declared outside list
+exactly matches the source and contains no inside timestamps. Missing regular
+bars, inside off-grid bars and duplicates are never repaired by this rule.
+`regular_grid_counts` reports before/restored/after counts independently of the
+separate calendar-review, previous-close and availability eligibility checks.
+
+`replay_ready: true` means reviewed inputs and at least one eligible session,
+NOT complete coverage of all dates. Review exclusions before a study. Unexpected
+closed-date bars block readiness. Original downloads remain unchanged.
+
+Local regression command:
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider --basetemp "$env:TEMP\nifty-readiness-review" tests/test_download_nifty_history.py tests/test_nifty_readiness.py tests/test_intraday_directional_replay.py
+```
 
 After those inputs are verified, prepare ordered session JSON as described in
 INTRADAY_OPTION_REPLAY_SPEC.md. Preserve unsupported/missing dates in the quality

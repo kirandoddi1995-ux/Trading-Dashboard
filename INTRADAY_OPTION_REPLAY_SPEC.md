@@ -298,6 +298,12 @@ CSV columns: timestamp (bar START), Open, High, Low, Close, available_at. Timest
 must carry timezone offsets. Session JSON is an ordered array with open, close,
 previous_close, source and availability_basis. Supply verified regular sessions
 and previous completed-session closes; do not invent a weekday holiday calendar.
+`prepare_nifty_replay.py` now produces these inputs from the source-hashed download,
+the explicitly reviewed `nifty_session_calendar.py`, and daily Upstox artifacts.
+Its quality report retains missing dates and bars; special sessions are excluded
+and warm-up resets after excluded trading dates. Follow NIFTY_HISTORY_DOWNLOAD.md
+before invoking replay. Readiness remains research-only and does not enforce the
+separate development/validation/holdout scoring masks.
 Only 375-minute sessions with all 75 aligned bars are supported. Incomplete days
 are excluded and reported, not filled. Include several earlier complete sessions
 for hourly EMA20 warm-up; first warm-up periods are explicitly unavailable.

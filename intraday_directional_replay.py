@@ -52,17 +52,34 @@ def validate(bars, sessions):
     for session in sessions:
         opening, closing = stamp(session["open"]), stamp(session["close"])
         local_open = opening.tz_convert("Asia/Kolkata")
-        if (closing - opening != pd.Timedelta(minutes=375) or
-                (local_open.hour, local_open.minute, local_open.second, local_open.microsecond) != (9, 15, 0, 0)):
-            raise ValueError("V1 supports verified 375-minute regular sessions only")
         if prior_end is not None and opening <= prior_end:
             raise ValueError("Sessions must be ordered and non-overlapping")
         prior_end = closing
+        if session.get("kind", "REGULAR") != "REGULAR" or session.get("replay_eligible") is False:
+            # Preserve all bars from excluded calendar dates without scoring.
+            # Specials may occur outside the ordinary 09:15-15:30 window.
+            day = local_open.date()
+            covered.update(frame.index[frame.index.tz_convert("Asia/Kolkata").date == day])
+            excluded.append({"open": opening.isoformat(),
+                "reason": session.get("exclusion_reason", "CALENDAR_SESSION_EXCLUDED")})
+            continue
+        if (closing - opening != pd.Timedelta(minutes=375) or
+                (local_open.hour, local_open.minute, local_open.second, local_open.microsecond) != (9, 15, 0, 0)):
+            raise ValueError("V1 supports verified 375-minute regular sessions only")
         previous = float(session["previous_close"])
         if not np.isfinite(previous) or previous <= 0 or not session.get("source"):
             raise ValueError("Verified previous close and session source required")
         expected = pd.date_range(opening, closing, freq="5min", inclusive="left")
         actual = frame.loc[(frame.index >= opening) & (frame.index < closing)]
+        if "out_of_session_bars" in session:
+            # Exact, auditable boundary classification, never an arbitrary list
+            # of timestamps to drop. In-session extras remain in actual and fail.
+            declared = [stamp(t) for t in session["out_of_session_bars"]]
+            day = frame.loc[frame.index.tz_convert("Asia/Kolkata").date == local_open.date()]
+            outside = day.index[(day.index < opening) | (day.index >= closing)]
+            if len(declared) != len(set(declared)) or set(declared) != set(outside):
+                raise ValueError("Out-of-session classification does not match source bars")
+            covered.update(outside)
         covered.update(actual.index)
         reason = None
         if not actual.index.equals(expected):
@@ -76,7 +93,10 @@ def validate(bars, sessions):
         if reason:
             excluded.append({"open": opening.isoformat(), "reason": reason})
         else:
-            accepted.append((session, actual))
+            clean = dict(session)
+            clean["reset_warmup"] = bool(session.get("reset_warmup")) or bool(
+                excluded and (not accepted or stamp(excluded[-1]["open"]) > stamp(accepted[-1][0]["open"])))
+            accepted.append((clean, actual))
     if set(frame.index) - covered:
         raise ValueError("Bars outside supplied session calendar")
     return accepted, excluded
@@ -102,6 +122,8 @@ def decisions(accepted):
     prior = []
     result = []
     for session, frame in accepted:
+        if session.get("reset_warmup"):
+            prior = []
         opening = stamp(session["open"])
         closes = pd.concat([*[old.Close for _, old in prior], frame.Close], ignore_index=True)
         ema, rsi, macd = ta.ema(closes, 20), ta.rsi(closes, 14), ta.macd(closes, 12, 26, 9)
@@ -178,6 +200,8 @@ def run(bars, sessions):
             "mean_directional_return_pct": float(np.mean([t["directional_return_pct"] for t in trades])) if trades else None,
             "positive_directional_episode_fraction": sum(t["directional_return_pct"] > 0 for t in trades) / len(trades) if trades else None}
     return {"policy": "intraday-directional-v1", "mode": "DIRECTIONAL_RESEARCH",
+            "out_of_session_bars": [{"session_open": s["open"], "timestamps": s.get("out_of_session_bars", [])}
+                for s, _ in accepted if s.get("out_of_session_bars")],
             "option_pnl": None, "fill_evidence": False, "approval_authority": False,
             "availability_bases": sorted({s["availability_basis"] for s, _ in accepted}),
             "accepted_sessions": len(accepted), "excluded_sessions": excluded,
