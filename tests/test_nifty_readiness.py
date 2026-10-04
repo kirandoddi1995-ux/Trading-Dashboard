@@ -79,6 +79,24 @@ def test_delayed_availability_cannot_issue_ready_inputs():
     assert sessions[0]["exclusion_reason"] == "DELAYED_BAR_AVAILABILITY_UNSUPPORTED"
 
 
+@pytest.mark.parametrize("condition", ["eligible", "outside", "missing_close", "unreviewed", "missing_bar", "delayed"])
+def test_eligibility_and_exclusion_reason_are_consistent(condition):
+    frame = bars("2026-09-28")
+    closes = {date(2026, 9, 25): {"close": 99, "source_sha256": "a"}}
+    if condition == "outside":
+        frame = pd.concat([bars("2026-09-28", 1, "09:10"), frame])
+    elif condition == "missing_close":
+        closes = {}
+    elif condition == "missing_bar":
+        frame = frame.iloc[:-1]
+    elif condition == "delayed":
+        frame["available_at"] += pd.Timedelta(seconds=1)
+    _, sessions = audit(frame, date(2026, 9, 28), date(2026, 9, 28), closes,
+                        reviewed=condition != "unreviewed")
+    assert sessions[0]["replay_eligible"] == (condition in {"eligible", "outside"})
+    assert sessions[0]["replay_eligible"] == (sessions[0]["exclusion_reason"] is None)
+
+
 def test_extra_bars_are_not_misreported_as_missing():
     frame = bars("2026-09-28", 77)
     report, sessions = audit(frame, date(2026, 9, 28), date(2026, 9, 28), {}, True)
@@ -153,6 +171,7 @@ def test_offline_cli_verified_sources_and_no_original_changes(tmp_path, capsys):
                  "--end", day, "--calendar-reviewed"]) == 0
     assert json.loads((output / "quality.json").read_text())["replay_ready"]
     sessions = json.loads((output / "sessions.json").read_text())
+    assert sessions[0]["replay_eligible"] and sessions[0]["exclusion_reason"] is None
     assert sessions[0]["previous_close_date"] == "2026-09-25"
     assert len(validate(frame, sessions)[0]) == 1
     for path, content in paths.items():
