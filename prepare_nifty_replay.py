@@ -98,7 +98,7 @@ def audit(frame, start, end, closes, reviewed=False):
                 windows=windows, timing_verified=windows is not None,
                 out_of_session_bars=record["out_of_session_bars"],
                 kind=kind, date=str(cursor), replay_eligible=eligible,
-                exclusion_reason=("CALENDAR_NOT_REVIEWED" if not reviewed else
+                exclusion_reason=(None if eligible else "CALENDAR_NOT_REVIEWED" if not reviewed else
                     status if not complete or kind != "REGULAR" else
                     "DELAYED_BAR_AVAILABILITY_UNSUPPORTED" if not availability_ok else "PREVIOUS_DAILY_CLOSE_MISSING"),
                 previous_close=prior["close"] if prior else None, previous_close_date=str(previous),
