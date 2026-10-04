@@ -94,3 +94,24 @@ def test_required_not_final_margin_and_zero_is_preserved():
 def test_margin_missing_invalid_never_defaults(value):
     with pytest.raises(CostEvidenceError):
         margin_response({'status': 'success', 'data': {'required_margin': value, 'final_margin': 1, 'margins': [{}]}})
+
+
+@pytest.mark.parametrize('segment', [None, [], 'invalid', 123, True])
+def test_malformed_tariff_segment_rejects_without_unhandled_attribute_error(segment):
+    p = policy()
+    p['rates']['OPTION'] = segment
+    with pytest.raises(CostEvidenceError, match='DATED_COST_POLICY_MISSING'):
+        scenario(policy=p)
+
+
+@pytest.mark.parametrize('changes', [
+    {'requested_at': None}, {'now': 'not a timestamp'},
+    {'max_age_seconds': True}, {'max_age_seconds': float('nan')},
+    {'max_age_seconds': float('inf')}, {'max_age_seconds': '30'},
+])
+def test_invalid_margin_freshness_arguments_fail_closed(changes):
+    now = datetime.fromisoformat('2026-10-01T10:00:00+05:30')
+    args = dict(requested_at=now, now=now, request_basket=['a'], response_basket=['a'])
+    args.update(changes)
+    with pytest.raises(CostEvidenceError, match='MARGIN_REQUEST_UNVERIFIED'):
+        fresh_margin({}, **args)

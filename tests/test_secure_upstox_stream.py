@@ -127,7 +127,10 @@ def test_actual_tls_rejects_untrusted_and_wrong_host_certificates(tmp_path, monk
                 try:
                     with context.wrap_socket(conn, server_side=True) as tls:
                         received.append(tls.recv(4096))
-                except ssl.SSLError:
+                except (ssl.SSLError, ConnectionResetError):
+                    # A client rejecting the certificate may reset rather than
+                    # send a TLS alert on Windows. Client rejection and zero
+                    # credential transmission are still asserted below.
                     pass
         finally:
             listener.close()
