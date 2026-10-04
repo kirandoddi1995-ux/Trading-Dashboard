@@ -8,6 +8,8 @@ testable without starting the application.
 from __future__ import annotations
 
 import logging
+import json
+import math
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
@@ -39,6 +41,7 @@ from quant_foundation import (
 )
 from production_readiness import runtime_readiness_findings
 from resilience_control_plane import SafetyFinding, SafetyState
+from equity_scan_profiling import record_governance
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,29 @@ class GovernanceServices:
 
 def _status(result: Mapping[str, Any] | None) -> str:
     return str((result or {}).get("status") or "UNAVAILABLE").upper()
+
+
+def _backlog_diagnostic(stats, safety, policy):
+    """No payloads, error text or credentials; missing telemetry stays missing.
+
+    Findings describe this evaluation; state may retain an earlier restriction
+    through hysteresis. Keep these separate so READ_ONLY is not misattributed.
+    """
+    def number(key):
+        value = (stats or {}).get(key)
+        return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
+
+    findings = [{"control": item["control"], "code": item["code"], "state": item["state"]}
+                for item in safety.get("findings", [])]
+    limits = policy.section("outbox")
+    return {"pending": number("pending"), "oldest_pending_seconds": number("oldest_pending_seconds"),
+            "maximum_recorded_failures": number("maximum_attempts"),
+            "maximum_pending_events": limits["maximum_pending_events"],
+            "maximum_oldest_pending_seconds": limits["maximum_oldest_pending_seconds"],
+            "state": safety["state"], "correlation_id": safety["correlation_id"],
+            "evaluated_at": safety["evaluated_at"], "clean_windows": safety["clean_windows"],
+            "current_findings": findings,
+            "backlog_finding_present": any(item["code"] == "OUTBOX_BACKLOG" for item in findings)}
 
 
 def evaluate_live_governance(
@@ -317,6 +343,12 @@ def evaluate_live_governance(
         control_findings=advanced_findings,
     )
     resilience_public = resilience.public_dict()
+    if is_equity:
+        backlog_diagnostic = _backlog_diagnostic(outbox_stats, resilience_public, services.control_plane.policy)
+        # Reuse the existing profile/logs, not another remote evidence event.
+        record_governance(backlog_diagnostic)
+        services.logger.info("EQUITY_GOVERNANCE_BACKLOG %s", json.dumps(
+            {"instrument": instrument, **backlog_diagnostic}, allow_nan=False, separators=(",", ":")))
 
     controls = {
         "pit": pit,

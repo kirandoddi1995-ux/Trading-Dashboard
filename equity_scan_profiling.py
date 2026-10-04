@@ -124,6 +124,17 @@ def milestone(scan_id, name):
         pass
 
 
+def record_governance(diagnostic):
+    """Attach bounded, sanitized gate telemetry to the existing downloadable scan profile."""
+    try:
+        event = _record("governance_backlog", time.perf_counter())
+        if event is not None:
+            with _lock:
+                event["diagnostic"] = diagnostic
+    except Exception:
+        pass  # Optional process-local telemetry cannot alter a trading decision.
+
+
 def profile_controller(function):
     @wraps(function)
     def wrapped(self, job, *args, **kwargs):

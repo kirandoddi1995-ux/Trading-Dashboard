@@ -6,6 +6,7 @@ fabricated fill probability. Margin is collateral, NOT a maximum loss.
 """
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import math
 
 
 class CostEvidenceError(ValueError):
@@ -47,8 +48,10 @@ def margin_response(body):
 
 def fresh_margin(body, *, requested_at, now, request_basket, response_basket, max_age_seconds=30):
     """The retained request must match exactly; no net-benefit funding shortcut."""
-    if (requested_at.tzinfo is None or now.tzinfo is None or not request_basket
-            or request_basket != response_basket or max_age_seconds <= 0):
+    if (not isinstance(requested_at, datetime) or not isinstance(now, datetime)
+            or requested_at.tzinfo is None or now.tzinfo is None or not request_basket
+            or request_basket != response_basket or type(max_age_seconds) not in (int, float)
+            or not math.isfinite(max_age_seconds) or max_age_seconds <= 0):
         raise CostEvidenceError('MARGIN_REQUEST_UNVERIFIED')
     age = (now - requested_at).total_seconds()
     if not 0 <= age <= max_age_seconds:
@@ -93,7 +96,7 @@ def round_trip(*, entry, exit, quantity, lot_size, kind, policy, entered_at, exi
         sources = policy['sources']
     except (KeyError, TypeError, ValueError):
         raise CostEvidenceError('DATED_COST_POLICY_MISSING') from None
-    if not start <= day <= end or not isinstance(sources, dict):
+    if not start <= day <= end or not isinstance(sources, dict) or not isinstance(rates, dict):
         raise CostEvidenceError('DATED_COST_POLICY_MISSING')
     names = ('brokerage_cap', 'brokerage_rate', 'stt_sell', 'stamp_buy', 'exchange', 'ipft', 'sebi', 'gst')
     if any(not str(sources.get(name, '')).startswith('https://') for name in names):
