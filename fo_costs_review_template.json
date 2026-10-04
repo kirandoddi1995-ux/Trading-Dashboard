@@ -1,0 +1,20 @@
+{
+  "exchange": "NSE",
+  "segment": "FUTURE",
+  "rounding": "PER_SIDE_PAISE_HALF_UP",
+  "note": "REVIEW TEMPLATE, not a commissioned tariff. Values are fractional rates except brokerage rupees. Preserve unknown rates as null.",
+  "components": {
+    "brokerage": [{"effective_from": "2022-01-01", "effective_to": "2026-12-31", "value": "20", "basis": "FLAT_PER_ORDER", "status": "ASSUMED", "assumption": "Working sensitivity: flat INR 20 per executed order. Personal plan and historical applicability unconfirmed.", "reviewed_at": "2026-10-05T00:00:00+00:00"}],
+    "stt_sell": [
+      {"effective_from": "2022-01-01", "effective_to": "2023-03-31", "value": "0.0001", "basis": "FRACTION_OF_TURNOVER", "status": "UNREVIEWED", "published_on": "2016-05-16", "source_url": "https://nsearchives.nseindia.com/content/circulars/FATAX32385.pdf", "evidence_sha256": null, "reviewed_at": null},
+      {"effective_from": "2023-04-01", "effective_to": "2024-09-30", "value": "0.000125", "basis": "FRACTION_OF_TURNOVER", "status": "UNREVIEWED", "published_on": "2023-04-01", "source_url": "https://archives.nseindia.com/content/circulars/FATAX56235.pdf", "evidence_sha256": null, "reviewed_at": null},
+      {"effective_from": "2024-10-01", "effective_to": "2026-03-31", "value": "0.0002", "basis": "FRACTION_OF_TURNOVER", "status": "UNREVIEWED", "published_on": "2024-09-09", "source_url": "https://nsearchives.nseindia.com/content/circulars/FATAX63809.pdf", "evidence_sha256": null, "reviewed_at": null},
+      {"effective_from": "2026-04-01", "effective_to": "2026-12-31", "value": "0.0005", "basis": "FRACTION_OF_TURNOVER", "status": "UNREVIEWED", "published_on": "2026-03-31", "source_url": "https://nsearchives.nseindia.com/content/circulars/FATAX73524.pdf", "evidence_sha256": null, "reviewed_at": null}
+    ],
+    "exchange": [{"effective_from": "2022-01-01", "effective_to": "2026-12-31", "value": null, "basis": "FRACTION_OF_TURNOVER", "status": "UNREVIEWED", "published_on": null, "source_url": null, "evidence_sha256": null, "reviewed_at": null}],
+    "ipft": [{"effective_from": "2022-01-01", "effective_to": "2026-12-31", "value": null, "basis": "FRACTION_OF_TURNOVER", "status": "UNREVIEWED", "published_on": null, "source_url": null, "evidence_sha256": null, "reviewed_at": null}],
+    "sebi": [{"effective_from": "2022-01-01", "effective_to": "2026-12-31", "value": null, "basis": "FRACTION_OF_TURNOVER", "status": "UNREVIEWED", "published_on": null, "source_url": null, "evidence_sha256": null, "reviewed_at": null}],
+    "stamp_buy": [{"effective_from": "2022-01-01", "effective_to": "2026-12-31", "value": null, "basis": "FRACTION_OF_TURNOVER", "status": "UNREVIEWED", "published_on": null, "source_url": null, "evidence_sha256": null, "reviewed_at": null}],
+    "gst": [{"effective_from": "2022-01-01", "effective_to": "2026-12-31", "value": null, "basis": "FRACTION_OF_TAXABLE_FEES", "taxable_components": null, "status": "UNREVIEWED", "published_on": null, "source_url": null, "evidence_sha256": null, "reviewed_at": null}]
+  }
+}
