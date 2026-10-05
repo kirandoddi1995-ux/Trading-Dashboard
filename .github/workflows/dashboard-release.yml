@@ -1,0 +1,91 @@
+name: Checked dashboard release
+
+on:
+  workflow_run:
+    workflows: [Production quality gate, Production resilience gate, CodeQL]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        default: preview
+        options: [preview, promote, rollback]
+        description: Preview is read-only; rollback requires promotion paused
+      rollback_sha:
+        type: string
+        default: ''
+        description: Previously verified full commit SHA for rollback only
+      confirm_rollback:
+        type: boolean
+        default: false
+        description: Explicitly confirm this dashboard rollback
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
+concurrency:
+  group: dashboard-release-publication
+  cancel-in-progress: false
+
+env:
+  EVENT_NAME: ${{ github.event_name }}
+  REQUESTED_MODE: ${{ inputs.mode }}
+  ROLLBACK_SHA: ${{ inputs.rollback_sha }}
+  CONFIRM_ROLLBACK_JSON: ${{ toJSON(inputs.confirm_rollback) }}
+  RELEASE_ENABLED: ${{ vars.DASHBOARD_RELEASE_ENABLED }}
+
+jobs:
+  verify:
+    # Never run this privileged handoff for a PR/fork workflow event.
+    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release') && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      ready: ${{ steps.plan.outputs.ready }}
+      sha: ${{ steps.plan.outputs.sha }}
+      previous: ${{ steps.plan.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python dashboard_release.py
+
+  publish:
+    needs: verify
+    if: needs.verify.outputs.ready == 'true'
+    environment: dashboard-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+      checks: read
+    steps:
+      - name: Checkout release controller
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Checkout exact verified candidate as data
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+          path: candidate
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Recheck and atomically publish dashboard branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_CANDIDATE_SHA: ${{ needs.verify.outputs.sha }}
+          EXPECTED_PREVIOUS_SHA: ${{ needs.verify.outputs.previous }}
+        run: python dashboard_release.py --publish --candidate-root candidate
