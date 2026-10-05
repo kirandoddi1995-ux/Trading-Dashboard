@@ -357,3 +357,101 @@ No new application changes, data access or test rerun in this boundary audit.
 Resume after owner review/upload/CI evidence and an explicitly authorized next
 commissioning scope. Full twenty-two-file manifest, runbook and latest verification
 (1,433 passed, 4 skipped, 2 subtests passed) remain the handoff source of truth.
+
+## Authorized continuation — private development export / forward producer
+
+Owner evidence clears the earlier local-work boundary: all twenty-two files are
+uploaded to main 2866faf with green CI; manual Offline research and application
+self-check #1 passed in 4m22. AUTOMATED_SELF_CHECK_ENABLED remains absent. The
+owner verified report SHA 57e429252a3510d8eb7e8b95f4e184dfca9b331ef35fc9fcf8bc7ad11333500a,
+registered spec 1aaddcb4f3fa79c46834a49ff9de039eb5fe96b07914eaab8a09ce3405e95a79,
+and twice obtained result 7895d7ac87ddd3d82c84509323a90f66892287fc5d294327ba4684f0e1e36bfc.
+These are owner-reported observations; no hosted query/dispatch was performed.
+New explicit authority: build local development export and forward producer.
+Existing local-only rules, sealed historical partitions and no-retuning apply.
+
+Decisions:
+- Private Drive for immutable verified input/journal backups, durable local disk
+  for the running producer. No Supabase, public artifacts or repository datasets.
+- Offline development export first; prospective supervised capture second; durable
+  host and independent missed-run alert commissioning remain owner steps.
+- Fixed current-day NIFTY five-minute REST GET avoids a second websocket connection.
+  Actual first receipt and computation are recorded, never backdated. Only newest
+  completed bar emits; earlier downloaded bars are context, not past decisions.
+- Producer uses explicit conservative daily reset/60-bar warmup. This is a distinct
+  diagnostic policy, not an unnoticed replacement for frozen multi-session replay.
+- Current official Upstox docs distinguish no-static-IP market/history access from
+  static-IP account/portfolio access. One-year Analytics Token endpoint capability
+  still needs owner supervised verification. No automatic auth refresh assumed.
+- Reuse drive.file OAuth transport/folder; owner must verify privacy and app-specific
+  folder visibility. Single immutable context/journal JSON-gzip logical backup,
+  capped 2 MiB packed / 8 MiB expanded. No remote deletion or retention changes.
+
+Implementation:
+export_development_inputs.py streams only development numeric rows, preserves
+special/incomplete sessions, verifies original frozen hashes/coverage and rehashes
+sources before publishing a completion manifest. Mixed source bytes are hashed
+without scoring later prices; no actual private dataset was opened by the agent.
+forward_nifty_producer.py freezes code/calendar/previous-close identity, commits
+first-seen input locally before decisions, rejects revisions/overlap, and retains
+missing evidence. Stale crash locks require owner confirmation before clearing.
+forward_nifty_job.py offers offline prepare/preview, explicit supervised one-poll
+capture, clock/auth/licence gates and backup-only retry with sanitized failure
+receipts. No timer or automatic collection is enabled.
+forward_nifty_archive.py verifies exact downloaded data/manifest, reproduces actual
+recorded prefixes and restores logical input/journal state to a new private folder.
+Missing decisions are not reconstructed or counted as completed observations.
+
+Current upload batch (all paths relative to C:\Users\banga\Desktop\kiran_share_market):
+Root: export_development_inputs.py; forward_nifty_producer.py;
+forward_nifty_archive.py; forward_nifty_job.py; mypy-automation.ini;
+FORWARD_DATA_RUNBOOK.md; AUTOMATED_RESEARCH_RUNBOOK.md;
+AUTOMATION_FOUNDATION_ACCEPTANCE.md; AUTOMATION_PROGRESS.md.
+Tests: tests/test_export_development_inputs.py; tests/test_forward_nifty_producer.py;
+tests/test_research_automation.py.
+Workflow: .github/workflows/quality.yml.
+Thirteen files, no requirements changes, no live app/imported production source changes.
+No upload or hosted action performed. Keep tests under tests/, not repository root.
+
+Verification in progress: first full suite 1,485 passed / 4 skipped / 2 subtests;
+subsequent focused slice 58 passed including denied-I/O import. Self-review then
+added malformed-expiry AUTH_REQUIRED handling and retry/size/computation tests;
+final full rerun pending. Strict mypy twelve sources and full lint passed before
+those last changes; must rerun. Initial targeted run's default pytest temporary
+cleanup hit a pre-existing Windows ACL error; dedicated unique --basetemp avoids
+that without changing any old directory permissions or deleting prior test state.
+
+Next: final lint/types/full offline suite and app boot; verify unchanged equity
+fingerprint; record results and hand off. No real validation/holdout read, token
+read, real producer run, Drive upload, database change or schedule enablement.
+Owner steps after review/CI: private offline development export, freeze/review
+recipe, verify licence/token/folder/clock, supervised capture and backup restore
+drill. Persistent hosting/auth/independent alerts remain uncommissioned. Programme
+is partial; do not mark goal complete or claim genuine forward capture verified.
+
+### Final verification / review boundary
+
+Final frozen-source full suite: 1,490 passed, 4 unchanged skips, 2 subtests passed
+in 190.47 seconds, including SQL PGlite safety tests, app import and external-I/O-
+denied imports of all twelve foundation modules. +57 passing tests over the prior
+1,433 handoff; no removed tests. Full root/tests pyflakes and strict mypy across
+twelve source modules passed. pip check passed. Equity fingerprint verified
+unchanged: 2893995505709b1b6a6bfcea342a2edb3770319c695297234747cf1b6801c7b9.
+No Streamlit secret/fingerprint update is required for this thirteen-file batch.
+
+Final main-agent self-review covered source/data boundaries, timestamp causality,
+restart/idempotency, missing versus unavailable decisions, prefix reconstruction
+after late backfill, exclusive writer ownership, restore completion markers,
+credential sanitization, transport bounds, CI/type wiring and commissioning docs.
+Fixed datetime/context-manager shadowing, current calendar selection, source-change
+during export detection, original-prefix filtering after late context arrival,
+malformed expiry reporting and backup-only authentication independence. No known
+outstanding defect identified in this scoped slice; this is not a claim that
+synthetic tests verify live Upstox behaviour, provenance, licence or economic edge.
+
+Local implementation ready for owner review/upload as one thirteen-file group.
+Next progress requires owner private export and supervised API/Drive/clock checks,
+then an explicitly chosen persistent host and independently tested missed-run
+alerting. Do not dispatch, provision, enable timers, read private sealed datasets
+or copy credentials on a later automatic continuation. No further local changes
+are needed merely because the owner commissioning evidence is unchanged.

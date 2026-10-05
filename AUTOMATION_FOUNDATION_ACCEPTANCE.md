@@ -107,3 +107,27 @@ issue writes or merges; no real-data nightly schedule before private input/host
 commissioning. These are deliberate safety boundaries, not implemented claims.
 The broader end state still needs genuine capture provenance, verified dated
 costs/contracts/execution evidence and owner-controlled live deployment/alerts.
+
+## Owner evidence and prospective slice (2026-10-05)
+
+Owner reports main 2866faf green and manual offline self-check #1 green. Report-
+based development recipe was reviewed/registered; repeated results matched. This
+is owner-reported hosted evidence, not a dispatch performed by this agent.
+
+Development export is now implemented without decoding/scoring later numeric
+partitions. A single-session, single-poll research producer uses actual REST
+receipt times, durable first-seen bars and append-only observations. Missing
+decisions remain missing; forming/revised/invalid bars fail or stay unavailable.
+Exclusive local writer lock, frozen code/config and bounded real clock verification
+precede capture. No database, automatic order or scheduled capture is introduced.
+
+Private Drive uploads verify compressed bytes and manifest by download; retry does
+not create new observations. Offline reproduction reconstructs consumed prefixes,
+and restoration preserves actual receipt times in a new private state directory.
+The conservative session-reset producer is distinct from the multi-session parked
+development replay. Reproduction proves its arithmetic, not strategy parity,
+execution, economic edge or complete session coverage. Supabase storage is untouched.
+
+No real capture, Drive upload, token capability, unattended host, restore of real
+market data or alert/watchdog has been commissioned by this local implementation.
+See FORWARD_DATA_RUNBOOK.md for owner-reviewed commands and explicit boundaries.

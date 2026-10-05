@@ -221,7 +221,9 @@ can be retried with a new output filename.
 References bind only consumed prefixes, previous close, warmup and session rules;
 future prices never enter earlier input hashes. Trial identity separately binds
 the complete files. Actual observed records must use this exact comparison/prefix
-scheme before comparison is meaningful. The producer is still NOT wired. Historical
+scheme before comparison is meaningful. The development checker is not wired to
+the new prospective producer; see FORWARD_DATA_RUNBOOK.md for its distinct actual-
+receipt policy and offline reproduction. Historical
 full-session eligibility and assumed bar-end availability are retrospective research
 metadata, not proof of real-time availability. Do not backdate receipts or relabel
 replay as observed. No real 2025/2026 file is opened by these commands.
@@ -247,5 +249,5 @@ Its output always has live_capture_verified=false, approval_authority=false and
 fill_evidence=false, even when every comparison matches. A passing comparison
 proves mechanical agreement only. It does not commission costs, certify capture
 provenance, certify profitability or unlock suggestions. No schedule is added for
-private replay; choosing a persistent host and authentic forward producer remains
-an owner-reviewed step. Do not upload private journal or comparison results.
+private replay; commissioning the new prospective producer and persistent host
+remains an owner-reviewed step. Do not upload private journal or comparison results.
