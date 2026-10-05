@@ -13,6 +13,9 @@ from uuid import uuid4
 
 from derivative_contracts import FoundationError, digest, stamp, resolve_historical_contract
 from derivative_restrictions import ban_url, parse_ban
+from derivative_commissioning import (
+    STORAGE_SQL, TABLES_SQL, assess, authorised, validate_source, validate_pilot_scope,
+)
 
 
 class DerivativeRepository:
@@ -246,13 +249,23 @@ class DerivativeRepository:
                          result.contract.rule_version, now, json.dumps(payload, default=str)))
 
 
-def collect(repo, client, *, trading_date, underlyings, now):
+def collect(repo, client, *, trading_date, underlyings, now, clock=None):
     """Bounded watchlist only; no broad chain/tick ingestion or secret-bearing output."""
+    stamp(now)
     if not underlyings or len(underlyings) > 30:
         raise FoundationError("Configure 1–30 derivative underlying keys")
     if any(not isinstance(key,str) or not key.startswith(('NSE_EQ|','NSE_INDEX|','BSE_EQ|','BSE_INDEX|')) for key in underlyings):
         raise FoundationError("Unsupported underlying venue")
     counts = {}
+    receipt_clock = clock or (lambda: datetime.now(timezone.utc))
+    last_received = stamp(now)
+    def received():
+        nonlocal last_received
+        value = stamp(receipt_clock())
+        if value < last_received:
+            raise FoundationError("Receipt clock moved backwards")
+        last_received = value
+        return value
     needs_nse = any(key.startswith('NSE_') for key in underlyings)
     if needs_nse:
         repo.mark_pending("NSE_BAN",trading_date,now)
@@ -270,37 +283,63 @@ def collect(repo, client, *, trading_date, underlyings, now):
                    and r.get("segment") == venue + "_FO"]
         # Retain exactly the scoped source records, not megabytes of unrelated masters daily.
         raw = json.dumps(records, sort_keys=True, separators=(",", ":")).encode()
-        repo.ingest_master(records, venue=venue, trading_date=trading_date, raw=raw, received_at=now)
+        validate_source(raw)
+        repo.ingest_master(records, venue=venue, trading_date=trading_date, raw=raw, received_at=received())
         counts[venue] = len(records)
     if needs_nse:
         response = client.get(ban_url(trading_date), timeout=(5, 20))
         response.raise_for_status()
-        repo.ingest_ban(response.content, trading_date=trading_date, source=response.url, received_at=now)
+        validate_source(response.content)
+        repo.ingest_ban(response.content, trading_date=trading_date, source=response.url, received_at=received())
     return counts
 
 
 def main():
     parser = argparse.ArgumentParser(description="Ingest scoped derivative reference data; never runs DDL")
-    parser.add_argument("--date", required=True, type=date.fromisoformat)
+    parser.add_argument("--date", type=date.fromisoformat)
+    parser.add_argument("--mode", choices=("preview", "check", "pilot"), default="preview")
     args = parser.parse_args()
+    if args.mode == "preview":
+        print(json.dumps({"status": "PREVIEW", "network_calls": 0, "writes": 0,
+                          "recurring_ingestion_commissioned": False, "approval_authority": False}))
+        return 0
     import psycopg
     import requests
     try:
+        if args.mode == "pilot" and not authorised(
+                "pilot", event=os.environ.get("DERIVATIVE_RUN_EVENT", ""),
+                confirmation=os.environ.get("DERIVATIVE_PILOT_CONFIRMATION", "false")):
+            raise FoundationError("One-run manual pilot confirmation required")
         url = os.environ["DERIVATIVE_REFERENCE_DATABASE_URL"]
-        underlyings = json.loads(os.environ["DERIVATIVE_UNDERLYINGS_JSON"])
+        underlyings = json.loads(os.environ.get("DERIVATIVE_UNDERLYINGS_JSON", "[]"))
         if not isinstance(underlyings, list) or not all(isinstance(k, str) for k in underlyings):
             raise FoundationError("Invalid underlying configuration")
         def connect():
-            conn = psycopg.connect(url, connect_timeout=10)
+            conn = psycopg.connect(url, connect_timeout=10,
+                                   options="-c statement_timeout=10000 -c lock_timeout=2000" +
+                                   (" -c default_transaction_read_only=on" if args.mode == "check" else ""))
             try:
-                role = conn.execute("SELECT rolname,rolsuper,rolbypassrls,rolcreaterole,rolcreatedb "
+                role = conn.execute("SELECT rolname,rolsuper,rolbypassrls,rolcreaterole,rolcreatedb,rolreplication "
                                     "FROM pg_roles WHERE rolname=current_user").fetchone()
                 if not role or role[0] != "quant_derivative_ingestor" or any(role[1:]):
                     raise FoundationError("Restricted derivative ingestion role required")
+                tables = conn.execute(TABLES_SQL).fetchone()
+                if not tables or tables[0] != 9 or tables[1] is not True:
+                    raise FoundationError("Nine derivative tables with RLS required")
+                sizes = conn.execute(STORAGE_SQL).fetchone()
+                report = assess(*sizes) if sizes else None
+                if report is None or (args.mode == "pilot" and not report["pilot_storage_allowed"]):
+                    raise FoundationError("Pilot storage admission blocked")
                 return conn
             except BaseException:
                 conn.close()
                 raise
+        if args.mode == "check":
+            with connect() as conn:
+                report = assess(*conn.execute(STORAGE_SQL).fetchone())
+                print(json.dumps(report))
+            return 0 if report["pilot_storage_allowed"] else 1
+        validate_pilot_scope(args.date, underlyings, datetime.now(timezone.utc))
         with requests.Session() as client:
             result = collect(DerivativeRepository(connect), client, trading_date=args.date,
                              underlyings=underlyings, now=datetime.now(timezone.utc))

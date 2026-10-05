@@ -1,12 +1,19 @@
 # Derivative database commissioning — owner-run only
 
+## Current sequencing (supersedes older instructions below)
+
+Use `DERIVATIVE_PILOT_COMMISSIONING.md` for the current staged owner procedure.
+Its supervised-only CLI and storage admission supersede the older ingestion,
+switch and illustrative storage advice below. Existing Drive research captures
+should not be disabled merely to install empty derivative tables.
+
 ## Recommendation
 
 Do the read-only inventory now. Creating the empty derivative schemas is reasonable **after** the inventory matches the prerequisites below. Enabling scheduled collection or calling the protection system operational is premature. Keep the option-entry hold and all derivative jobs off during the database stage. Nothing in this package has been executed against Supabase.
 
 ## 1. Freeze enablement, not the existing archive pipeline
 
-In GitHub Actions variables, confirm `DERIVATIVE_REFERENCE_ENABLED` is unset or `false`. Leave the option recorder off and do not start `derivative_monitor.py` or its watchdog. Do not change the working Drive archive schedule or its settings. Confirm no other host is already running the derivative processes.
+In GitHub Actions variables, confirm `DERIVATIVE_REFERENCE_ENABLED` is unset or `false`. Do not start uncommissioned `derivative_monitor.py` or its watchdog. Existing Drive option and forward research captures are independent; do not disable them for empty-table installation. Do not change the working Drive archive schedule or its settings. Confirm no other host is already running the derivative processes.
 
 **Expected:** no new derivative collectors start. The dashboard can remain fail-closed. If a monitor was in fact already running with real obligations, do not stop it without a separate monitoring plan.
 
@@ -99,11 +106,11 @@ First permit only a reviewed, small, one-off ingestion after the timestamp issue
 
 ## 8. Separate commissioning after the database stage
 
-Do not yet set `DERIVATIVE_REFERENCE_ENABLED=true`. The current workflow uses the same switch for scheduled AND manually dispatched ingestion (08:45 IST weekdays); it is not a preview switch. SQL application does not change this variable.
+Do not yet set `DERIVATIVE_REFERENCE_ENABLED=true`. The revised workflow separates offline preview, read-only checks and explicitly confirmed manual pilots. Scheduled runs can only check, not ingest. SQL application does not change this variable. Follow the current pilot runbook rather than the historical commissioning budget above.
 
 Remaining gates before calling the system running:
 
-1. Fix/test the previously identified collector receipt-time issue before using captures as first-known evidence; currently collection-start time is reused after network downloads. Verify a real hosted master and NSE ban file (including known-empty versus failed-download handling).
+1. The collector receipt-time issue is now corrected locally with regression tests: response-processing completion, not collection-start time, is recorded. Verify a real hosted master and NSE ban file (including known-empty versus failed-download handling); local tests do not prove provider behaviour.
 2. Owner-reviewed exact contract/session/expiry rules, corporate-action review and applicable expiry-specific broker policies must be published using official sources, not placeholder test fixtures. There is no automatic rule-population job. Rules are tied to exact master versions and session dates; ongoing review is necessary, not a one-time seed.
 3. Privately configure reference, monitor and watchdog connections for their distinct roles. `DERIVATIVE_REFERENCE_DATABASE_URL` is the ingestor secret. The monitor uses `DERIVATIVE_MONITOR_DATABASE_URL`; the independent watchdog uses the same variable NAME in its own environment, but with the watchdog role's separate connection. Never share the monitor credential with the watchdog.
 4. Privately configure broker account identity consistently between Streamlit `[derivatives_monitor].account_id` and the monitor's `DERIVATIVE_MONITOR_ACCOUNT_ID`, plus `DERIVATIVE_MONITOR_TOKEN` and `DERIVATIVE_ALERT_SMTP_JSON`. Missing/expired broker authentication must yield AUTH_REQUIRED, not an empty portfolio. No credentials are needed to apply the schemas.

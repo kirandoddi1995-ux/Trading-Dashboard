@@ -28,12 +28,13 @@ No hardcoded fallback expiry hours, lot sizes or settlement rules are supplied.
 1. Review/apply the SQL manually. Privately set the new role's password and create
    a restricted connection string; never commit it.
 2. GitHub secret `DERIVATIVE_REFERENCE_DATABASE_URL`: new ingestion-role URL.
-3. GitHub variable `DERIVATIVE_UNDERLYINGS_JSON`: JSON list of 1–30 actual Upstox
-   underlying keys. Scope narrowly; no full-exchange tick/history ingestion.
-4. Keep `DERIVATIVE_REFERENCE_ENABLED` unset until review; set `true` to enable
-   the dedicated workflow. It runs weekdays 03:15 UTC / 08:45 IST, plus manual
-   dispatch for special sessions. Holidays do not become tradable merely because
-   ingestion ran: dated session rules still govern eligibility.
+3. For the supervised CLI pilot, set `DERIVATIVE_UNDERLYINGS_JSON` to
+   `["NSE_INDEX|Nifty 50"]`; broader repository adapters are not commissioned.
+4. Follow `DERIVATIVE_PILOT_COMMISSIONING.md`. Keep `DERIVATIVE_REFERENCE_ENABLED`
+   false. Dispatch preview/check without confirmation, or a single supervised pilot
+   with explicit confirmation. Scheduled runs, if enabled, are now read-only checks
+   at 03:15 UTC / 08:45 IST. Recurring writes require future retention commissioning.
+   Closed, special and unreviewed calendar sessions cannot run the CLI pilot.
 5. Populate reviewed `exchange_rules` records with `version=digest(payload)`
    using `derivative_contracts.digest`, and the exact instrument key and known_at.
    Each payload requires:

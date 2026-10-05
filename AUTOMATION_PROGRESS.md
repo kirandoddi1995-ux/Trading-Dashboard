@@ -882,3 +882,82 @@ Build and policy digest unchanged. No remaining issue identified in this patch;
 the exact hosted reason for root keys being absent remains an owner diagnostic.
 Implementation complete; waiting on owner review/upload, checked promotion,
 private configuration save/reboot and value-free source/match verification.
+
+### Derivative pilot commissioning foundation — 2026-10-05
+
+Owner confirms all three release expectations now VALID / STREAMLIT_ROOT /
+matches_actual true. Current task is staged intraday NIFTY F&O commissioning,
+not loosening gates or commissioning live trading. Hosted derivative tables were
+previously absent; 471,936,147 bytes is a historical measurement, not fresh evidence.
+
+Implemented locally:
+- Default-offline reference CLI preview; read-only check with statement/lock
+  timeouts; explicitly confirmed workflow_dispatch-only NIFTY pilot. Repository
+  recurring switch stays false. Scheduled enabled runs are read-only checks ONLY;
+  recurring ingestion remains uncommissioned until retention/restore is built.
+- Restricted-role checks now also reject replication privilege; verify all nine
+  expected tables and RLS before reference transactions. Missing size/permission
+  evidence blocks rather than substituting an owner login or old measurement.
+- Reference CLI storage admission: decimal nominal quota 500,000,000, reserve
+  20,000,000, planning allowance 4,000,000, combined derivative allocated budget
+  10,000,000 bytes; retained source limit 1 MiB. This is NOT a global quota guard
+  or hard transaction cap. Other collectors, runtime snapshots and monitor upserts
+  are outside its coverage. No deletion or VACUUM is performed by code.
+- Reference collection records observed response-processing receipt times rather
+  than request-start times, rejects backwards clock observations, and keeps failed
+  refresh health UNKNOWN. Pilot is current-date NIFTY-only, regular reviewed NSE
+  cash-calendar sessions only; this calendar check is not broker/FO rule authority.
+- Read-only owner storage SQL plus numbered installation/pilot/monitor/retention
+  runbook. Existing transaction-wrapped derivative drafts are unchanged.
+- DATABASE_MIGRATION_URL belongs to quant_app collector migration logic, NOT these
+  drafts; its workflow also proceeds to collection. Owner must not use it as a
+  derivative installer. No hosted process or job is automatically enabled here.
+
+Storage/design decision: raw candles/chain/forward inputs remain in private Drive.
+Operational references, reviewed rules and lineage remain in Supabase for now.
+Do not archive/delete referenced contracts/rules on a blind age threshold. Build
+dependency-aware verified export/restore before recurring reference writes. Empty
+tables remove UndefinedTable, not missing broker policy, reviewed rules, current
+sources, aligned quotes, operational monitor/watchdog or economic evidence gates.
+Option comparison hold remains unchanged; parked rules stay parked; frozen
+2025/2026 research data unexamined. No orders, secrets read/output, pushes, hosted
+writes, workflow dispatches or data/history deletion.
+
+Single consistent owner upload group (12 complete files):
+- derivative_commissioning.py (new policy)
+- derivative_repository.py (CLI and receipt correction)
+- equity_runtime_health.py (new dependency in fingerprint)
+- mypy-automation.ini (strict new module coverage)
+- .github/workflows/derivative-references.yml (manual confirmation / scheduled checks)
+- tests/test_derivative_commissioning.py (new offline regressions)
+- tests/test_derivative_repository_sql.py (restricted-role catalog check)
+- sql/derivative_pilot_storage_read_only.sql (new read-only owner measurement)
+- DERIVATIVE_PILOT_COMMISSIONING.md (new current owner runbook)
+- DERIVATIVE_DATABASE_COMMISSIONING.md (superseded advice corrected)
+- DERIVATIVE_FOUNDATIONS.md (updated activation instructions)
+- AUTOMATION_PROGRESS.md (continuity)
+
+Validation: targeted new policy/SQL tests 50 passed; strict mypy 19 modules passed;
+all root/test Python pyflakes and pip check passed. Initial full suite 1,721 passed,
+4 unchanged skips, 2 subtests (before final six CLI cases / one SQL case).
+Final reviewed-source full suite: 1,737 passed, 4 unchanged skips, 2 subtests passed
+in 345.99s. Includes actual offline app boots and disposable migration checks.
+One intermediate full run had 1 Windows temporary-directory cleanup failure in
+the existing release-packaging timeout test (a directory was still held open),
+with 1,727 tests passing. Its isolated rerun passed, and the final full suite passed
+without suppressing cleanup errors, changing that test or weakening its timeout.
+Added deterministic holiday/weekend/special/unknown-year, naive clock, wrong
+scope/date and UTC-to-IST midnight pilot checks before freezing final sources.
+Self-review corrected a potentially green storage-blocked check to return exit 1,
+made receipt clock monotonic within the collection, removed outdated shared-switch
+instructions, and tested the actual read-only CLI (not only a mocked policy).
+Oversized parameter test IDs initially exceeded Windows path limits; bounded IDs
+fixed the test harness without suppressing any failure. No known patch defect
+identified; real restricted-role cluster-size visibility and hosted source access
+remain explicitly owner-verified, not claimed from local tests.
+
+Reviewed EXPECTED_EQUITY_CODE_SHA256 for this upload:
+cacea095f9a752604f89762b12c3c01ca036366a4823dddec784430f04d15d64
+Build/policy unchanged. Owner updates expectation only AFTER checked release
+promotion. First owner action is fresh inventory/cluster/dashboard measurements,
+not enabling ingestion. Waiting on owner review/upload and manual commissioning.
