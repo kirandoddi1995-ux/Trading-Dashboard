@@ -53,6 +53,9 @@ else:
     app.secrets['APP_ENV'] = 'development'
     app.secrets['APP_AUTH_MODE'] = 'disabled'
     app.session_state['primary_section'] = 'Settings'
+    app.secrets['EXPECTED_APP_BUILD'] = 'SYNTHETIC_EXPECTED_BUILD'
+    app.secrets['RESILIENCE_POLICY_SHA256'] = 'a' * 64
+    app.secrets['EXPECTED_EQUITY_CODE_SHA256'] = 'b' * 64
 app.run()
 assert not app.exception, str([(item.message, item.stack_trace) for item in app.exception])
 if mode == 'login':
@@ -60,6 +63,12 @@ if mode == 'login':
 else:
     assert any(item.value == 'Quant Terminal' for item in app.title), 'Application title missing'
     assert any(item.label == 'Auto-Refresh Interval' for item in app.select_slider), 'Settings page did not render'
+    diagnostics = [json.loads(item.value)['release_configuration_sources']
+                   for item in app.json if 'release_configuration_sources' in json.loads(item.value)]
+    assert len(diagnostics) == 1, 'Release source diagnostics missing'
+    assert all(item['status'] == 'VALID' and item['source'] == 'STREAMLIT_ROOT'
+               and item['matches_actual'] is False for item in diagnostics[0].values())
+    assert 'SYNTHETIC_EXPECTED_BUILD' not in json.dumps(diagnostics)
 assert not events, 'Boot attempted external I/O'
 print('STREAMLIT_BOOT_VERIFIED')
 '''
