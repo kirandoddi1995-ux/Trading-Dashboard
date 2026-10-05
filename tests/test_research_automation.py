@@ -280,6 +280,10 @@ import automation_health
 import research_input_archive
 import archived_directional_replay
 import research_replay_check
+import export_development_inputs
+import forward_nifty_producer
+import forward_nifty_archive
+import forward_nifty_job
 print('OFFLINE_IMPORT_OK')
 '''
     result = subprocess.run([sys.executable, '-c', script], cwd=ROOT,
