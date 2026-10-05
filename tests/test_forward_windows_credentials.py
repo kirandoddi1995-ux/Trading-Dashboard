@@ -83,3 +83,66 @@ def test_invalid_config_never_enables_unattended_auth(field, value):
     data = values()
     data[field] = value
     with pytest.raises((ValueError, IntegrityError)): vault.validate(data)
+
+
+def test_private_file_setup_roundtrip_without_json_prompt(tmp_path, monkeypatch, capsys):
+    data = values()
+    source = tmp_path / 'private-oauth.json'
+    original = ('\ufeff' + json.dumps(json.loads(data['DRIVE_OAUTH_TOKEN_JSON']), indent=4)).encode('utf-8')
+    source.write_bytes(original)
+    api = FakeAPI()
+    prompts = []
+    def prompt(label):
+        name = label.split(' ')[0]
+        prompts.append(name)
+        assert name != 'DRIVE_OAUTH_TOKEN_JSON'
+        return data[name]
+    monkeypatch.setattr(vault.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(vault.getpass, 'getpass', prompt)
+    monkeypatch.setattr(vault, 'api', lambda: api)
+    assert vault.main(['--store', '--drive-oauth-file', str(source)]) == 0
+    assert len(prompts) == 4
+    assert json.loads(vault.load()['DRIVE_OAUTH_TOKEN_JSON']) == json.loads(data['DRIVE_OAUTH_TOKEN_JSON'])
+    assert source.read_bytes() == original
+    output = capsys.readouterr()
+    assert 'PRIVATE_CREDENTIALS_STORED' in output.out
+    for secret in ('SECRET_ACCESS', 'SECRET_CLIENT', 'SECRET_REFRESH', original.decode('utf-8')):
+        assert secret not in output.out + output.err
+
+
+@pytest.mark.parametrize('content', [b'SECRET_REFRESH invalid JSON', b'{}', b'x' * 65537,
+                                    b'\xff', b'[]'], ids=['malformed', 'empty', 'oversized', 'encoding', 'array'])
+def test_bad_private_file_blocks_before_prompts_or_writes(content, tmp_path, monkeypatch, capsys):
+    source = tmp_path / 'invalid.json'
+    source.write_bytes(content)
+    monkeypatch.setattr(vault.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(vault.getpass, 'getpass', lambda *a: pytest.fail('Unexpected prompt'))
+    monkeypatch.setattr(vault, 'write_secret', lambda *a: pytest.fail('Unexpected write'))
+    assert vault.main(['--store', '--drive-oauth-file', str(source)]) == 2
+    output = capsys.readouterr()
+    assert 'SECRET_REFRESH' not in output.out + output.err
+
+
+def test_private_file_missing_repo_path_and_oversized_compact_value(tmp_path, monkeypatch):
+    from pathlib import Path
+    with pytest.raises(IntegrityError): vault.read_oauth_file(tmp_path / 'missing.json')
+    # An existing source file suffices: rejection occurs before opening it.
+    with pytest.raises(IntegrityError): vault.read_oauth_file(Path(vault.__file__))
+    data = json.loads(values()['DRIVE_OAUTH_TOKEN_JSON'])
+    data['token'] = 'SYNTHETIC_' * 500
+    source = tmp_path / 'oversize.json'
+    source.write_text(json.dumps(data), encoding='utf-8')
+    with pytest.raises(IntegrityError): vault.read_oauth_file(source)
+
+
+def test_preview_never_reads_oauth_file_and_readback_failure_never_succeeds(monkeypatch, capsys):
+    monkeypatch.setattr(vault, 'read_oauth_file', lambda *a: pytest.fail('Unexpected read'))
+    assert vault.main(['--drive-oauth-file', 'nonexistent.json']) == 0
+    capsys.readouterr()
+    data = values()
+    monkeypatch.setattr(vault.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(vault.getpass, 'getpass', lambda label: data[label.split(' ')[0]])
+    monkeypatch.setattr(vault, 'write_secret', lambda *a: None)
+    monkeypatch.setattr(vault, 'load', lambda: dict(data, UPSTOX_ANALYTICS_TOKEN='different'))
+    assert vault.main(['--store']) == 2
+    assert capsys.readouterr().out == 'BLOCKED: PRIVATE_CREDENTIAL_SETUP_FAILED\n'
