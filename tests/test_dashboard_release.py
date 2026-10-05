@@ -1,5 +1,6 @@
 """Offline release/ref simulations: never access GitHub or application secrets."""
 import json
+import io
 from pathlib import Path
 
 import pytest
@@ -338,6 +339,59 @@ def test_api_errors_and_bad_identities_are_sanitized(monkeypatch, capsys):
     with pytest.raises(release.ReleaseError, match='^RELEASE_API_FAILED$'):
         client.call('/git/ref/heads/main')
     assert not capsys.readouterr().out
+
+
+@pytest.mark.parametrize('mode', ['preview', 'promote', 'rollback'])
+def test_existing_release_comparison_uses_real_api_guard_and_transport(mode, monkeypatch):
+    """Only the HTTP transport is mocked; plan/publish use real GitHub.call."""
+    backing = Fake()
+    if mode == 'rollback':
+        backing.refs['heads/release'] = NEW
+    client = release.GitHub(REPO, 'SYNTHETIC_TOKEN')
+    calls = []
+    def transport(request, timeout):
+        assert timeout == 20
+        assert request.full_url.startswith(client.base + '/')
+        path = request.full_url.removeprefix(client.base)
+        calls.append((path, request.get_method()))
+        payload = backing.call(path, method=request.get_method(),
+                               data=json.loads(request.data) if request.data else None)
+        return io.BytesIO(json.dumps(payload).encode())
+    monkeypatch.setattr(release, 'urlopen', transport)
+    options = dict(enabled='false' if mode == 'rollback' else 'true')
+    if mode == 'rollback':
+        options.update(rollback_sha=OLD, confirmed=True)
+    report = release.plan(client, REPO, mode, **options)
+    assert report['ready'] and report['previous'] is not None
+    assert (f'/compare/{OLD}...{NEW}', 'GET') in calls
+    if mode == 'preview':
+        assert not backing.writes
+    else:
+        result = release.publish(client, REPO, report, mode, **options)
+        assert result['status'] == ('ROLLED_BACK' if mode == 'rollback' else 'PROMOTED')
+        assert backing.writes[-1][2]['force'] is (mode == 'rollback')
+
+
+@pytest.mark.parametrize('path', [
+    '../git/ref/main', '//outside.invalid/path', '/git/../refs', '/git/./refs', '/git/.',
+    '/git/%2e%2e/refs', '/git/%252e%252e/refs', '/git/%2frefs', '/git\\refs',
+    '/git/refs#fragment', '/git/refs\n', '/git/refs\r', '/git/refs\t', '/git/refs\x00',
+    '/git/refs\x7f', '/git/ refs', '/compare/main...release',
+    f'/compare/{OLD}..{NEW}', f'/compare/{OLD}....{NEW}',
+    f'/compare/{OLD}...{NEW}?extra=1', f'/compare/{OLD}...{NEW}/suffix',
+    f'/compare/{OLD.upper()}...{NEW}', f'/compare/{OLD[:7]}...{NEW}', None,
+])
+def test_path_guard_rejects_unsafe_or_noncanonical_compare_before_http(path, monkeypatch):
+    monkeypatch.setattr(release, 'urlopen', lambda *a, **kw: pytest.fail('Must reject before HTTP'))
+    with pytest.raises(release.ReleaseError, match='^RELEASE_API_PATH_INVALID$'):
+        release.GitHub(REPO, 'SYNTHETIC_TOKEN').call(path)
+
+
+@pytest.mark.parametrize('method', ['POST', 'PATCH', 'DELETE'])
+def test_compare_exception_is_read_only(method, monkeypatch):
+    monkeypatch.setattr(release, 'urlopen', lambda *a, **kw: pytest.fail('Must reject before HTTP'))
+    with pytest.raises(release.ReleaseError, match='^RELEASE_API_PATH_INVALID$'):
+        release.GitHub(REPO, 'SYNTHETIC_TOKEN').call(f'/compare/{OLD}...{NEW}', method=method)
 
 
 def test_workflow_limits_privilege_and_does_not_touch_model_workflows():
