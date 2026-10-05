@@ -213,6 +213,17 @@ def test_read_only_inventory_and_runtime_smoke(db):
     assert before['derivative_effective_privileges'] == after['derivative_effective_privileges']
 
 
+def test_pilot_table_check_under_restricted_role(db):
+    from derivative_commissioning import TABLES_SQL
+    db.execute('BEGIN READ ONLY')
+    try:
+        db.execute('SET LOCAL ROLE quant_derivative_ingestor')
+        row = db.execute(TABLES_SQL).fetchone()
+        assert row == (9, True)
+    finally:
+        db.execute('ROLLBACK')
+
+
 def test_foundations_repairs_missing_read_policy_without_broadening_grants(db):
     db.execute('DROP POLICY ingest_read ON derivatives_reference.contract_versions')
     db.execute('CREATE TABLE derivatives_reference.unrelated_private_table (id integer)')
