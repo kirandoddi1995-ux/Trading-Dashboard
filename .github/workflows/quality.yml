@@ -41,7 +41,7 @@ jobs:
       - name: Strict type checks for research automation (mandatory)
         run: python -m mypy --config-file mypy-automation.ini --cache-dir /tmp/research-mypy-cache
       - name: Import offline research foundation (mandatory)
-        run: python -c "import research_integrity, automated_development_checks, automated_directional_replay, research_replay_comparison, automation_health, research_input_archive, archived_directional_replay, research_replay_check"
+        run: python -c "import research_integrity, automated_development_checks, automated_directional_replay, research_replay_comparison, automation_health, research_input_archive, archived_directional_replay, research_replay_check, export_development_inputs, forward_nifty_producer, forward_nifty_archive, forward_nifty_job"
       # requirements.txt already loads constraints.txt via its first `-c` line.
       - run: python -m pip_audit -r requirements.txt
       - run: python -m pytest -q
