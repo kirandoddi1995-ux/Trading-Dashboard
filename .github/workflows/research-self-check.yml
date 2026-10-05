@@ -1,0 +1,21 @@
+name: Offline research and application self-check
+
+on:
+  schedule:
+    # 23:47 IST; no dependency on market opening or precise scheduler arrival.
+    - cron: '17 18 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offline-research-self-check
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    # Scheduling is a separate owner commissioning choice; absent means off.
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && vars.AUTOMATED_SELF_CHECK_ENABLED == 'true')
+    uses: ./.github/workflows/quality.yml
+    # No secrets inheritance, market tokens, DB URLs or private data.
