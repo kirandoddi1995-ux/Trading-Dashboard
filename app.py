@@ -3,6 +3,8 @@ import technical_indicators as ta
 import mf_research as mfr
 import app_runtime as runtime
 import nifty_session_calendar as nse_calendar
+from history_freshness import HISTORY_FRESHNESS
+from live_governance import release_expectation_presence
 import dataclasses
 import intraday_fo_costs as fo_costs
 import trade_contracts
@@ -632,18 +634,13 @@ def _serialize_history(instrument_key, df, db_path=DEFAULT_DB_PATH):
                 latest_date = pd.to_datetime(df.index, errors="coerce").max()
                 latest_date = runtime.market_date(latest_date) if pd.notna(latest_date) else None
                 expected_date = _expected_latest_completed_session_date(instrument_key=instrument_key)
+                HISTORY_FRESHNESS.record(str(instrument_key), expected=expected_date, latest=latest_date,
+                    today=datetime.datetime.now(IST).date(), logger=LOGGER)
                 if expected_date is not None and latest_date is not None and latest_date >= expected_date:
                     conn.execute(
                         "INSERT INTO sync_meta(instrument_key, last_sync_date) VALUES (?, ?) "
                         "ON CONFLICT(instrument_key) DO UPDATE SET last_sync_date=excluded.last_sync_date",
                         (instrument_key, datetime.datetime.now(IST).date().isoformat()),
-                    )
-                elif expected_date is None:
-                    LOGGER.warning("History for %s: NSE session calendar unavailable/unreviewed; freshness marker not advanced.", instrument_key)
-                else:
-                    LOGGER.warning(
-                        "History for %s ended at %s; expected at least %s. Freshness marker not advanced.",
-                        instrument_key, latest_date, expected_date,
                     )
                 conn.commit()
                 last_exc = None
@@ -712,6 +709,8 @@ def get_cached_history(instrument_key, token, days=365, fetch_fn=None, db_path=D
     required_rows = min(max(int(days * 0.55), 60), int(days))
     expected = _expected_latest_completed_session_date(instrument_key=instrument_key)
     latest_cached = runtime.market_date(cached.index.max()) if not cached.empty else None
+    HISTORY_FRESHNESS.record(str(instrument_key), expected=expected, latest=latest_cached,
+                             today=today_date, logger=LOGGER)
     is_nse_cash = str(instrument_key).startswith(("NSE_EQ|", "NSE_INDEX|"))
     fresh_through_expected = (not is_nse_cash or
         (expected is not None and latest_cached is not None and latest_cached >= expected))
@@ -9102,6 +9101,19 @@ elif selected_tab == "Equities Screener & Risk":
             get_equity_runtime_health.clear()
         st.json({"actual_build": APP_BUILD, "actual_policy_hash": RESILIENCE_CONTROL_PLANE.policy.digest,
                  **get_equity_runtime_health()})
+        _release_presence = release_expectation_presence({name: _server_secret(name) or os.environ.get(name)
+            for name in ('EXPECTED_APP_BUILD', 'RESILIENCE_POLICY_SHA256', 'EXPECTED_EQUITY_CODE_SHA256')})
+        st.json({'release_expectations_present': _release_presence})
+        _missing_expectations = [name for name, present in _release_presence.items() if not present]
+        if _missing_expectations:
+            st.warning('Required Streamlit release expectations missing: ' + ', '.join(_missing_expectations)
+                       + '. Equity entries remain blocked; configure reviewed release values, not defaults.')
+        _history_diagnostics = HISTORY_FRESHNESS.snapshot(datetime.datetime.now(IST).date())
+        st.json({'history_freshness': _history_diagnostics})
+        if _history_diagnostics['missing_instruments']:
+            st.warning('Expected daily sessions have not been received for '
+                       + str(_history_diagnostics['missing_instruments'])
+                       + ' observed instruments. Publication timing is unverified; history is not certified fresh.')
     _pending_orders = []
     _order_log_available = False
     if _equity_ops.configured:

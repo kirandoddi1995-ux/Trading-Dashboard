@@ -726,3 +726,63 @@ final runs used unique temp directories without modifying permissions/old data.
 Next: owner uploads all five, waits for exact final SHA's CI, reruns preview on main.
 Require READY / blockers [] / codeql VERIFIED before environment, enable variable,
 promotion or Streamlit cutover. No hosted writes or credential/data inspection.
+
+### Post-release-cutover diagnostics (owner-confirmed cutover 59cc82d)
+
+Owner reports release-branch deployment, build v22.5.7-FUTURES-HISTORY-HOTFIX,
+unchanged pre-patch fingerprint 2893995...c7b9, clock/recovery PASS, working delivery
+and privately identical Secrets. Hosted configuration is no longer waiting on
+initial cutover; subsequent releases still require exact-SHA checks and the
+external reviewed fingerprint. No automatic expectation defaults introduced.
+
+Three investigations: missing release-expectation messages were stripped out of
+the backlog diagnostic (actual required names now exposed as presence booleans);
+derivative schemas absent; daily freshness expects the completed session immediately
+at close but daily-provider publication timing is unverified. Today/date cache
+logic is not loosened. New bounded process-local HistoryFreshness aggregates
+warnings and current-day samples in Settings, preserving existing marker/fetch
+logic. Missing previous sessions and unknown calendars remain explicit.
+
+Supabase skill used for read-only catalog queries. Connector is owner postgres,
+not a dedicated read-only role; each call explicitly BEGIN READ ONLY and 5s local
+timeout. No hosted writes. Confirmed 471,936,147 bytes and zero derivative tables;
+only quant_app_runtime exists of the expected runtime/three derivative roles,
+without superuser/BYPASSRLS. POST_CUTOVER_DIAGNOSTICS.md records queries/results,
+uncertainties, current quota comparison and owner-only migration order/smoke test.
+Streamlit logs/Secrets were unavailable to the connector: missing exact expectation
+cannot be asserted until new presence diagnostics are observed. A late provider
+publication is plausible, not proven; no undocumented grace period was assumed.
+
+Derivative SQL unchanged. Empty-table installation may proceed after the full
+existing inventory/review; no collection starts from CREATE TABLE. Ongoing ingest
+remains uncommissioned pending measured storage growth, protected lineage archive,
+reviewed rules/sources and the previously recorded receipt-time issue. Existing
+supervised Drive-only option capture need not be disabled. Outbox threshold and
+option-entry hold unchanged. No approval claim follows from configuration fixes.
+
+Nine-file upload group (all local, folder paths preserved):
+- app.py
+- live_governance.py
+- equity_runtime_health.py
+- history_freshness.py (new)
+- mypy-automation.ini
+- tests/test_history_freshness.py
+- tests/test_live_governance.py
+- POST_CUTOVER_DIAGNOSTICS.md (new)
+- AUTOMATION_PROGRESS.md
+
+Final frozen-source suite: 1,639 passed, 4 unchanged skips, 2 subtests passed in
+242.72s. Targeted diagnostics/governance/actual AppTest boot: 41 passed. Strict
+mypy (17 modules), all root/test Python lint and pip check passed. Self-review
+checked secret-value exclusion/presence-only semantics, unchanged attestation
+and freshness/marker rules, concurrency and bounded diagnostic state, unknown
+calendars, after-close/next-session distinction, no new evidence event/network
+call, derivative commissioning/storage boundaries and hosted read-only constraints.
+No remaining issue identified in the patch. Real daily-provider publication and
+the exact missing hosted expectation remain explicitly unverified owner checks.
+Post-change expected fingerprint:
+36e17a7552357bb9fa68197117874a694691fc01baf24a7e6a07713cfc4429e3.
+Owner updates Streamlit expectation AFTER verified promotion, then checks all three
+presence booleans and no configuration missing/drift, without weakening other gates.
+Waiting on owner upload/hosted verification. No pushes,
+Supabase writes, settings changes, data deletion or validation/holdout examination.

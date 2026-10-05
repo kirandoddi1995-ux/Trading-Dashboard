@@ -63,6 +63,12 @@ def _status(result: Mapping[str, Any] | None) -> str:
     return str((result or {}).get("status") or "UNAVAILABLE").upper()
 
 
+def release_expectation_presence(environment: Mapping[str, Any]) -> dict[str, bool]:
+    """Names/presence only; never expose configured expectation or secret values."""
+    return {name: bool(str(environment.get(name) or '').strip()) for name in
+            ('EXPECTED_APP_BUILD', 'RESILIENCE_POLICY_SHA256', 'EXPECTED_EQUITY_CODE_SHA256')}
+
+
 def _backlog_diagnostic(stats, safety, policy):
     """No payloads, error text or credentials; missing telemetry stays missing.
 
@@ -345,6 +351,7 @@ def evaluate_live_governance(
     resilience_public = resilience.public_dict()
     if is_equity:
         backlog_diagnostic = _backlog_diagnostic(outbox_stats, resilience_public, services.control_plane.policy)
+        backlog_diagnostic['release_expectations_present'] = release_expectation_presence(environment)
         # Reuse the existing profile/logs, not another remote evidence event.
         record_governance(backlog_diagnostic)
         services.logger.info("EQUITY_GOVERNANCE_BACKLOG %s", json.dumps(

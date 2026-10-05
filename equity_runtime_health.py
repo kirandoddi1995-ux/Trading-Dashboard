@@ -42,6 +42,7 @@ RELEASE_FILES = (
     "market_context.py", "market_context_sources.py", "market_context_ui.py",
     "intraday_fo_costs.py",
     "nifty_session_calendar.py",
+    "history_freshness.py",
 )
 
 
