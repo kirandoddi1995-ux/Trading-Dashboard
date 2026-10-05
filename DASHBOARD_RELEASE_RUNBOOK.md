@@ -4,6 +4,50 @@ Scope: Streamlit application code only. Model authorization/promotion/rollback,
 research schedules, option capture and database data/schema are unchanged.
 No hosted configuration was changed during implementation.
 
+## Subsequent-release compare guard repair
+
+The first publication did not need a comparison because release was absent.
+Later promotion/rollback exposed an implementation defect: GitHub.call rejected
+any '..', including GitHub's legitimate SHA...SHA comparison separator. The earlier
+Fake-based policy tests bypassed this real transport guard. This was a defect in
+our adapter, not failed CI, divergent history or missing permissions.
+
+The repair permits only GET /compare/<full-lowercase-SHA>...<full-lowercase-SHA>.
+Traversal, encoded paths, fragments, backslashes/control characters, branch-name
+comparisons, malformed separators and non-GET comparison methods stay blocked.
+New offline tests use real GitHub.call for preview, promotion with an existing
+release and paused rollback; only the HTTP response transport is mocked.
+
+Repair upload group (four files, preserving folders):
+- dashboard_release.py
+- tests/test_dashboard_release.py
+- DASHBOARD_RELEASE_RUNBOOK.md
+- AUTOMATION_PROGRESS.md
+
+If DASHBOARD_RELEASE_ENABLED remains true, this fix can automatically promote the
+newest fully checked main commit, including the waiting post-cutover app changes.
+For a controlled check, owner may pause it to false, let active publication finish,
+upload/review the complete group and wait for exact-final-SHA CI. Run preview from
+main; expect READY with previous set to the current release SHA and blockers [].
+Then enable and promote. An atomic single reviewed merge avoids partially uploaded
+groups. No workflow/permission change is needed for this fix. Do not manually move
+release or change the independent fingerprint early to work around the bug.
+
+Until a fixed controller has reached release, dispatch preview/promotion/rollback
+from fully checked MAIN, not the old release controller that still has this bug.
+Rollback still requires promotion paused, explicit confirmation and a previously
+verified ancestor target. Once release contains the repair, the normal branch
+choice instructions below apply again.
+
+This repair does not change the app fingerprint. The pending post-cutover source
+still expects 36e17a7552357bb9fa68197117874a694691fc01baf24a7e6a07713cfc4429e3;
+the currently deployed pre-patch release still expects its old 2893995...c7b9.
+Confirm successful PROMOTED output and the candidate's reported fingerprint,
+then update Streamlit Secrets as described below. Failed verify/publish skipped
+does not constitute deployment; keeping the old Secret until promotion was correct.
+
+Reference: https://docs.github.com/en/rest/commits/commits#compare-two-commits
+
 ## How it works
 
 The app will follow `release`; development/manual uploads and research stay on

@@ -42,7 +42,17 @@ class GitHub:
         self.token = token
 
     def call(self, path: str, *, method: str = 'GET', data: Any = None) -> Any:
-        if not path.startswith('/') or '..' in path:
+        # GitHub's comparison separator is three literal dots, not traversal.
+        # Permit only the exact immutable-SHA GET endpoint; never generally
+        # relax the '..' rule or accept branch/user-controlled compare operands.
+        compare = (isinstance(path, str) and method == 'GET'
+                   and re.fullmatch(r'/compare/[0-9a-f]{40}\.\.\.[0-9a-f]{40}', path) is not None)
+        if (not isinstance(path, str) or not path.startswith('/') or path.startswith('//')
+                or any(char in path for char in ('%', '\\', '#'))
+                or any(ord(char) <= 32 or ord(char) == 127 for char in path)
+                or '/./' in path or path.endswith('/.')
+                or ('..' in path and not compare)
+                or (path.startswith('/compare/') and not compare)):
             raise ReleaseError('RELEASE_API_PATH_INVALID')
         body = None if data is None else json.dumps(data).encode()
         request = Request(self.base + path, data=body, method=method, headers={

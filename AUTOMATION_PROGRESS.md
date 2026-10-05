@@ -786,3 +786,47 @@ Owner updates Streamlit expectation AFTER verified promotion, then checks all th
 presence booleans and no configuration missing/drift, without weakening other gates.
 Waiting on owner upload/hosted verification. No pushes,
 Supabase writes, settings changes, data deletion or validation/holdout examination.
+
+### Release compare adapter repair (after main d498b82)
+
+Owner reports quality #291, resilience #264 and CodeQL #437 green, but automatic
+release #22-27 fail RELEASE_API_PATH_INVALID, publish skipped, release still
+59cc82d. External Streamlit fingerprint correctly remains unchanged until promotion.
+Confirmed defect in our earlier adapter: generic '..' rejection also rejected
+the valid /compare/SHA...SHA path. First publication bypassed comparison when
+previous was null. Fake API policy tests did not exercise real GitHub.call.
+
+Narrow repair allows only immutable full lowercase-SHA GET comparisons. Existing
+traversal denial is retained, with added rejection of encoded paths, fragments,
+backslashes, whitespace/control characters and malformed/non-GET comparisons.
+New offline preview/promotion/rollback tests call real GitHub.call with HTTP
+response transport mocked, including an existing release. New hostile-path tests
+prove rejection before HTTP. No checks, ancestry, rollback or permissions relaxed.
+
+Four-file repair group:
+- dashboard_release.py
+- tests/test_dashboard_release.py
+- DASHBOARD_RELEASE_RUNBOOK.md
+- AUTOMATION_PROGRESS.md
+
+Targeted release tests: 94 passed. Strict mypy (17 modules) and changed-file lint
+passed; all root/test Python lint and pip check also passed. Final frozen-source
+full suite (including actual AppTest boot and SQL safety): 1,669 passed,
+4 unchanged skips, 2 subtests passed in 291.20s. Self-review checked exact GET
+SHA-only exception, traversal/encoding/control-character rejection, real adapter
+coverage for non-null previous release and rollback, sanitized errors, unchanged
+gate/privilege/ancestry/fingerprint behavior. No remaining issue identified in
+this repair. Waiting on owner upload, exact-final-commit CI, fixed-main preview
+and reviewed promotion; no publishing operation was performed.
+Anonymous read-only public GitHub verification ran the REAL repaired GitHub.call
+guard with GET-only transport and no credentials sent. Preview returned READY,
+blockers [], main d498b823b22348d8d525bd86db1991be5a0ac93b,
+previous 59cc82d46d8793b8a506597e03eae95519e69f68, CodeQL VERIFIED run
+37308931787 / attempt 1. No branch/tag writes or workflow dispatch occurred.
+App fingerprint unchanged by this repair:
+36e17a7552357bb9fa68197117874a694691fc01baf24a7e6a07713cfc4429e3
+(post-cutover changes still pending on main; live pre-patch release uses old hash).
+Runbook covers optional owner pause, fixed-main preview, subsequent promotion and
+post-promotion external hash update. Old release controller remains unsuitable
+for dispatch until repaired source reaches it; use fully checked main meanwhile.
+No hosted writes, workflow dispatch, settings/Secrets change or data examination.
