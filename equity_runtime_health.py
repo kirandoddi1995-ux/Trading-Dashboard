@@ -43,6 +43,7 @@ RELEASE_FILES = (
     "intraday_fo_costs.py",
     "nifty_session_calendar.py",
     "history_freshness.py",
+    "release_expectations.py",
 )
 
 

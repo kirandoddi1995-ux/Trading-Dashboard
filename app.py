@@ -5,6 +5,7 @@ import app_runtime as runtime
 import nifty_session_calendar as nse_calendar
 from history_freshness import HISTORY_FRESHNESS
 from live_governance import release_expectation_presence
+from release_expectations import NAMES as RELEASE_EXPECTATION_NAMES, resolve as resolve_release_expectations
 import dataclasses
 import intraday_fo_costs as fo_costs
 import trade_contracts
@@ -243,6 +244,13 @@ def evaluate_live_governance_contract(
             secret_value = secret_reader(secret_name)
             if secret_value:
                 readiness_environment[secret_name] = secret_value
+    if str(evidence_bundle.context.asset_class).lower() == 'equity':
+        # Share the exact resolver with Settings. Remove stale environment
+        # expectations when root values are invalid/unreadable/conflicting.
+        release_values, _ = _release_configuration()
+        for name in RELEASE_EXPECTATION_NAMES:
+            readiness_environment.pop(name, None)
+        readiness_environment.update(release_values)
     if secondary_quote is None and str(
         readiness_environment.get("SECONDARY_QUOTE_PROVIDER") or ""
     ).upper() == "KITE":
@@ -1020,6 +1028,29 @@ def _server_secret(name, default=""):
         return str(value) if value is not None else str(default)
     except Exception:
         return str(default)
+
+
+def _release_configuration():
+    """Resolve root/environment release expectations; return diagnostics separately."""
+    return resolve_release_expectations(st.secrets, os.environ, actual={
+        'EXPECTED_APP_BUILD': APP_BUILD,
+        'RESILIENCE_POLICY_SHA256': RESILIENCE_CONTROL_PLANE.policy.digest,
+        'EXPECTED_EQUITY_CODE_SHA256': EQUITY_RELEASE_FINGERPRINT,
+    })
+
+
+def _render_release_configuration():
+    """Display names/provenance only; never expose configured release values."""
+    values, sources = _release_configuration()
+    presence = release_expectation_presence(values)
+    st.json({'release_expectations_present': presence})
+    st.caption('Release keys: exact names at TOML root (before any [section]), or server environment. '
+               'Section keys are not accepted. Read errors, invalid strings and conflicting sources block entries.')
+    st.json({'release_configuration_sources': sources})
+    unusable = [name for name, present in presence.items() if not present]
+    if unusable:
+        st.warning('Required Streamlit release expectations missing or unusable: ' + ', '.join(unusable)
+                   + '. Equity entries remain blocked; configure reviewed release values, not defaults.')
 
 
 @st.cache_resource(show_spinner=False)
@@ -5957,6 +5988,8 @@ if selected_tab in {"Equities Screener & Risk", "Options & Derivatives Chain",
 if selected_tab == "Settings":
     st.subheader("Settings")
     st.caption("Risk, data-source and production-safety configuration.")
+    with st.expander("Release configuration (names and sources only)"):
+        _render_release_configuration()
     sec1, sec2, sec3 = st.columns(3)
     sec1.metric("Access mode", "OIDC authenticated")
     sec2.metric("Upstox server secret", "Configured" if access_token else "Missing")
@@ -9101,13 +9134,7 @@ elif selected_tab == "Equities Screener & Risk":
             get_equity_runtime_health.clear()
         st.json({"actual_build": APP_BUILD, "actual_policy_hash": RESILIENCE_CONTROL_PLANE.policy.digest,
                  **get_equity_runtime_health()})
-        _release_presence = release_expectation_presence({name: _server_secret(name) or os.environ.get(name)
-            for name in ('EXPECTED_APP_BUILD', 'RESILIENCE_POLICY_SHA256', 'EXPECTED_EQUITY_CODE_SHA256')})
-        st.json({'release_expectations_present': _release_presence})
-        _missing_expectations = [name for name, present in _release_presence.items() if not present]
-        if _missing_expectations:
-            st.warning('Required Streamlit release expectations missing: ' + ', '.join(_missing_expectations)
-                       + '. Equity entries remain blocked; configure reviewed release values, not defaults.')
+        _render_release_configuration()
         _history_diagnostics = HISTORY_FRESHNESS.snapshot(datetime.datetime.now(IST).date())
         st.json({'history_freshness': _history_diagnostics})
         if _history_diagnostics['missing_instruments']:

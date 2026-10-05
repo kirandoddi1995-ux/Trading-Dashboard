@@ -47,6 +47,10 @@ Other evidence gates, the option hold and the outbox threshold remain unchanged.
 
 ## Owner: upload, fingerprint, expectations
 
+For exact TOML placement and value-free per-key source/error diagnostics, follow
+RELEASE_EXPECTATIONS.md. Settings and equity governance now use the same resolver;
+presence alone is still not proof of a matching reviewed value.
+
 1. Upload the complete changed-file group with folder paths intact, preferably
    one reviewed merge. Wait for the exact final main SHA's gates and successful
    release promotion. No direct upload to release.

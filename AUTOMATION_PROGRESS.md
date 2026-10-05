@@ -830,3 +830,55 @@ Runbook covers optional owner pause, fixed-main preview, subsequent promotion an
 post-promotion external hash update. Old release controller remains unsuitable
 for dispatch until repaired source reaches it; use fully checked main meanwhile.
 No hosted writes, workflow dispatch, settings/Secrets change or data examination.
+
+### Release expectation provenance repair (after promotion 1d68fc3)
+
+Owner confirms the post-cutover release is live with fingerprint
+36e17a7552357bb9fa68197117874a694691fc01baf24a7e6a07713cfc4429e3,
+clock/recovery PASS and delivery failures zero. Owner reports root Secrets keys
+not detected, with an old build expectation previously configured. Hosted Secrets
+were not read; exact cause remains unverified. Root placement was already correct
+in source. The old helper swallowed read exceptions and coerced arbitrary values.
+
+Shared release_expectations resolver validates exact root strings, with environment
+fallback only for absent root values. Unreadable/invalid/conflicting configuration
+fails closed; sections are diagnosed but never accepted. Diagnostics contain names,
+source labels, statuses and booleans only. Settings and equity governance share the
+resolver; non-equity legacy behavior is unchanged. Actual code comparison uses the
+startup fingerprint, not a network clock probe. No new hosted call/collector or
+approval is introduced. New module belongs to the equity release hash manifest.
+
+Single complete upload group (root unless tests/ prefix):
+- app.py
+- release_expectations.py (new)
+- equity_runtime_health.py
+- mypy-automation.ini
+- tests/test_release_expectations.py (new)
+- tests/test_streamlit_boot.py
+- RELEASE_EXPECTATIONS.md (new owner instructions)
+- POST_CUTOVER_DIAGNOSTICS.md
+- AUTOMATION_PROGRESS.md
+
+Targeted synthetic configuration/governance/actual offline AppTest: 52 passed.
+Strict mypy: 18 modules passed; all root/test Python lint and pip check passed.
+Final frozen-source full suite, including SQL safety and actual offline AppTest:
+1,699 passed, 4 unchanged skips, 2 subtests passed in 258.51s. No test-count drop.
+Self-review verified root TOML/environment semantics, sanitized exception handling,
+no expectation values in the UI, same Settings/governance resolution, removal of
+rejected environment expectations, unchanged non-equity routes, release manifest
+coverage and deployment/fingerprint sequencing. Offline boot initially detected
+an unintended clock probe from configuration display; fixed by using the already
+computed startup fingerprint. Boot now proves Settings renders without network.
+Owner: wait for exact-commit gates and promotion, then update the Streamlit code
+expectation to the final reviewed fingerprint. All three uppercase names belong
+before any TOML [section] header, double-quoted. Build and policy must also match
+the independently reviewed release; old build causes CONFIG_DRIFT, not missing.
+Use Settings provenance to distinguish missing keys, invalid values, misplacement,
+read errors and stale environment conflicts without sharing private values.
+No hosted changes, Secrets reads/edits, pushes or validation/holdout data access.
+Final reviewed EXPECTED_EQUITY_CODE_SHA256:
+d7b32a1cbd25e46a109534ac51d078fbf65c36fcbc77b3a11549d7ff33c8be16.
+Build and policy digest unchanged. No remaining issue identified in this patch;
+the exact hosted reason for root keys being absent remains an owner diagnostic.
+Implementation complete; waiting on owner review/upload, checked promotion,
+private configuration save/reboot and value-free source/match verification.
