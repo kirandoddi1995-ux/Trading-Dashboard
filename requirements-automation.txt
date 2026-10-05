@@ -1,0 +1,2 @@
+# Development/CI tooling only. Do not install this in the live dashboard.
+mypy==2.4.0
