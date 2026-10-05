@@ -6,6 +6,7 @@ import ctypes
 from ctypes import wintypes
 import getpass
 import json
+from pathlib import Path
 import sys
 from typing import Any, Callable, cast
 
@@ -17,6 +18,31 @@ NAMES = ('UPSTOX_ANALYTICS_TOKEN', 'FORWARD_TOKEN_EXPIRES_AT', 'DRIVE_OAUTH_TOKE
          'OPTION_CAPTURE_DRIVE_FOLDER_ID', 'FORWARD_CAPTURE_LICENSE_ACK')
 PREFIX = 'KiranTrading/Forward/'
 MAX_BYTES = 2560
+MAX_OAUTH_FILE_BYTES = 64 * 1024
+
+
+def read_oauth_file(path: Path) -> str:
+    """Read bounded private JSON without changing it or disclosing its contents.
+
+    Only the path travels through argv. Resolve links so a file in the repository
+    cannot be used accidentally; the owner manages the original private file.
+    """
+    try:
+        resolved = path.resolve(strict=True)
+        if resolved.is_relative_to(Path(__file__).resolve().parent):
+            raise IntegrityError('PRIVATE_OAUTH_FILE_REQUIRED')
+        with resolved.open('rb') as handle:
+            raw = handle.read(MAX_OAUTH_FILE_BYTES + 1)
+        if len(raw) > MAX_OAUTH_FILE_BYTES:
+            raise IntegrityError('PRIVATE_OAUTH_FILE_INVALID')
+        info = json.loads(raw.decode('utf-8-sig'))
+        cast(Callable[[Any], Any], credentials)(info)
+        value = json.dumps(info, separators=(',', ':'), ensure_ascii=False)
+        if len(value.encode('utf-8')) > MAX_BYTES:
+            raise IntegrityError('PRIVATE_OAUTH_FILE_INVALID')
+        return value
+    except Exception:
+        raise IntegrityError('PRIVATE_OAUTH_FILE_INVALID') from None
 
 
 class Credential(ctypes.Structure):
@@ -98,6 +124,8 @@ def main(argv: list[str] | None = None) -> int:
     """Explicit local hidden prompts only; no command-line secret arguments."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--store', action='store_true')
+    parser.add_argument('--drive-oauth-file', type=Path,
+                        help='Private OAuth JSON file outside the repository; requires --store')
     args = parser.parse_args(argv)
     try:
         if not args.store:
@@ -105,10 +133,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not sys.stdin.isatty():
             raise IntegrityError('INTERACTIVE_PRIVATE_PROMPT_REQUIRED')
-        values = {name: getpass.getpass(name + ' (hidden): ') for name in NAMES}
+        oauth = read_oauth_file(args.drive_oauth_file) if args.drive_oauth_file else None
+        values = {name: (oauth if name == 'DRIVE_OAUTH_TOKEN_JSON' and oauth is not None
+                         else getpass.getpass(name + ' (hidden): ')) for name in NAMES}
         validate(values)
         for name in NAMES:
             write_secret(name, values[name])
+        if load() != values:
+            raise IntegrityError('PRIVATE_CREDENTIAL_READBACK_FAILED')
         print('PRIVATE_CREDENTIALS_STORED')
         return 0
     except Exception:

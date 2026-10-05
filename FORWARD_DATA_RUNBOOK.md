@@ -260,10 +260,27 @@ is invented. Run locally in a real terminal:
 .venv\Scripts\python.exe forward_windows_credentials.py --store
 ```
 
+On Windows, avoid pasting long OAuth JSON into the hidden prompt. Prefer the
+existing private OAuth file **outside this repository** (only its path appears
+on the command line):
+
+```powershell
+.venv\Scripts\python.exe forward_windows_credentials.py --store --drive-oauth-file '<absolute-private-path>\token.json'
+```
+
+This reads the file without changing it, accepts UTF-8/BOM and formatted JSON,
+validates and compacts it in memory, and prompts privately for the other four
+values. The input file is bounded to 64 KiB and the stored value to 2,560 bytes;
+invalid files block before any credential write. Success requires all five values
+to pass readback verification. Preview never opens the file. Keep its original
+permissions private; never place it in the repo. If you already verified the
+existing vault through `validate`/`write_secret`/`load`, leave it unchanged: no
+repeat credential setup is required solely for this fix.
+
 Hidden prompts request the existing five values listed above, including licence
 acknowledgment exactly `true`, covering permitted use/retention of both Upstox
 inputs and the NSE source snapshot. Automatic preparation checks this same vault
-acknowledgment before fetching anything. Paste one-line OAuth JSON privately. Never put a
+acknowledgment before fetching anything. The original five-prompt mode remains available. Never put a
 value on the command line, in this chat, in a transcript or in the repository.
 Avoid clipboard history/cloud clipboard sync when transferring secrets.
 The helper stores application-specific generic credentials in **Windows Credential
@@ -287,6 +304,15 @@ Replace the start date with the first intended supervised day. Nothing below
 enables capture. The first call only writes private XML plans; inspect them in
 $forwardRoot\task-plans, then the second call verifies exact plans before registering.
 No existing task or XML is overwritten.
+
+For recovery from the XML encoding failure, upload **both** installer scripts,
+then repeat only the `-RegisterTasks` call with the **same PrivateRoot and StartDate
+used to generate your existing plans**. Their file bytes and verification stay
+unchanged. The helper removes the UTF-8 encoding attribute only from the Unicode
+string handed to Windows. It stops at the first registration/verification error;
+the success message requires all three tasks to exist in Disabled state. If a
+partial registration exists, stop and inspect it; no task is automatically
+overwritten or deleted. Do not enable a partial installation.
 
 ```powershell
 .\scripts\install_forward_tasks.ps1 -PrivateRoot $forwardRoot -StartDate '<YYYY-MM-DD>'

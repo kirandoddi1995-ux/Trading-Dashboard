@@ -549,3 +549,48 @@ credential-store access, real capture, dataset deletion, database/hosted change 
 GitHub write. Owner commissioning instructions and stop/disable steps are in
 FORWARD_DATA_RUNBOOK.md. No further local changes are required merely because
 these owner-controlled operational prerequisites remain unchanged.
+
+### 2026-10-05 owner commissioning failures: narrow repair
+
+Owner observed three XML encoding registration failures followed by an incorrect
+success message. No real tasks exist. Owner also verified credential inputs and
+vault roundtrip via private file after hidden long-JSON paste failed. Those results
+do not justify relaxing any capture/auth/scheduling limits.
+
+Local repair: installer calls an import-safe PowerShell helper which preserves
+the verified UTF-8 plan files, removes the byte-encoding declaration only from
+the Unicode COM input, explicitly stops cmdlet errors, and checks registered
+Disabled state before claiming success. All plans are checked before the first
+registration; partial installations are never enabled, overwritten or deleted.
+Credential setup now supports --drive-oauth-file outside the repo, bounded UTF-8/
+BOM input, JSON validation/compaction in memory, four remaining hidden prompts,
+and full vault readback before success. Preview stays offline; token.json and the
+real vault were not read or changed by the agent. Existing owner-verified vault
+needs no repeat setup. Existing XML plans need no regeneration; registration retry
+must use the same original PrivateRoot/StartDate.
+
+Option pilot diagnosis: publish/verification precedes exit status. CAPTURED plus
+DELAYED at 89.95 seconds intentionally exits 1, retaining the verified sample but
+setting same_time_comparison_eligible false (60-second same-slot tolerance versus
+600-second maximum capture window). Audit/resume also reject it as an on-time slot.
+No option code/policy changed; manual early-start wait remains bounded to 600 seconds.
+
+Changed upload group (seven files):
+- forward_windows_credentials.py
+- scripts/install_forward_tasks.ps1
+- scripts/forward_task_registration.ps1 (new)
+- tests/test_forward_windows_credentials.py
+- tests/test_forward_task_registration.py (new)
+- FORWARD_DATA_RUNBOOK.md
+- AUTOMATION_PROGRESS.md
+
+Validation in progress: full offline suite with SQL harness. Python lint, strict
+mypy (15 modules), and both PowerShell parsers pass. Mocked PowerShell cmdlets
+exercise real helper encoding, partial errors, missing/readied tasks and all-three
+Disabled verification without touching Task Scheduler. Initial oversized pytest
+parameter IDs caused temporary-path setup errors; short explicit IDs fix the test
+fixture names. Equity fingerprint unchanged:
+2893995505709b1b6a6bfcea342a2edb3770319c695297234747cf1b6801c7b9.
+Next: record full results/self-review, then owner review/upload and actual disabled
+registration retry. Actual COM acceptance and supervised broker/Drive capture are
+owner checks, not established by offline mocks. Overall foundation remains partial.
