@@ -1,7 +1,18 @@
 """Capture plumbing must be equity-only and must not enter gate calculations."""
 import ast
+import json
 import pytest
 from pathlib import Path
+
+
+def test_release_expectation_diagnostics_name_missing_keys_without_values():
+    from live_governance import release_expectation_presence
+    values = {'EXPECTED_APP_BUILD': 'private-build', 'RESILIENCE_POLICY_SHA256': ' ',
+              'EXPECTED_EQUITY_CODE_SHA256': None, 'TOKEN': 'private-token'}
+    result = release_expectation_presence(values)
+    assert result == {'EXPECTED_APP_BUILD': True, 'RESILIENCE_POLICY_SHA256': False,
+                      'EXPECTED_EQUITY_CODE_SHA256': False}
+    assert 'private' not in json.dumps(result)
 
 
 @pytest.mark.parametrize('asset', ['equity', 'options', 'futures', 'mcx', 'equity_smc'])

@@ -11,6 +11,7 @@ import pytest
 
 import app_runtime as runtime
 import nifty_session_calendar as calendar
+from history_freshness import HistoryFreshness
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,7 @@ def functions(*names, **context):
     scope = dict(datetime=dt, IST=IST, nse_calendar=calendar, runtime=runtime, pd=pd,
                  time=time, sqlite3=sqlite3, DEFAULT_DB_PATH='unused', LOGGER=logging.getLogger('history-test'),
                  OBSERVABILITY=SimpleNamespace(record=lambda *a, **kw: None))
+    scope['HISTORY_FRESHNESS'] = HistoryFreshness()
     scope.update(context)
     exec(compile(ast.Module(body=nodes, type_ignores=[]), 'app.py', 'exec'), scope)
     return scope
@@ -98,6 +100,8 @@ def test_today_sync_does_not_hide_after_close_refresh(now, fetches):
 @pytest.mark.parametrize('now,last,marked', [
     ('2026-10-04T22:23:00+05:30', '2026-10-01', True),
     ('2026-10-04T22:23:00+05:30', '2026-09-30', False),
+    ('2026-10-05T17:02:00+05:30', '2026-10-01', False),
+    ('2026-10-05T17:02:00+05:30', '2026-10-05', True),
     ('2027-01-04T16:00:00+05:30', '2027-01-04', False),
 ])
 def test_persisted_freshness_marker_requires_reviewed_calendar_and_real_last_bar(tmp_path, now, last, marked):
@@ -121,3 +125,44 @@ def test_persisted_freshness_marker_requires_reviewed_calendar_and_real_last_bar
     assert bool(result) is marked
     if marked:
         assert result[0] == observed.date().isoformat()
+
+
+def test_post_close_missing_candle_stays_uncertified_and_logs_are_aggregated(caplog):
+    monitor = HistoryFreshness()
+    logger = logging.getLogger('freshness-aggregate-test')
+    today = dt.date(2026, 10, 5)
+    for i in range(96):
+        monitor.record(f'NSE_EQ|TEST{i}', expected=today, latest=dt.date(2026, 10, 1), today=today, logger=logger)
+    snapshot = monitor.snapshot(today)
+    assert snapshot['by_status'] == {'EXPECTED_SESSION_NOT_RECEIVED': 96}
+    assert snapshot['missing_instruments'] == 96 and len(snapshot['samples']) == 5
+    assert len(caplog.records) == 1
+    monitor.record('NSE_EQ|TEST0', expected=today, latest=today, today=today, logger=logger)
+    assert monitor.snapshot(today)['missing_instruments'] == 95
+
+
+def test_missing_previous_session_unknown_calendar_and_bounded_state(caplog):
+    monitor = HistoryFreshness(maximum=2)
+    logger = logging.getLogger('freshness-bound-test')
+    today = dt.date(2026, 10, 6)
+    monitor.record('old', expected=dt.date(2026, 10, 5), latest=dt.date(2026, 10, 1), today=today, logger=logger)
+    monitor.record('unknown', expected=None, latest=today, today=today, logger=logger)
+    assert monitor.snapshot(today)['by_status'] == {'STALE_HISTORY': 1, 'CALENDAR_UNVERIFIED': 1}
+    monitor.record('new', expected=today, latest=today, today=today, logger=logger)
+    assert monitor.snapshot(today)['observed_instruments'] == 2
+    assert monitor.snapshot(today + dt.timedelta(days=1))['observed_instruments'] == 0
+    with pytest.raises(ValueError):
+        HistoryFreshness(0)
+
+
+def test_parallel_history_diagnostics_keep_every_instrument_and_one_warning(caplog):
+    from concurrent.futures import ThreadPoolExecutor
+    monitor = HistoryFreshness()
+    today = dt.date(2026, 10, 5)
+    def observe(index):
+        monitor.record(str(index), expected=today, latest=None, today=today,
+                       logger=logging.getLogger('freshness-concurrency-test'))
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        list(pool.map(observe, range(96)))
+    assert monitor.snapshot(today)['missing_instruments'] == 96
+    assert len(caplog.records) == 1
