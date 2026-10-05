@@ -848,22 +848,39 @@ class ProductionRepository:
         complete = len(rows) >= int(minimum_complete)
         snapshot_id = hashlib.sha256(f"{snapshot_date}|{payload_hash}".encode()).hexdigest()
         with self.connect() as conn:
+            # Serialize this date's header/membership decision; never lock across I/O.
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"universe:{snapshot_date}",))
             existing = conn.execute(
-                f"SELECT is_complete FROM {SCHEMA}.universe_snapshots WHERE snapshot_date=%s",
+                f"SELECT is_complete,payload_hash,instrument_count,source FROM {SCHEMA}.universe_snapshots WHERE snapshot_date=%s",
                 (snapshot_date,),
             ).fetchone()
-            conn.execute(
-                f"INSERT INTO {SCHEMA}.universe_snapshot_versions VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(snapshot_id) DO NOTHING",
+            created = conn.execute(
+                f"INSERT INTO {SCHEMA}.universe_snapshot_versions VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(snapshot_id) DO NOTHING RETURNING snapshot_id",
                 (snapshot_id, snapshot_date, observed_at, source, len(rows), payload_hash, complete, SCHEMA_VERSION),
-            )
-            _executemany(conn,
-                f"INSERT INTO {SCHEMA}.universe_membership_versions VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(snapshot_id,instrument_key) DO NOTHING",
-                [(snapshot_id, r["instrument_key"], r["trading_symbol"], r["isin"], r["name"],
-                  r["exchange"], r["segment"], r["instrument_type"], r["security_type"], r["sector"],
-                  source, observed_at, _json(r["raw"])) for r in rows],
-            )
+            ).fetchone()
+            if created:
+                _executemany(conn,
+                    f"INSERT INTO {SCHEMA}.universe_membership_versions VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(snapshot_id,instrument_key) DO NOTHING",
+                    [(snapshot_id, r["instrument_key"], r["trading_symbol"], r["isin"], r["name"],
+                      r["exchange"], r["segment"], r["instrument_type"], r["security_type"], r["sector"],
+                      source, observed_at, _json(r["raw"])) for r in rows],
+                )
+            version_observed = observed_at if created else _utc_datetime(conn.execute(
+                f"SELECT observed_at FROM {SCHEMA}.universe_snapshot_versions WHERE snapshot_id=%s",
+                (snapshot_id,),
+            ).fetchone()[0])
             preserve_canonical = bool(existing and existing[0] and not complete)
-            if not preserve_canonical:
+            canonical_unchanged = bool(existing and existing[0] == complete
+                                       and existing[1] == payload_hash
+                                       and existing[2] == len(rows) and existing[3] == source)
+            if canonical_unchanged:
+                retained_count = conn.execute(
+                    f"SELECT count(*) FROM {SCHEMA}.universe_membership WHERE snapshot_date=%s",
+                    (snapshot_date,),
+                ).fetchone()[0]
+                if retained_count != len(rows):
+                    raise RuntimeError("UNIVERSE_CANONICAL_MEMBERSHIP_COUNT_MISMATCH")
+            if not preserve_canonical and not canonical_unchanged:
                 conn.execute(
                     f"INSERT INTO {SCHEMA}.universe_snapshots VALUES (%s,%s,%s,%s,%s,%s,%s) "
                     "ON CONFLICT(snapshot_date) DO UPDATE SET observed_at=EXCLUDED.observed_at,source=EXCLUDED.source,instrument_count=EXCLUDED.instrument_count,payload_hash=EXCLUDED.payload_hash,is_complete=EXCLUDED.is_complete,schema_version=EXCLUDED.schema_version",
@@ -880,8 +897,10 @@ class ProductionRepository:
         return {
             "date": str(snapshot_date), "count": len(rows), "complete": complete,
             "payload_hash": payload_hash, "canonical_preserved": preserve_canonical,
-            "snapshot_id": snapshot_id, "observed_at": observed_at.isoformat(),
+            "snapshot_id": snapshot_id, "observed_at": version_observed.isoformat(),
             "source": source,
+            "canonical_changed": not preserve_canonical and not canonical_unchanged,
+            "version_created": bool(created),
         }
 
     def record_feature_observation(self, *, instrument_key: str, feature_name: str, value,

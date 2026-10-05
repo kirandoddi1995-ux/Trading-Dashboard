@@ -1,5 +1,11 @@
 # NIFTY intraday safeguards: staged commissioning
 
+**Storage hold, independently verified 2026-10-05 18:16 UTC:** cluster size
+493,984,565 bytes leaves only 6,015,435 nominal decimal bytes below 500 MB.
+Do not install derivative schemas or run the reference pilot in this project now.
+See STORAGE_EMERGENCY_2026-10-05.md for the superseding sequence and separate
+database design decision. The pilot's 24 MB admission requirement is not met.
+
 This supersedes the ingestion/storage sequencing in DERIVATIVE_DATABASE_COMMISSIONING.md.
 It is an owner-run plan, not confirmation that hosted safeguards are operational.
 The 471,936,147-byte measurement is historical. Obtain fresh measurements first.

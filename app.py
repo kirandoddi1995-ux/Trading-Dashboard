@@ -8169,9 +8169,9 @@ elif selected_tab == "Equities Screener & Risk":
             if not run_scan_now and "last_full_scan_signals" in st.session_state:
                 valid_signals = st.session_state["last_full_scan_signals"]
     else:
-        # Auto-run once per session on first visit — after that, reuse the cached
-        # result and only re-scan when explicitly asked. This gives "zero clicks"
-        # for the first view without silently re-running an expensive full
+        # Require an explicit first scan, then reuse the cached result until
+        # another scan is requested. Page loads/redeploys must not create audit
+        # writes or silently re-run an expensive full
         # historical+indicator scan on every 15s autorefresh cycle in the background,
         # which would burn through Upstox API quota for no benefit.
         already_scanned_this_session = "last_quick_signals" in st.session_state
@@ -8186,7 +8186,11 @@ elif selected_tab == "Equities Screener & Risk":
             ):
                 st.session_state.pop(stale_key, None)
         elif not already_scanned_this_session:
-            run_scan_now = True
+            # Loading/redeploying the page is not consent to a new durable scan.
+            run_scan_now = st.button("Run Quick Scan", key="eq_run_quick_btn", width='stretch')
+            if not run_scan_now:
+                valid_signals = []
+                st.info("No scan runs automatically. Each scan records durable evidence; start one explicitly.")
         else:
             run_scan_now = st.button("🔄 Refresh Results", key="eq_run_quick_btn", width='stretch')
             if not run_scan_now:

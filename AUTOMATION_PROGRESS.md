@@ -961,3 +961,65 @@ cacea095f9a752604f89762b12c3c01ca036366a4823dddec784430f04d15d64
 Build/policy unchanged. Owner updates expectation only AFTER checked release
 promotion. First owner action is fresh inventory/cluster/dashboard measurements,
 not enabling ingestion. Waiting on owner review/upload and manual commissioning.
+
+## 2026-10-05 storage emergency — supersedes derivative activation advice
+
+Independent owner-level Supabase connector checks used explicit READ ONLY
+transactions and short timeouts. Exact queries: sql/storage_emergency_read_only.sql.
+Verified 18:16 UTC cluster 493,984,565, database 478,710,931 bytes, only 6,015,435
+nominal cluster headroom. All nine derivative tables absent. No hosted changes,
+secrets read/output, data deletions or frozen research performance inspection.
+One read-only alias syntax error was corrected and the SELECT rerun successfully.
+
+Findings: actual outcomes 445 rows, 33.4 MB live stored payload, last written Oct 2;
+60.2 MB allocation is not all bloat or immediately reclaimable. Main measured
+growth risk is live ledger: Oct 5 1,669 events / 5,102,225 stored payload bytes.
+Universe has two distinct versions today, not one per scan; canonical members
+were nevertheless unnecessarily rewritten on every repeat. Version representations
+differ across raw master fields, so do not erase those differences to force dedup.
+Normal eligible outcomes/quotes=0, NAV=706. Reviewed shorter NAV cutoff candidate
+61,235 rows, always retaining newest per scheme; no deletion authorized/executed.
+
+Implemented: production_repository.archive_universe serializes per date, skips
+unchanged canonical rewrites and existing-version member conflict writes, preserves
+the original version receipt, and blocks a matching header with missing members.
+app.py requires explicit first Quick Scan rather than automatically writing audit
+events on a page open/redeploy. Actual scan and scheduled evidence remain intact.
+No migration or archive-policy change. Five offline regression tests use disposable
+Postgres, including real write-rejection triggers and missing-member failure.
+
+New/current changed paths (seven): app.py, production_repository.py,
+tests/test_universe_storage_sql.py, sql/storage_emergency_read_only.sql,
+STORAGE_EMERGENCY_2026-10-05.md, DERIVATIVE_PILOT_COMMISSIONING.md,
+AUTOMATION_PROGRESS.md. The earlier twelve-file commissioning group remains a
+dependency if not already uploaded; combined unique paths=17, listed in the runbook.
+
+Storage plan: verified bounded NAV archival only after owner reader review;
+ordinary VACUUM ANALYZE before/after measurements, no low-headroom VACUUM FULL or
+large reindex. Vacuum may provide reuse without physical shrink; NAV free pages
+do not absorb ledger inserts. Never delete ledger history without tested archived
+chain readers, anchors, restore and idempotency coverage. Current ledger tiering
+does not exist: it is the next engineering priority, not derivative installation.
+
+Separate F&O control-plane preference: Neon (official Oct 2 announcement now
+1 GB/project, 100 CU-hours/month, six-hour restore window), conditional on tested
+compute/cold-start/permissions and owner decision. Supabase offers two Free projects
+but its docs additionally describe organization-average fair-use restrictions;
+confirm those before assuming independent extra headroom. Render Free expires in
+30 days and is rejected. Raw licensed bulk data stays in private Drive. Existing
+runtime derivative reads share the equity connector; dedicated routing must be
+implemented before any split. No new account or hosted settings changed.
+
+Validation: five targeted tests passed; pyflakes all root/test Python clean;
+strict mypy clean on 19 configured modules. First full suite 1,741 passed,
+4 unchanged skips, 2 subtests. Final full rerun after missing-member guard passed:
+1,742 passed, 4 unchanged skips, 2 subtests in 274.77s. Includes existing offline
+app boot/import and disposable SQL checks.
+Self-review added missing-member guard, corrected stale auto-scan comment and
+distinguished live payload from allocated bytes and per-project/org quota issues.
+
+Reviewed source fingerprint (build/policy unchanged):
+f7ff707c03609986b56276cc1a724d27b71e7ec6b977fccf0d43533e0feb30ae
+Owner changes EXPECTED_EQUITY_CODE_SHA256 only after checked release promotion.
+Waiting on owner review/upload, fresh quota checks, and
+explicit NAV archive decision. Storage emergency is NOT declared resolved.
