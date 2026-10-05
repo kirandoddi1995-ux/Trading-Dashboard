@@ -31,10 +31,5 @@ if (-not $RegisterTasks) {
     Write-Output 'Disabled XML plans written privately. Review before explicitly registering.'
     return
 }
-foreach ($mode in @('prepare', 'poll', 'audit')) {
-    $xmlPath = Join-Path $PrivateRoot "task-plans\$mode.xml"
-    $xml = Get-Content -LiteralPath $xmlPath -Raw
-    Register-ScheduledTask -TaskName "KiranTrading-Forward-$mode" -Xml $xml | Out-Null
-}
-Write-Output 'Three tasks registered DISABLED, normal user, interactive login, no stored Windows password.'
-Write-Output 'No collector has been enabled. Complete supervised preparation and polls first.'
+. (Join-Path $PSScriptRoot 'forward_task_registration.ps1')
+Register-ForwardTaskPlans -PlansDirectory (Join-Path $PrivateRoot 'task-plans')
