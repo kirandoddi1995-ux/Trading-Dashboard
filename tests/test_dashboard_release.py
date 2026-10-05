@@ -16,8 +16,13 @@ class Fake:
         self.refs = {'heads/main': NEW, 'heads/release': OLD, release.VERIFIED + OLD: OLD}
         self.writes = []
         self.bad = {}
-        self.checks = [dict(name='CodeQL', head_sha=NEW, status='completed', conclusion='success',
-                            app={'slug': 'github-code-scanning'})]
+        self.codeql_fields = {}
+        self.codeql_more = []
+        self.job_fields = {}
+        self.job_names = list(release.CODEQL_JOBS)
+        self.workflow_fields = {}
+        self.refresh_fields = {}
+        self.codeql_sha = NEW
         self.more_runs = []
 
     def call(self, path, *, method='GET', data=None):
@@ -30,6 +35,19 @@ class Fake:
             return None if value is None else {'object': {'type': 'commit', 'sha': value}}
         if path.startswith('/compare/'):
             return {'status': self.bad.get('ancestry', 'ahead')}
+        if path == '/actions/workflows/42':
+            return dict(dict(id=42, path=release.CODEQL_PATH, name='CodeQL', state='active'),
+                        **self.workflow_fields)
+        if path.startswith('/actions/runs?'):
+            self.codeql_sha = path.split('head_sha=')[1].split('&')[0]
+            return {'workflow_runs': [self.codeql_run(), *self.codeql_more]}
+        if path.startswith('/actions/runs/99/attempts/'):
+            attempt = int(path.split('/')[5])
+            return {'jobs': [dict(dict(name=name, run_id=99, run_attempt=attempt,
+                head_sha=self.codeql_sha, head_branch='main', status='completed', conclusion='success'),
+                **self.job_fields) for name in self.job_names]}
+        if path == '/actions/runs/99':
+            return dict(self.codeql_run(), **self.refresh_fields)
         if '/actions/workflows/' in path:
             workflow = path.split('/')[3]
             sha = path.split('head_sha=')[1].split('&')[0]
@@ -38,10 +56,13 @@ class Fake:
                        conclusion=self.bad.get(workflow, 'success'))
             row.update(self.bad.get('run_fields', {}))
             return {'workflow_runs': [row, *self.more_runs]}
-        if '/check-runs?' in path:
-            sha = path.split('/')[2]
-            return {'check_runs': [dict(row, head_sha=sha) for row in self.checks]}
         raise AssertionError(path)
+
+    def codeql_run(self):
+        return dict(dict(id=99, workflow_id=42, run_attempt=1, path=release.CODEQL_PATH,
+            name='Push on main', event='dynamic', head_sha=self.codeql_sha, head_branch='main',
+            head_repository={'full_name': REPO}, repository={'full_name': REPO},
+            status='completed', conclusion='success'), **self.codeql_fields)
 
 
 def ready(api, mode='promote', **kwargs):
@@ -83,19 +104,99 @@ def test_latest_failed_rerun_overrides_old_success():
     assert not ready(api)['ready']
 
 
-@pytest.mark.parametrize('checks', [[], [dict(name='CodeQL', app={'slug': 'github-actions'},
-    status='completed', conclusion='success')], [dict(name='CodeQL', app={'slug': 'github-code-scanning'},
-    status='completed', conclusion='neutral')]])
-def test_missing_spoofed_or_non_success_codeql_blocks(checks):
+@pytest.mark.parametrize('fields', [{'path': '.github/workflows/codeql.yml'},
+    {'event': 'push'}, {'conclusion': 'neutral'}, {'head_sha': OTHER},
+    {'head_branch': 'feature'}, {'head_repository': {'full_name': 'fork/dashboard'}},
+    {'repository': {'full_name': 'fork/dashboard'}}, {'status': 'in_progress'},
+    {'conclusion': 'failure'}, {'conclusion': 'skipped'}, {'conclusion': None}])
+def test_missing_spoofed_or_non_success_codeql_blocks(fields):
     api = Fake()
-    api.checks = checks
+    api.codeql_fields = fields
     assert not ready(api)['ready']
+    assert not api.writes
 
 
 def test_every_codeql_category_must_succeed():
     api = Fake()
-    api.checks.append(dict(api.checks[0], conclusion='failure'))
+    api.job_fields = {'conclusion': 'failure'}
     assert not ready(api)['ready']
+
+
+def test_real_default_setup_shape_passes_without_any_aggregate_check():
+    report = ready(Fake())
+    assert report['ready'] and report['blockers'] == []
+    assert report['codeql'] == dict(ready=True, reason='VERIFIED', run_id=99,
+        run_attempt=1, workflow_id=42, required_jobs=list(release.CODEQL_JOBS), missing_or_failed_jobs=[])
+
+
+@pytest.mark.parametrize('names', [[], list(release.CODEQL_JOBS[:-1]),
+    [*release.CODEQL_JOBS, release.CODEQL_JOBS[0]], ['CodeQL']])
+def test_missing_or_duplicate_languages_block(names):
+    api = Fake()
+    api.job_names = names
+    assert not ready(api)['ready']
+
+
+@pytest.mark.parametrize('fields', [{'run_attempt': 2}, {'run_id': 100}, {'head_sha': OTHER},
+    {'head_branch': 'feature'}, {'status': 'in_progress'}, {'conclusion': 'neutral'},
+    {'conclusion': 'skipped'}, {'conclusion': None}])
+def test_wrong_attempt_or_non_success_analysis_jobs_block(fields):
+    api = Fake()
+    api.job_fields = fields
+    assert not ready(api)['ready']
+
+
+@pytest.mark.parametrize('fields', [{'path': '.github/workflows/codeql.yml'},
+    {'id': 43}, {'state': 'disabled_manually'}])
+def test_managed_workflow_metadata_is_required(fields):
+    api = Fake()
+    api.workflow_fields = fields
+    assert ready(api)['codeql']['reason'] == 'MANAGED_WORKFLOW_INVALID'
+
+
+def test_latest_codeql_run_failure_and_rerun_races_block():
+    api = Fake()
+    api.codeql_more = [dict(api.codeql_run(), id=100, conclusion='failure')]
+    assert ready(api)['codeql']['reason'] == 'RUN_NOT_SUCCESSFUL'
+    api.codeql_more = [dict(api.codeql_run(), run_attempt=2, conclusion='failure')]
+    assert ready(api)['codeql']['reason'] == 'RUN_NOT_SUCCESSFUL'
+    api.codeql_more = []
+    api.refresh_fields = {'run_attempt': 2, 'status': 'in_progress', 'conclusion': None}
+    assert ready(api)['codeql']['reason'] == 'RUN_CHANGED_DURING_VERIFICATION'
+
+
+def test_new_codeql_run_appearing_during_jobs_fetch_blocks():
+    api = Fake()
+    original = api.call
+    def call(path, **kwargs):
+        result = original(path, **kwargs)
+        if '/attempts/' in path:
+            api.codeql_more = [dict(api.codeql_run(), id=100, status='in_progress', conclusion=None)]
+        return result
+    api.call = call
+    assert ready(api)['codeql']['reason'] == 'NEWER_RUN_REQUIRES_VERIFICATION'
+
+
+def test_codeql_attempt_endpoint_is_pinned_and_new_successful_attempt_passes():
+    api = Fake()
+    api.codeql_fields = {'run_attempt': 2}
+    calls = []
+    original = api.call
+    def call(path, **kwargs):
+        calls.append(path)
+        return original(path, **kwargs)
+    api.call = call
+    assert ready(api)['ready']
+    assert any('/runs/99/attempts/2/jobs?' in path for path in calls)
+    assert not any('check-runs' in path for path in calls)
+
+
+@pytest.mark.parametrize('value', [None, '42', True, 0, -1])
+def test_invalid_codeql_identity_never_reaches_jobs(value):
+    api = Fake()
+    api.codeql_fields = {'workflow_id': value}
+    with pytest.raises(release.ReleaseError, match='CODEQL_IDENTITY_INVALID'):
+        ready(api)
 
 
 @pytest.mark.parametrize('change', ['head', 'release', 'checks', 'switch'])
@@ -246,3 +347,6 @@ def test_workflow_limits_privilege_and_does_not_touch_model_workflows():
     assert 'needs.verify.outputs.ready' in source
     assert source.count('contents: write') == 1
     assert 'secrets.' not in source and 'id-token: write' not in source
+    assert 'CodeQL, codeql]' in source
+    assert "github.event.workflow_run.event == 'dynamic'" in source
+    assert "github.event.workflow_run.head_branch == 'main'" in source
