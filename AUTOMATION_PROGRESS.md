@@ -670,3 +670,59 @@ No real ref update, task/vault operation, GitHub/settings write, cloud deploymen
 database interaction, data/history deletion or 2025/2026 research examination.
 Waiting on owner review/upload and release-branch commissioning. No additional
 changes are needed merely on a heartbeat while those prerequisites are unchanged.
+
+### Default-setup CodeQL release gate correction
+
+Owner preview on bb31d2bc723c268b055f1a481e0cb355e4d81a3e disproved the earlier
+aggregate-check assumption: quality/resilience and CodeQL were green, but the
+required CodeQL aggregate was absent. The previous local mock did not represent
+default-setup push metadata. This is a confirmed integration defect, not failed
+security analysis. No promotion/cutover has occurred; owner settings remain parked.
+
+Read-only, anonymous public GitHub API inspection confirmed managed workflow
+339597929: name CodeQL, path dynamic/github-code-scanning/codeql, state active.
+Exact SHA's run 37287267947: event dynamic, main, attempt 1, completed/success;
+Analyze (actions), Analyze (javascript-typescript), Analyze (python) all succeed.
+Contrary to the lowercase UI label, the API workflow name is uppercase CodeQL.
+The wake-up exclusion was primarily the push-only origin guard.
+
+Replacement policy: select latest exact-SHA/main/repository managed dynamic run,
+verify workflow identity/path/state, pin jobs to that attempt, require all three
+language jobs and success for every returned job, reject duplicates/wrong origins,
+re-read run and run list to catch in-flight reruns/new runs. Preview reports safe
+CodeQL IDs/reasons/missing jobs. No aggregate check, new token scope or admin access.
+Workflow accepts the managed dynamic handoff (both CodeQL name spellings), but
+readiness still comes from independent API verification, never trigger success.
+Publication, rollback, controller verification and external fingerprint unchanged.
+Analysis execution success is not a zero-alert assertion; security alert review
+remains an owner responsibility. New language/configuration requires policy review.
+
+Five-file local repair group:
+- dashboard_release.py
+- .github/workflows/dashboard-release.yml
+- tests/test_dashboard_release.py
+- DASHBOARD_RELEASE_RUNBOOK.md
+- AUTOMATION_PROGRESS.md
+
+Final validation: 1,633 passed, 4 unchanged skips, 2 subtests passed in 238.96s.
+Targeted release/actual copied-app boot: 66 passed. All root/test Python lint,
+strict mypy (16 modules), pip check and workflow YAML/unchanged permissions passed.
+Read-only public-API execution of the replacement against the supplied exact SHA
+returned blockers [] and codeql VERIFIED, run 37287267947 / attempt 1 / workflow
+339597929, with all three jobs present. This verifies the real response shape,
+not authenticated GITHUB_TOKEN access or future workflow_run wake-ups, which the
+owner's final-commit preview/commissioning must still confirm. No GitHub writes.
+Equity fingerprint unchanged:
+2893995505709b1b6a6bfcea342a2edb3770319c695297234747cf1b6801c7b9.
+
+Final self-review checked managed identity versus spoofed YAML names, exact SHA,
+main/repository boundaries, required languages/duplicates, attempt-specific jobs,
+latest failed reruns and new-run races, pagination, safe diagnostic output, dynamic
+wake-up names/origin checks and unchanged privilege/rollback/fingerprint behavior.
+No remaining issue identified in this repair; hosted wake-up/token commissioning
+remains outstanding. One diagnostic without a unique basetemp again hit the
+pre-existing pytest-current Windows cleanup ACL failure after passing test bodies;
+final runs used unique temp directories without modifying permissions/old data.
+Next: owner uploads all five, waits for exact final SHA's CI, reruns preview on main.
+Require READY / blockers [] / codeql VERIFIED before environment, enable variable,
+promotion or Streamlit cutover. No hosted writes or credential/data inspection.

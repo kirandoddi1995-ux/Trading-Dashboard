@@ -19,6 +19,8 @@ from urllib.request import Request, urlopen
 
 SHA = re.compile(r'[0-9a-f]{40}')
 WORKFLOWS = ('quality.yml', 'resilience.yml')
+CODEQL_PATH = 'dynamic/github-code-scanning/codeql'
+CODEQL_JOBS = ('Analyze (actions)', 'Analyze (javascript-typescript)', 'Analyze (python)')
 RELEASE = 'heads/release'
 VERIFIED = 'tags/dashboard-verified/'
 
@@ -88,12 +90,70 @@ def pages(api: API, path: str, key: str) -> list[dict[str, Any]]:
     raise ReleaseError('RELEASE_CHECK_PAGINATION_LIMIT')
 
 
-def blockers(api: API, repository: str, sha: str) -> list[str]:
+def codeql_result(api: API, repository: str, sha: str) -> dict[str, Any]:
+    """Verify GitHub-managed default setup, not a similarly named YAML job.
+
+    The managed path and dynamic event were verified against this repository's
+    public API. A provider metadata change fails closed and needs policy review.
+    All three installed languages are mandatory; no aggregate PR check is needed.
+    """
+    commit(sha)
+    rows = pages(api, f'/actions/runs?head_sha={sha}&event=dynamic&branch=main', 'workflow_runs')
+    matching = [row for row in rows if row.get('path') == CODEQL_PATH
+                and row.get('head_sha') == sha and row.get('event') == 'dynamic'
+                and row.get('head_branch') == 'main'
+                and row.get('head_repository', {}).get('full_name') == repository
+                and row.get('repository', {}).get('full_name') == repository]
+    latest = max(matching, key=lambda row: (row['id'], row.get('run_attempt', 1)), default=None)
+    report: dict[str, Any] = dict(ready=False, reason='MANAGED_RUN_MISSING',
+                                 required_jobs=list(CODEQL_JOBS))
+    if latest is None:
+        return report
+    run_id, attempt, workflow_id = (latest.get(key) for key in ('id', 'run_attempt', 'workflow_id'))
+    if any(type(value) is not int or value <= 0 for value in (run_id, attempt, workflow_id)):
+        raise ReleaseError('CODEQL_IDENTITY_INVALID')
+    report.update(run_id=run_id, run_attempt=attempt, workflow_id=workflow_id)
+    workflow = api.call(f'/actions/workflows/{workflow_id}')
+    if workflow.get('id') != workflow_id or workflow.get('path') != CODEQL_PATH or workflow.get('state') != 'active':
+        return dict(report, reason='MANAGED_WORKFLOW_INVALID')
+    if latest.get('status') != 'completed' or latest.get('conclusion') != 'success':
+        return dict(report, reason='RUN_NOT_SUCCESSFUL')
+    jobs = pages(api, f'/actions/runs/{run_id}/attempts/{attempt}/jobs', 'jobs')
+    # Reject duplicates and unexpected failed/skipped jobs as well as missing
+    # languages. Never mix jobs across attempts, SHAs or branches.
+    valid = bool(jobs) and all(row.get('run_id') == run_id and row.get('run_attempt') == attempt
+                              and row.get('head_sha') == sha and row.get('head_branch') == 'main'
+                              and row.get('status') == 'completed' and row.get('conclusion') == 'success'
+                              for row in jobs)
+    failed = [name for name in CODEQL_JOBS if len([row for row in jobs if row.get('name') == name]) != 1
+              or any(row.get('name') == name and (row.get('status') != 'completed'
+                     or row.get('conclusion') != 'success') for row in jobs)]
+    report['missing_or_failed_jobs'] = failed
+    if not valid or failed:
+        return dict(report, reason='ANALYSIS_JOBS_NOT_VERIFIED')
+    # A rerun can begin while jobs are fetched. Re-read the run and discover any
+    # newer run before accepting this attempt's now-historical success.
+    refreshed = api.call(f'/actions/runs/{run_id}')
+    identity = ('id', 'workflow_id', 'run_attempt', 'head_sha', 'head_branch', 'event',
+                'path', 'head_repository', 'repository', 'status', 'conclusion')
+    if any(refreshed.get(key) != latest.get(key) for key in identity):
+        return dict(report, reason='RUN_CHANGED_DURING_VERIFICATION')
+    newest = pages(api, f'/actions/runs?head_sha={sha}&event=dynamic&branch=main', 'workflow_runs')
+    if any(row.get('path') == CODEQL_PATH and row.get('head_sha') == sha
+           and row.get('event') == 'dynamic' and row.get('head_branch') == 'main'
+           and row.get('head_repository', {}).get('full_name') == repository
+           and row.get('repository', {}).get('full_name') == repository
+           and (row['id'], row.get('run_attempt', 1)) > (run_id, attempt) for row in newest):
+        return dict(report, reason='NEWER_RUN_REQUIRES_VERIFICATION')
+    return dict(report, ready=True, reason='VERIFIED')
+
+
+def blockers(api: API, repository: str, sha: str, *, diagnostics: dict[str, Any] | None = None) -> list[str]:
     """Latest push attempt of each mandatory workflow, plus real CodeQL results.
 
     PR results, skipped/neutral checks and old successful reruns never substitute
-    for the required exact-SHA main push. The CodeQL app identity prevents a job
-    merely named 'CodeQL' from satisfying security analysis.
+    for the required exact-SHA main push. CodeQL uses its managed dynamic workflow
+    identity and explicit per-language jobs, not an aggregate pull-request check.
     """
     commit(sha)
     missing = []
@@ -106,13 +166,10 @@ def blockers(api: API, repository: str, sha: str) -> list[str]:
         latest = max(matching, key=lambda row: (row['id'], row.get('run_attempt', 1)), default=None)
         if latest is None or latest.get('status') != 'completed' or latest.get('conclusion') != 'success':
             missing.append(workflow)
-    checks = pages(api, f'/commits/{sha}/check-runs?filter=latest', 'check_runs')
-    codeql = [row for row in checks if row.get('name') == 'CodeQL'
-              and row.get('app', {}).get('slug') == 'github-code-scanning' and row.get('head_sha') == sha]
-    # Multiple CodeQL categories must all succeed; missing categories cannot be
-    # inferred. The owner verifies CodeQL configuration before commissioning.
-    if not codeql or any(row.get('status') != 'completed' or row.get('conclusion') != 'success'
-                         for row in codeql):
+    codeql = codeql_result(api, repository, sha)
+    if diagnostics is not None:
+        diagnostics['codeql'] = codeql
+    if not codeql['ready']:
         missing.append('CodeQL')
     return missing
 
@@ -141,9 +198,10 @@ def plan(api: API, repository: str, mode: str, *, enabled: str,
         if current is not None and sha != current:
             if api.call(f'/compare/{current}...{sha}')['status'] != 'ahead':
                 raise ReleaseError('PROMOTION_NOT_FAST_FORWARD')
-    blocked = blockers(api, repository, sha)
+    diagnostics: dict[str, Any] = {}
+    blocked = blockers(api, repository, sha, diagnostics=diagnostics)
     return dict(status='CHECKS_PENDING_OR_FAILED' if blocked else 'READY', ready=not blocked,
-                sha=sha, previous=current, main=head, blockers=blocked)
+                sha=sha, previous=current, main=head, blockers=blocked, **diagnostics)
 
 
 def fingerprint(root: Path) -> str:

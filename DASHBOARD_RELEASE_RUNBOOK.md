@@ -10,7 +10,13 @@ The app will follow `release`; development/manual uploads and research stay on
 `main`. `Checked dashboard release` wakes after quality, resilience or CodeQL
 workflow completion. Its read-only job polls for up to 15 minutes for the newest
 main SHA's successful main-push quality and resilience runs and successful CodeQL
-checks from GitHub's code-scanning app. PR runs, skips, neutral results, old success
+default-setup analysis jobs. The trusted managed workflow path is
+`dynamic/github-code-scanning/codeql`, event `dynamic`, in this repository on
+main at the exact SHA. Its latest run/attempt must succeed, with exactly one
+successful job for each of actions, javascript-typescript and python. Workflow
+metadata and job SHA/run/attempt/branch are checked; the run is re-read to detect
+reruns during verification. A YAML workflow merely named CodeQL cannot substitute.
+PR runs, skips, neutral results, old success
 before a failed rerun, another SHA or a fork never count. Missing checks block.
 
 Only a ready result permits the separate write job. It rechecks main, release,
@@ -48,13 +54,11 @@ not restore local files or prove external services/configuration are healthy.
 
 ## 1. Upload and validate (owner)
 
-Upload the complete eight-file group, preserving folders:
+For the default-setup CodeQL repair, upload these five changed files together,
+preserving folders (the other files from the original installation are unchanged):
 - dashboard_release.py
 - .github/workflows/dashboard-release.yml
-- .github/workflows/quality.yml
-- mypy-automation.ini
 - tests/test_dashboard_release.py
-- tests/test_streamlit_boot.py
 - DASHBOARD_RELEASE_RUNBOOK.md
 - AUTOMATION_PROGRESS.md
 
@@ -85,11 +89,23 @@ $releaseTestTemp = Join-Path $env:TEMP ('dashboard-release-tests-' + [guid]::New
    unchecked. Run. Expected READY for the exact newest main SHA with blockers [].
    Publish job is skipped; preview never changes a branch or tag.
 3. If CodeQL is listed as a blocker although the UI is green, inspect that commit's
-   Checks details. The required aggregate is `CodeQL`, app `github-code-scanning`.
-   A different configured name/app needs a reviewed policy change. Do not rename
-   a normal job to satisfy it or bypass the check. CodeQL's installed categories
-   must cover the languages/security analysis you expect; commissioning verifies
-   this configuration, since absent categories cannot be inferred from a success.
+   `codeql.reason` in the preview JSON. Success shows VERIFIED, run_id,
+   run_attempt, workflow_id and missing_or_failed_jobs []. The three mandatory
+   job names are listed in required_jobs. Missing jobs, an inactive/changed
+   managed workflow, a failed/latest rerun or API errors remain blockers.
+   Do not rename a normal job or relax the gate to satisfy it.
+   The earlier aggregate-check policy was wrong for this default-setup push:
+   read-only public API inspection of bb31d2bc723c268b055f1a481e0cb355e4d81a3e
+   found workflow 339597929 named **CodeQL**, managed path above, successful
+   dynamic run 37287267947, attempt 1, and all three expected jobs. The UI's
+   lowercase codeql label is not the API workflow name. Both spellings are wake
+   triggers; dynamic events are now accepted for the CodeQL handoff, while the
+   API still independently verifies the managed path. No aggregate check is
+   required. No additional token permissions, secrets or CodeQL settings needed.
+   This gate verifies successful analysis execution, not absence of every alert;
+   keep reviewing Security → Code scanning. If languages/default setup change,
+   review and update this explicit policy and its tests rather than auto-detecting
+   a smaller required set. Unsupported advanced setup fails closed.
 4. Settings → Environments → New environment → name `dashboard-release`.
    Configure deployment branches/tags as **Selected branches and tags**: add branch
    rules for exactly `main` and `release`, with no tag rule. Leave required reviewers
@@ -202,3 +218,5 @@ not read the dashboard's Streamlit Secrets.
 Sources: GitHub workflow_run security/triggers and ref API:
 https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run
 https://docs.github.com/en/rest/git/refs#update-a-reference
+https://docs.github.com/en/rest/actions/workflows#get-a-workflow
+https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt
