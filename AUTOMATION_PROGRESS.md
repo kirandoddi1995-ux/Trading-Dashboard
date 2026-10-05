@@ -552,8 +552,8 @@ these owner-controlled operational prerequisites remain unchanged.
 
 ### 2026-10-05 owner commissioning failures: narrow repair
 
-Owner observed three XML encoding registration failures followed by an incorrect
-success message. No real tasks exist. Owner also verified credential inputs and
+Owner initially observed three XML encoding registration failures followed by an incorrect
+success message. The initial attempt created no real tasks. Owner also verified credential inputs and
 vault roundtrip via private file after hidden long-JSON paste failed. Those results
 do not justify relaxing any capture/auth/scheduling limits.
 
@@ -584,13 +584,89 @@ Changed upload group (seven files):
 - FORWARD_DATA_RUNBOOK.md
 - AUTOMATION_PROGRESS.md
 
-Validation in progress: full offline suite with SQL harness. Python lint, strict
-mypy (15 modules), and both PowerShell parsers pass. Mocked PowerShell cmdlets
+Repair validation completed: full offline suite with SQL harness, 1,563 passed /
+4 skipped / 2 subtests; final targeted 29 tests passed (including three failure
+cases added after that full run). Python lint, strict mypy (15 modules), and both
+PowerShell parsers passed. Mocked PowerShell cmdlets
 exercise real helper encoding, partial errors, missing/readied tasks and all-three
 Disabled verification without touching Task Scheduler. Initial oversized pytest
 parameter IDs caused temporary-path setup errors; short explicit IDs fix the test
 fixture names. Equity fingerprint unchanged:
 2893995505709b1b6a6bfcea342a2edb3770319c695297234747cf1b6801c7b9.
-Next: record full results/self-review, then owner review/upload and actual disabled
-registration retry. Actual COM acceptance and supervised broker/Drive capture are
-owner checks, not established by offline mocks. Overall foundation remains partial.
+Owner reports all three upload commits green on main, successful real registration
+of all three tasks as Disabled, then deliberate enabling of prepare/poll/audit
+together. 6 Oct is the first automatic day; its 15:40 audit remains pending.
+Option retry #20: CAPTURED, 47 rows, ON_TIME, 10.02-second delay, exit 0, token
+days remaining 236. This verifies one hosted capture/archive/timing path, not
+future punctuality, provider Greek conventions or unattended forward-day coverage.
+Overall foundation remains partial; no inference of complete commissioning.
+
+### Checked dashboard deployment foundation (local implementation)
+
+Owner-authorized scope: separate release branch controlled by exact-SHA quality,
+resilience and CodeQL results, actual offline AppTest boot, automatic promotion,
+explicit paused rollback, owner-only hosted cutover instructions. Research/default
+branch remains main. Existing model authorization/promotion/rollback untouched.
+
+Decision: GitHub metadata (including latest reruns and CodeQL app identity) is the
+authority, not success of whichever old event woke the job. Read-only planning
+precedes the sole contents-write job; it revalidates before an atomic ref update,
+requires a checked controller, uses no managed deployment secrets and executes no
+candidate application code. Serial publisher concurrency; no cancellation mid-write.
+Publisher uses a dedicated dashboard-release environment; owner must restrict
+its deployment branches to main/release before authorizing automation. No required
+reviewer is imposed for routine automatic promotion and no secrets enter it.
+Historical fingerprint manifest parsed as data; hash is reported for the owner.
+Streamlit's independently configured expected hash remains mandatory. A new hash
+can temporarily block approvals until owner updates Secrets; no self-expectation
+or automatic weakening was introduced. Actual hosted health is still owner-verified.
+
+AppTest covers real OIDC sign-in UI and full Settings boot, copied dependency closure
+plus policy/fingerprint sources, clean temporary state, synthetic configuration and
+external-I/O denial. It does not validate live identity/broker/database services or
+all authenticated pages. Special Matplotlib font initialization stays outside the
+subprocess-denial window, with network denied throughout. Production code unchanged.
+
+Eight-file upload group:
+- dashboard_release.py (new, repository root)
+- .github/workflows/dashboard-release.yml (new)
+- .github/workflows/quality.yml
+- mypy-automation.ini
+- tests/test_dashboard_release.py (new)
+- tests/test_streamlit_boot.py (new)
+- DASHBOARD_RELEASE_RUNBOOK.md (new, repository root)
+- AUTOMATION_PROGRESS.md
+
+Final frozen-source validation: 1,601 passed, 4 unchanged skips, 2 subtests passed
+in 225.48 seconds. Targeted release/real boot checks: 34 passed. All root/test Python
+lint, strict mypy (16 modules), pip check and final workflow YAML/permission/branch
+restrictions passed. Actual app boot and SQL safety tests are included in the full
+suite. The new local-app finder prevents imports from escaping to the source tree;
+the original extracted ZIP gate remains intact. Equity fingerprint unchanged:
+2893995505709b1b6a6bfcea342a2edb3770319c695297234747cf1b6801c7b9.
+
+Final self-review checked trigger/ref/origin restrictions, privilege split, no
+credential inheritance or output, exact head/attempt identity, pagination, CodeQL
+origin/missingness, boolean-vs-string confirmation, stale/ref/rerun races, controller
+checks, fast-forward-only promotion, ancestor/tag-only rollback, historical manifest
+reading without executing candidate code, external expectation preservation, real
+boot paths and source isolation. Fixed test-copy resource coverage and import
+isolation; clarified server environment restrictions, static run-variable snapshots,
+queued publisher draining, historical advisory checks and lack of a hosted drain
+handshake. A separate non-basetemp diagnostic hit the pre-existing pytest-current
+Windows ACL cleanup issue; final runs use unique temporary roots, without changing
+permissions or deleting old test data. No remaining defect identified in the tested
+implementation. Hosted GitHub metadata identity/permissions, CodeQL categories,
+environment settings, Streamlit webhook behavior/OIDC and runtime health remain
+owner commissioning checks; local mocks are not claimed to establish them.
+
+Next owner steps:
+review/upload final group, green exact commit, read-only release preview, authorize
+publisher, establish release branch, private secrets/settings backup, drain local
+delivery, quiet-window delete/redeploy to release, verify OIDC/runtime and record
+known-good SHA. Runbook explains timings, latest-head race boundary, branch rules,
+fingerprint ordering, asynchronous restart and schema-compatible rollback.
+No real ref update, task/vault operation, GitHub/settings write, cloud deployment,
+database interaction, data/history deletion or 2025/2026 research examination.
+Waiting on owner review/upload and release-branch commissioning. No additional
+changes are needed merely on a heartbeat while those prerequisites are unchanged.
