@@ -2,7 +2,7 @@ name: Checked dashboard release
 
 on:
   workflow_run:
-    workflows: [Production quality gate, Production resilience gate, CodeQL]
+    workflows: [Production quality gate, Production resilience gate, CodeQL, codeql]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -39,8 +39,10 @@ env:
 
 jobs:
   verify:
+    # Default-setup CodeQL has event dynamic, not push. Its managed path is
+    # verified through the API before readiness; a name alone never grants writes.
     # Never run this privileged handoff for a PR/fork workflow event.
-    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release') && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository))
+    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release') && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.head_branch == 'main' && (github.event.workflow_run.event == 'push' || (github.event.workflow_run.event == 'dynamic' && (github.event.workflow_run.name == 'CodeQL' || github.event.workflow_run.name == 'codeql' || github.event.workflow_run.name == 'Push on main')))))
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
