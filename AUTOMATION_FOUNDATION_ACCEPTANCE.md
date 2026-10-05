@@ -131,3 +131,23 @@ execution, economic edge or complete session coverage. Supabase storage is untou
 No real capture, Drive upload, token capability, unattended host, restore of real
 market data or alert/watchdog has been commissioned by this local implementation.
 See FORWARD_DATA_RUNBOOK.md for owner-reviewed commands and explicit boundaries.
+
+## Automatic-close / Windows adapter slice
+
+Owner reports 55,596 development rows, 737 accepted / 6 excluded sessions,
+identical trade lists versus the original report and repeated frozen replay result
+ebd4c52c531d06d870bd307fe205e9ac6cedbef217348c7f8bb504c5e75f9ee8.
+No new economic edge or sealed-period validation is inferred from reproducibility.
+
+Automatic preparation now retains an exact-date official NSE CSV in a v2 recipe,
+with bounded bytes, fixed HTTPS origin, unique price-index row, original hash and
+actual pre-open retrieval. No stale/alternate source or publication-time guess.
+Windows Credential Manager binds secrets to the owner account; setup uses hidden
+prompts and tests fake the native API, never the real vault. Owner installation
+generates/verifies disabled normal-user tasks; only the owner enables them.
+Missed slots are not backfilled. Local audit requires full journal and remote
+acknowledgment counts while separating unavailable signals from missing capture.
+
+Live NSE availability/schema, native Windows registration, real credential access,
+genuine supervised capture and independent off-PC alerts remain owner-verified
+commissioning boundaries. No task/vault/hosted setting was changed by this agent.

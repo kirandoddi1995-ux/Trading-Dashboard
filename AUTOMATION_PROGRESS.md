@@ -455,3 +455,97 @@ then an explicitly chosen persistent host and independently tested missed-run
 alerting. Do not dispatch, provision, enable timers, read private sealed datasets
 or copy credentials on a later automatic continuation. No further local changes
 are needed merely because the owner commissioning evidence is unchanged.
+
+## Authorized automatic previous-close / Windows scheduling continuation
+
+Owner reports DEVELOPMENT_EXPORTED: 55,596 rows / 737 accepted sessions, development
+bars SHA prefix d20a4782...840a and sessions 02ae9448...688b, bounded 2022–2024.
+Reviewed/registered PARKED_DEVELOPMENT_REPLAY spec 916d1850...49f5 produced identical
+result ebd4c52c531d06d870bd307fe205e9ac6cedbef217348c7f8bb504c5e75f9ee8 twice.
+Original and automated trade lists matched exactly; accepted/excluded 737/6,
+out-of-session bars 84. This is owner-provided evidence, not agent access to private
+datasets. No 2025/2026 historical file has been opened or new rule tuned here.
+
+New local authority: implement automatic official previous close and owner-installed
+awake-PC scheduling, supervised first. No actual tasks, credentials, hosted settings
+or capture runs may be installed/changed/dispatched by the agent.
+
+Decisions/implementation:
+- nifty_previous_close.py: bounded exact-date NSE Daily Snapshot CSV GET with verified
+  HTTPS/no redirects/fallback. Calendar skips closed dates but includes genuine
+  prior special sessions. Exact unique NIFTY 50 price-index row, positive Decimal,
+  original bytes/hash/source URL/observed retrieval; publication time remains unknown.
+- forward_nifty_producer.py: additive v2 provenance validation with embedded source
+  bytes so existing Drive bundles preserve it. v1 manual compatibility remains.
+  Scheduler-only v2 must have same-IST-target-day pre-open source retrieval. Config
+  source/environment freeze unchanged in principle; old captures need original code.
+- forward_windows_credentials.py: lazy ctypes Windows Credential Manager generic
+  credentials, current user, no plaintext secret files or command-line values.
+  Fixed five names, bounded blobs, hidden TTY prompts and sanitized failures.
+- forward_nifty_schedule.py: default offline preview; explicit source licence guard,
+  real clock check, pre-open freeze, bounded five-minute polls and read-only coverage
+  audit. Environment restored after vault-backed capture. Only owner generates or
+  registers disabled task plans; no activation. Local receipts are not an off-PC
+  watchdog. Unknown years/special targets/missing data remain non-actionable.
+- scripts/install_forward_tasks.ps1: owner-only two-phase plan/verify/register,
+  no replacement of existing tasks, normal interactive account, least privilege.
+  09:00 prepare, 09:20:30–15:30:30 five-minute polls (75), 15:40 audit. IgnoreNew,
+  no catch-up/wake/elevation/password. Registration leaves all three disabled.
+
+Current fourteen-file upload group, relative to C:\Users\banga\Desktop\kiran_share_market:
+Root: nifty_previous_close.py; forward_windows_credentials.py;
+forward_nifty_schedule.py; forward_nifty_producer.py; mypy-automation.ini;
+FORWARD_DATA_RUNBOOK.md; AUTOMATION_FOUNDATION_ACCEPTANCE.md; AUTOMATION_PROGRESS.md.
+Tests: tests/test_nifty_previous_close.py; tests/test_forward_windows_credentials.py;
+tests/test_forward_nifty_schedule.py; tests/test_research_automation.py.
+Scripts: scripts/install_forward_tasks.ps1.
+Workflow: .github/workflows/quality.yml.
+No new dependencies, SQL migration, Supabase storage or equity fingerprint update.
+
+Verification in progress: first focused pass 100 passed (includes old producer and
+denied-I/O import); first full pass 1,545 passed / 4 unchanged skips / 2 subtests.
+Self-review strengthened current-day provenance/licence gating and local audit
+session/acknowledgment checks. Final frozen-source full suite pending. Strict mypy
+15 source modules, root/tests pyflakes, pip check and PowerShell parser passed.
+Live equity SHA remains 2893995505709b1b6a6bfcea342a2edb3770319c695297234747cf1b6801c7b9.
+
+Important live gap: official NSE public catalogue lists the Daily Snapshot, but an
+agent read-only probe of a pre-study 2021 archive URL timed out. No price data was
+retrieved. Exact endpoint/schema availability on the owner's PC is UNVERIFIED.
+Do not claim network commissioning or evade access controls. Owner must review the
+first retained real source and resulting config before any task is enabled.
+
+Next: finish full final suite/self-review, record result and hand off. Owner actions
+are in FORWARD_DATA_RUNBOOK.md: review/upload/CI, private hidden-prompt vault setup,
+generate/review/register disabled tasks, supervised pre-open preparation/first polls,
+then deliberate recurring activation only after backup/replay drill. PC must remain
+awake/signed in. Off-PC missed-run alerts remain separate and uncommissioned.
+Overall programme stays partial. Do not run scheduled work merely on a heartbeat
+until owner supplies new authorization/commissioning evidence.
+
+### Final Windows-adapter verification and handoff
+
+Final frozen-source offline suite: 1,547 passed, 4 unchanged skips, 2 subtests passed
+in 226.77 seconds. +57 passing tests over the prior 1,490 baseline; no tests removed.
+SQL PGlite safety, app import and fifteen-module external-I/O-denied import passed.
+All root/test Python lint and strict mypy across fifteen source modules passed;
+pip check and native PowerShell script parsing passed. Equity fingerprint remains
+2893995505709b1b6a6bfcea342a2edb3770319c695297234747cf1b6801c7b9.
+
+Main-agent final self-review covered code/module boundaries, strict dated source
+identity, Decimal adapter precision, current-IST-date pre-open retrieval, source
+licence checks, holiday/special/calendar limits, same-user credential scope and
+secret-output masking, native-buffer lifecycle, environment restoration, poll
+off-by-one/lateness bounds, serial overlap, disabled/least-privilege installation,
+absence of catch-up, current-day audit identity and full remote acknowledgment.
+Fixed generic OAuth error normalization, current-day provenance constraints,
+source licence gating and audit shape/session checks. No known outstanding defect
+identified within the tested local slice. Native task registration, real vault
+access and official endpoint/schema availability still require supervised owner
+verification; offline tests do not establish them.
+
+Fourteen-file group is ready for review/upload. No agent-installed task, actual
+credential-store access, real capture, dataset deletion, database/hosted change or
+GitHub write. Owner commissioning instructions and stop/disable steps are in
+FORWARD_DATA_RUNBOOK.md. No further local changes are required merely because
+these owner-controlled operational prerequisites remain unchanged.

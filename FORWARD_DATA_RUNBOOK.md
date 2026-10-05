@@ -31,6 +31,8 @@ GitHub cron can be delayed or dropped, and ephemeral state complicates continuit
 A public-repository self-hosted runner should not share this credential-bearing
 service with untrusted PR jobs. An always-on PC is possible but must be maintained.
 No host/account or remote timer is configured by these files.
+An owner-run Windows task adapter is now available below. It generates disabled
+tasks; the agent has not installed, enabled or run any of them.
 
 Current Upstox documentation says a one-year Analytics Token supports market-data
 and historical-data APIs **without** a static-IP restriction; account/portfolio
@@ -187,3 +189,196 @@ $testRoot = Join-Path $env:TEMP ('forward-tests-' + [guid]::NewGuid().ToString('
 $sourceFiles = @(Get-ChildItem -File -Filter '*.py' | Select-Object -ExpandProperty Name)
 .venv\Scripts\python.exe -m pyflakes @sourceFiles tests
 ```
+
+## Windows automatic previous-close preparation and supervised scheduling
+
+The owner verified the private development export/replay: 55,596 rows, 737 accepted
+/ 6 excluded sessions, original trade lists unchanged, two identical frozen replay
+results. This is development reproducibility, not a new strategy result. Historical
+2025/2026 files remain sealed. Nothing in this Windows adapter reads them.
+
+### Policy and limitations
+
+- Official source: NSE **Indices Daily Snapshot**, fixed HTTPS dated archive
+  `https://nsearchives.nseindia.com/content/indices/ind_close_all_DDMMYYYY.csv`.
+  [NSE report catalogue](https://www.nseindia.com/all-reports) lists Daily Snapshot.
+  No alternate hostname/provider, stale file, guessed close or scraping workaround.
+- The reviewed calendar selects the exact prior non-closed session, including
+  special sessions, not merely yesterday/last Friday. The target session must be
+  regular. Unreviewed years fail closed; holidays and special target days skip.
+- Require exactly one NIFTY 50 **price-index** row, exact report date, positive
+  finite Decimal close and valid CSV. Retain the whole bounded source bytes, SHA,
+  fixed URL, close date and actual retrieval time inside the immutable v2 config.
+  Automatic recipes require retrieval on the target IST date before its open;
+  a cached earlier fetch cannot be silently substituted.
+  That source is included in existing Drive logical backups via the config.
+  Publication time stays unknown; do not infer it from a dated filename.
+- Real preparation/clock/CSV transport remains **uncommissioned**. A public archive
+  probe timed out in the agent's environment; it did not establish endpoint/schema
+  availability on your PC. Synthetic fixtures verify parser failures, not live
+  NSE service behaviour. Verify the first download before enabling any task. If
+  NSE blocks access or changes schema, stop: do not bypass it or substitute data.
+- Price-index official close can differ from an intraday final candle close. This
+  adapter deliberately uses the official daily close; it does not quietly switch
+  to broker LTP or claim independent verification of every received intraday bar.
+- Existing v1 manual recipes remain supported by the old one-poll CLI. The new
+  automatic scheduler requires v2 official-source recipes; they cannot be silently
+  mixed. Changed code/environment requires a new future config, not rewriting an
+  old one. Recheck/restore old captures needs the matching saved source version.
+- PC must be awake and your normal Windows user must be signed in. Locking the
+  screen is fine; signing out/sleep is not. No SYSTEM/elevation/Windows password,
+  forced wake, catch-up or run-on-login trigger. Independent off-PC missed-run
+  alerts remain a later commissioning requirement.
+
+### 1. Review/upload and install dependencies normally
+
+Keep the files in their listed folders. Wait for green CI before using the new
+code. No new Python or PowerShell dependency is needed. Do not copy credentials,
+datasets or private task XML into GitHub. No equity fingerprint secret change.
+
+Use normal, **non-admin** PowerShell as the same Windows user who will run the
+tasks. The installer expects India Standard Time and will refuse another PC
+timezone; it does not change your timezone or permissions.
+
+Choose a private per-user state directory (not the repository or public sync):
+
+```powershell
+$forwardRoot = Join-Path $env:LOCALAPPDATA 'KiranTrading\Forward'
+.venv\Scripts\python.exe forward_nifty_schedule.py --root $forwardRoot --mode prepare
+.venv\Scripts\python.exe forward_windows_credentials.py
+```
+
+Expected PREVIEW: network_calls 0 / credential_reads 0, and credential setup
+preview with no reads or writes. These checks do not prove token/source access.
+
+### 2. One-time private credential setup
+
+Generate/verify the Analytics Token and its real expiry yourself; no refresh flow
+is invented. Run locally in a real terminal:
+
+```powershell
+.venv\Scripts\python.exe forward_windows_credentials.py --store
+```
+
+Hidden prompts request the existing five values listed above, including licence
+acknowledgment exactly `true`, covering permitted use/retention of both Upstox
+inputs and the NSE source snapshot. Automatic preparation checks this same vault
+acknowledgment before fetching anything. Paste one-line OAuth JSON privately. Never put a
+value on the command line, in this chat, in a transcript or in the repository.
+Avoid clipboard history/cloud clipboard sync when transferring secrets.
+The helper stores application-specific generic credentials in **Windows Credential
+Manager**, under `KiranTrading/Forward/`, current user only. Values are not printed
+or written to plaintext files. Limit 2,560 UTF-8 bytes per value; oversize input
+fails, never truncates. Partially failed setup is not a success: rerun all values.
+
+The scheduled process retrieves them into its own memory/environment and restores
+the prior environment afterwards. An expired/revoked token or missing vault entry
+blocks capture. The store is not protection against compromise of your own Windows
+account/admin access. PRIVATE_CREDENTIALS_STORED confirms storage/structure, not a
+successful broker login. The OAuth refresh credential is handled by the existing
+Drive transport; no automatic Upstox token renewal is claimed.
+
+References: [Credential storage/read API](https://learn.microsoft.com/en-us/windows/win32/api/wincred/nf-wincred-credreadw),
+[credential scope/persistence](https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentialw).
+
+### 3. Generate, inspect and register **disabled** tasks
+
+Replace the start date with the first intended supervised day. Nothing below
+enables capture. The first call only writes private XML plans; inspect them in
+$forwardRoot\task-plans, then the second call verifies exact plans before registering.
+No existing task or XML is overwritten.
+
+```powershell
+.\scripts\install_forward_tasks.ps1 -PrivateRoot $forwardRoot -StartDate '<YYYY-MM-DD>'
+.\scripts\install_forward_tasks.ps1 -PrivateRoot $forwardRoot -StartDate '<YYYY-MM-DD>' -RegisterTasks
+Get-ScheduledTask -TaskName 'KiranTrading-Forward-*' | Select-Object TaskName,State
+```
+
+Expected three **Disabled** tasks:
+
+- prepare: daily 09:00 IST, pre-open only; real clock probe, then exact NSE file.
+- poll: 09:20:30 IST and every five minutes through **15:30:30**, 75 slots.
+- audit: 15:40 IST; local read-only journal/remote-ack coverage report, no network.
+
+Each uses the normal signed-in user, least privilege, IgnoreNew overlap handling,
+two-minute execution limit, no stored Windows password, no StartWhenAvailable
+catch-up and no forced wake. Per-poll lateness is limited to two minutes after the
+nominal completed-bar close. A missed/late run stays missing. Thirty-second offset
+does not assert broker candles are published within thirty seconds: confirm in
+the pilot. No sampling-window or option-recorder settings have changed.
+
+References: [Task triggers](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/new-scheduledtasktrigger?view=windowsserver2025-ps),
+[register tasks](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/register-scheduledtask?view=windowsserver2025-ps).
+XML syntax/policies are tested offline; actual Windows registration is owner-
+verified, not claimed by local unit tests. If registration fails partway, any
+created tasks remain disabled. Do not enable a partial/incorrect installation.
+
+### 4. First supervised day
+
+Before 09:15, while watching the PC:
+
+```powershell
+.venv\Scripts\python.exe forward_nifty_schedule.py --root $forwardRoot --mode prepare --confirm-run
+```
+
+Expected CONFIG_PREPARED, previous_close_date matching the last genuine NSE
+session, source SHA and network_calls 1. Review that day's private config.json:
+v2, correct date/previous date, official NIFTY close, source URL/retained CSV/hash,
+actual retrieval time before freeze/open, correct calendar and code environment.
+Failure has a sanitized code and receipt; late preparation never creates a recipe.
+A retry of an existing valid frozen recipe reports CONFIG_ALREADY_PREPARED without
+fetching again. No source revision is silently applied after freezing.
+
+After a five-minute close, ideally at 09:20:30, run the first poll manually:
+
+```powershell
+.venv\Scripts\python.exe forward_nifty_schedule.py --root $forwardRoot --mode poll --confirm-run
+```
+
+Watch for REMOTE_VERIFIED and its recorded/missing counts, actual receipt times,
+and no secrets. Then enable **only the poll and audit tasks** for that supervised
+day if the result is correct. This is an owner action, not done by this agent:
+
+```powershell
+Enable-ScheduledTask -TaskName 'KiranTrading-Forward-poll'
+Enable-ScheduledTask -TaskName 'KiranTrading-Forward-audit'
+```
+
+If manual capture completes the first slot before the task fires, the existing
+idempotency guard prevents duplicate observations. Keep the PC awake/signed in;
+watch the first scheduled results and private scheduler-receipts. Task Scheduler's
+History may need enabling manually to view trigger history. The first day may be
+partial if enabling misses a slot; never reconstruct that observation later.
+
+At day end, SESSION_CAPTURE_COMPLETE requires 75 journal records **and** a verified
+remote acknowledgment of 75. It separately reports unavailable decisions (warmup
+or missing context), so collection completeness is not usable-signal completeness.
+SESSION_CAPTURE_INCOMPLETE exits 1; blocked errors exit 2. Inspect receipts/state;
+Task Scheduler start or exit 0 alone is not evidence of complete capture. These
+local receipts are not independent notifications if the PC itself is asleep/off.
+
+After a clean supervised day and the private Drive restore/recheck drill above,
+you may separately enable the prepare task for following sessions:
+
+```powershell
+Enable-ScheduledTask -TaskName 'KiranTrading-Forward-prepare'
+```
+
+That is the explicit recurring commissioning decision. No daily owner close entry
+is then required. Owner intervention remains necessary for outages, token rotation,
+source changes, unreviewed calendar years, revised bars or stale crash locks.
+
+### 5. Stop safely
+
+```powershell
+Disable-ScheduledTask -TaskName 'KiranTrading-Forward-prepare'
+Disable-ScheduledTask -TaskName 'KiranTrading-Forward-poll'
+Disable-ScheduledTask -TaskName 'KiranTrading-Forward-audit'
+```
+
+Disabling future triggers does not stop a currently running instance; wait for its
+bounded completion or use Task Scheduler's End deliberately. A forced stop may
+leave a producer lock; verify no active process before clearing only that lock.
+Keep all configs, journals, source bytes, receipts and Drive history. No data or
+credential deletion is required. Do not call recurring operation reliable until
+the later independent missed-run/watchdog alert has been deliberately tested.

@@ -15,6 +15,7 @@ import pandas as pd  # type: ignore[import-untyped]
 from automated_directional_replay import replay_environment
 from intraday_directional_replay import decisions
 from nifty_session_calendar import cash_session as session
+from nifty_previous_close import validate as validate_previous_close
 from release_verification import release_members
 from research_input_archive import InputArchive
 from research_integrity import IntegrityError, canonical, digest, hash_value, require_hash
@@ -42,16 +43,20 @@ def environment(root: Path) -> dict[str, Any]:
     """Freeze transitive producer/math code as well as numeric dependencies."""
     result = replay_environment(root)
     names = cast(Callable[[Path, tuple[str, ...]], list[str]], release_members)(root, (
-        'forward_nifty_producer.py', 'forward_nifty_archive.py', 'forward_nifty_job.py'))
+        'forward_nifty_producer.py', 'forward_nifty_archive.py', 'forward_nifty_job.py',
+        'forward_nifty_schedule.py', 'forward_windows_credentials.py'))
     result['sources'].update({name: digest((root / name).read_bytes().replace(b'\r\n', b'\n')) for name in names})
     return result
 
 
 def validate_config(config: dict[str, Any], root: Path) -> str:
     """Single regular session after freeze; no historical retrospective producer."""
-    if (set(config) != {'version', 'instrument_key', 'session_open', 'session_close', 'frozen_at',
+    keys = {'version', 'instrument_key', 'session_open', 'session_close', 'frozen_at',
                        'previous_close', 'previous_close_source_sha256', 'calendar_source', 'environment'}
-            or config['version'] != 'nifty-forward-v1' or config['instrument_key'] != KEY
+    if config.get('version') == 'nifty-forward-v2':
+        keys.add('previous_close_provenance')
+    if (set(config) != keys
+            or config['version'] not in ('nifty-forward-v1', 'nifty-forward-v2') or config['instrument_key'] != KEY
             or config['environment'] != environment(root)):
         raise IntegrityError('FORWARD_CONFIG_MISMATCH')
     opening, closing, frozen = map(instant, (config['session_open'], config['session_close'], config['frozen_at']))
@@ -66,6 +71,10 @@ def validate_config(config: dict[str, Any], root: Path) -> str:
     if type(previous) not in (int, float) or not math.isfinite(previous) or previous <= 0:
         raise IntegrityError('VERIFIED_PREVIOUS_CLOSE_REQUIRED')
     require_hash(config['previous_close_source_sha256'])
+    if config['version'] == 'nifty-forward-v2':
+        value = validate_previous_close(config['previous_close_provenance'], local.date(), config['frozen_at'])
+        if value != previous or config['previous_close_provenance']['sha256'] != config['previous_close_source_sha256']:
+            raise IntegrityError('NSE_CLOSE_CONFIG_MISMATCH')
     return hash_value(config)
 
 
