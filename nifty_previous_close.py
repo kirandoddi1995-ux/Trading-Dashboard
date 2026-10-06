@@ -70,15 +70,20 @@ def parse_close(raw: bytes, expected: date) -> Decimal:
 def fetch(session: Any, day: date, *, received_clock: Callable[[], datetime]) -> dict[str, Any]:
     """Bounded verified HTTPS GET; provenance is observed retrieval, not publication time."""
     previous = previous_session(day)
-    with session.get(source_url(previous), timeout=(5, 20), verify=True,
-                     allow_redirects=False, stream=True) as response:
-        if response.status_code != 200:
-            raise IntegrityError('NSE_CLOSE_UNAVAILABLE')
-        raw = bytearray()
-        for block in response.iter_content(65536):
-            raw.extend(block)
-            if len(raw) > LIMIT:
-                raise IntegrityError('NSE_CLOSE_SIZE_INVALID')
+    from requests.exceptions import RequestException
+
+    try:
+        with session.get(source_url(previous), timeout=(5, 20), verify=True,
+                         allow_redirects=False, stream=True) as response:
+            if response.status_code != 200:
+                raise IntegrityError('NSE_CLOSE_UNAVAILABLE')
+            raw = bytearray()
+            for block in response.iter_content(65536):
+                raw.extend(block)
+                if len(raw) > LIMIT:
+                    raise IntegrityError('NSE_CLOSE_SIZE_INVALID')
+    except RequestException:
+        raise IntegrityError('NSE_CLOSE_TRANSPORT_UNAVAILABLE') from None
     value = parse_close(bytes(raw), previous)
     received = received_clock()
     if received.tzinfo is None:

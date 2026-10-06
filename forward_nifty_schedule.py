@@ -107,6 +107,8 @@ def poll(root: Path) -> int:
     """One serial five-minute slot, at most two minutes late; no catch-up decisions."""
     timestamp = now()
     path, state = session_paths(root, timestamp.astimezone(IST).date())
+    if not path.exists():
+        raise IntegrityError('SESSION_NOT_PREPARED')
     config = json.loads(path.read_bytes())
     validate_config(config, ROOT)
     if config['version'] != 'nifty-forward-v2':
@@ -121,7 +123,20 @@ def poll(root: Path) -> int:
 
 def audit(root: Path) -> dict[str, Any]:
     """Read-only local coverage/backup acknowledgment audit; never generate missed rows."""
-    path, state = session_paths(root, now().astimezone(IST).date())
+    timestamp = now()
+    day = timestamp.astimezone(IST).date()
+    path, state = session_paths(root, day)
+    if not path.exists():
+        ending = datetime.combine(day, datetime.min.time(), tzinfo=IST) + timedelta(hours=15, minutes=30)
+        if timestamp < ending + timedelta(minutes=5):
+            raise IntegrityError('POSTSESSION_AUDIT_REQUIRED')
+        # Missing recipe does not prove zero rows if unexplained state exists.
+        if state.exists():
+            raise IntegrityError('SESSION_STATE_WITHOUT_CONFIG')
+        return {'status': 'SESSION_CAPTURE_INCOMPLETE', 'code': 'SESSION_NOT_PREPARED',
+                'recorded_decisions': 0, 'missing_decisions': 75,
+                'unavailable_decisions': 0, 'remote_acknowledged_decisions': 0,
+                'approval_authority': False}
     config = json.loads(path.read_bytes())
     identity = validate_config(config, ROOT)
     if (config['version'] != 'nifty-forward-v2'
@@ -250,9 +265,12 @@ def main(argv: list[str] | None = None) -> int:
                    'NSE_CLOSE_DATE_MISMATCH', 'NSE_CLOSE_PRICE_INVALID', 'NSE_CLOSE_UNIQUE_INDEX_REQUIRED',
                    'NSE_CLOSE_PROVENANCE_INVALID', 'NSE_CLOSE_PROVENANCE_MISMATCH', 'NSE_CLOSE_CONFIG_MISMATCH',
                    'NSE_CLOSE_NUMERIC_PRECISION_INVALID', 'PRIVATE_CREDENTIAL_CONFIG_INVALID'}
-        allowed.add('LICENSE_ACK_REQUIRED')
+        allowed.update({'LICENSE_ACK_REQUIRED', 'SESSION_NOT_PREPARED', 'SESSION_STATE_WITHOUT_CONFIG',
+                        'NSE_CLOSE_TRANSPORT_UNAVAILABLE', 'FORWARD_CONFIG_MISMATCH',
+                        'AUTOMATIC_SOURCE_CONFIG_REQUIRED', 'CURRENT_AUTOMATIC_SESSION_REQUIRED'})
         failure_code = str(error) if isinstance(error, IntegrityError) and str(error) in allowed else 'SCHEDULER_BLOCKED'
-        result = {'status': 'BLOCKED', 'code': failure_code, 'approval_authority': False}
+        result = {'status': 'BLOCKED', 'code': failure_code, 'stage': args.mode,
+                  'approval_authority': False}
         if args.confirm_run:
             try:
                 receipt(args.root, result)
