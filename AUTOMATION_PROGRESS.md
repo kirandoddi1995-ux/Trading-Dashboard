@@ -1,5 +1,57 @@
 # Automation foundation — continuity record
 
+## Oct 6 market-hours emergency admission — local verification complete, owner step next
+
+Latest owner growth measurement changes first relief order: collector admission
+hold before ordinary vacuum of churn tables, verified NAV relief, then permanent
+cold ledger/all-writer transaction guard. No hosted writes/settings/tasks/data
+changes. Active capture import closure and PROJECT_ROADMAP.md untouched.
+
+Bounded READ ONLY SELECT checks confirmed cluster495180597/current479906963 at
+10:32:24IST, nominalheadroom4819403. Recent signed decision batch payload622246
+stored/2533991JSON bytes is consistent with ledger638976 allocated-page growth;
+no candidate values or historical holdout results inspected. Dailyvolumes trigger
+unconditionally upserts maximum on conflict; cumulative updates80005/dead13293,
+latest autovacOct1. No delete/trigger removal authorised. Zero maintenance blocker
+counts; exact dailyvolrows66358/fingerprint81d33e79573f613294106c7f0fac5791.
+Owner connector cannot SET ROLE quant_app_runtime; runtime size permissions remain
+unverified. Unknown permissions fail closed, never use owner credential fallback.
+
+Small upload group: ROOT collector_storage_preflight.py, tests/
+test_collector_storage_preflight.py, .github/workflows/scheduled-collector.yml.
+Documentation: STORAGE_BURST_RESPONSE_2026-10-06.md, sql/
+storage_burst_diagnostics_read_only.sql, STORAGE_FIRST_RELIEF.md,
+STORAGE_UPLOAD_MANIFEST.md and this continuity file (eight paths total).
+Pure measured floor24m bytes (20m reserve+4m allowance), unknown/invalid/stale/
+future/privileged readings block with exit2; default preview offline. Read-only
+restricted TLS connection, connect5s/statement10s/lock2s. Workflow guards before
+migrations and again after schema verification/before collector. No bypass knob,
+permissions widened or triggers changed. Covers workflow only; app/direct CLI and
+concurrent writers NOT protected; allowance is not a measured per-run hard cap.
+Owner steps include disabling workflow if patch cannot precede next dispatch,
+optional promotion hold to avoid restart auto-scan, no hash change or derivative
+commissioning. Archive/capture/durability/monitoring must not be indiscriminately
+disabled. Existing signed ledger cannot be edited/re-signed to save space.
+
+Fullsuite71506 TERMINAL:2143passed,4unchangedskips,2subtestspassed586.37s.
+Final focused38passed3.09s on final files; helper strictmypy/pyflakes clean.
+Initial absent-yaml test dependency removed (no new dependency). No testcount
+drop; previous2115 including separately verified fallback test plus28new tests.
+Full suite includes offline actual app login/settings boot and disposable SQL.
+No tests running. Follow-up10:45:53IST cluster/current allocations unchanged.
+Self-review: all-database sum, exact int/bool validation, unknown role permissions
+block, no owner fallback/exception secrets, read-only timeouts, existing workflow
+command compatibility, second preflight after schema check and no skip-on-error.
+Existing scheduled workflow regressions passed with final three-file group.
+No active app/capture decision source changed in this package; local fingerprint
+still6a234dc090b83614a31d1b08227802b23f845f68e6c82df1e590b92be9c42263.
+Do NOT set the live expectation to this unfinished permanent-work fingerprint.
+Permanent package remains unfinished; this is an explicit temporary safety hold,
+not a storage solution. Next hosted action is OWNER ONLY via burst-response guide.
+Next local milestone: permanent all-writer transaction admission/alerts and exact
+cold ledger publication/reader/recovery factory wiring; never delete unverified
+originals or change shared capture-loaded modules during active tasks.
+
 ## Mission and non-negotiable rules
 
 Build automated backtesting/self-checking for a Streamlit NSE intraday NIFTY

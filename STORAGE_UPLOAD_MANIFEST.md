@@ -1,6 +1,15 @@
 # Permanent storage working manifest — NOT READY FOR UPLOAD OR COMMISSIONING
 
 This is an interim review inventory, not the final consistent upload package.
+
+Separate Oct 6 emergency collector admission group (locally verified, ready for
+owner review; full-suite2143passed/4skipped/2subtests, focused38passed): upload only
+collector_storage_preflight.py at ROOT, tests/test_collector_storage_preflight.py
+under tests/, and .github/workflows/scheduled-collector.yml under .github/workflows/.
+Owner guide: STORAGE_BURST_RESPONSE_2026-10-06.md; read-only checks:
+sql/storage_burst_diagnostics_read_only.sql. STORAGE_FIRST_RELIEF.md now links the
+revised admission-first order. Do not include permanent readers/migrations or
+change the live fingerprint. This workflow guard is not an all-writer quota lock.
 Separate Oct 6 capture repair (not part of the permanent-storage commissioning
 package): complete replacements are staged_capture_repair/forward_nifty_schedule.py
 and staged_capture_repair/nifty_previous_close.py; owner installs/uploads them at

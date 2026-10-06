@@ -1,5 +1,10 @@
 # First relief — separate from the unfinished permanent-storage package
 
+Order revised after the 10:22 IST market-hours growth measurement: see
+STORAGE_BURST_RESPONSE_2026-10-06.md. Temporarily stop admitting non-essential
+collector writes first; ordinary maintenance and verified NAV relief follow.
+The NAV procedure below remains valid, but is not sufficient admission protection.
+
 No runtime upload or new migration is needed for the existing verified NAV archive
 workflow. Do not upload the interim storage implementation to obtain this relief.
 Owner executes all hosted actions. It protects NAV allocation reuse, not ledger
