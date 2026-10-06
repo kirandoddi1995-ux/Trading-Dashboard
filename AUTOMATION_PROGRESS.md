@@ -1023,3 +1023,926 @@ f7ff707c03609986b56276cc1a724d27b71e7ec6b977fccf0d43533e0feb30ae
 Owner changes EXPECTED_EQUITY_CODE_SHA256 only after checked release promotion.
 Waiting on owner review/upload, fresh quota checks, and
 explicit NAV archive decision. Storage emergency is NOT declared resolved.
+
+## Active goal: permanent storage — 2026-10-06 continuity
+
+This is the active objective, replacing the earlier smaller emergency patch:
+bounded steady-state budgets for ALL growing tables including F&O; verified
+private-Drive archival/readers/restore for every growing table; sealed ledger
+segments with bounded trusted SQL anchors and working chain/recovery/idempotency;
+transaction-enforced non-essential write pause and independent early alert;
+daily per-table size/growth report in self-check; protected latest-per-scheme NAV
+cutoff; final decision on shared/separate F&O DB. Optional F&O roadmap only AFTER
+storage acceptance. Do not reduce this goal to the first core modules.
+
+Local-only writes; owner performs all hosted migrations/settings/deletions/VACUUM
+and GitHub uploads. Read-only hosted diagnostics authorized, no secret output or
+frozen research performance inspection. Existing release b23323f contains the
+emergency dedup/explicit scan fixes. This new group is UNFINISHED: no upload or
+hosted commissioning recommended yet. Goal remains active, not complete/blocked.
+
+Read using PERMANENT_STORAGE_DESIGN.md before continuing: sources, decisions,
+full requirements, topology and exact missing acceptance evidence are recorded.
+Read-only inventory at Oct 5 19:04 UTC confirmed cluster unchanged 493,984,565,
+33 application tables; remote ledger 9,739 v2 + 43 v1, all HMAC-SHA256. Read-only
+GitHub fetch confirmed offline self-check.yml has no secrets inheritance; a hosted
+measurement job must be separate, not smuggle DB credentials into offline tests.
+Exact query saved in sql/permanent_storage_inventory_read_only.sql. Connector
+postgres owner/BYPASSRLS, transactions explicitly READ ONLY with short timeouts.
+
+Milestone 1 code: ledger_segments.py implements bounded deterministic gzip/HMAC
+sealed bytes with pinned digest, original v1/v2 event signature and predecessor
+verification, keyring fail-closed, restore checks and immutable returned heads.
+Tests use real SQLite append plus actual ProductionRepository append on disposable
+Postgres. Original hosted v1 signing-key/material compatibility still needs proof;
+never rehash old events or skip the 43 old records to pass an archive.
+storage_policy.py has explicit per-relation allocated budgets for all 42 current/
+future tables, 235.5 MB +70 MB other cluster allowance, warn350/pause400/emergency450
+MB. Complete inventory/freshness/planned allocation/growth checks are pure policy:
+NO writer guard, SQL archive, live alert or daily report is yet integrated.
+Actual enforced steady state is not proven by constants or passing core tests.
+
+New changed files so far: ledger_segments.py, storage_policy.py,
+tests/test_ledger_segments.py, tests/test_ledger_segments_sql.py,
+tests/test_storage_policy.py, mypy-automation.ini, PERMANENT_STORAGE_DESIGN.md,
+sql/permanent_storage_inventory_read_only.sql, AUTOMATION_PROGRESS.md.
+Strict configured mypy now covers 21 modules; all root/test Python pyflakes clean.
+Targeted 43 tests pass with real SQL harness enabled. One targeted run encountered
+an existing Windows pytest temporary-symlink cleanup permission error AFTER tests;
+unique validated temporary basetemp rerun passed, without deleting old directories
+or suppressing errors. First full suite: 1,784 passed /4 skipped/2 subtests in
+303.77s, before addition of durable-writer SQL test. Milestone rerun 94887 completed
+with 1,784 passes/4 skips/2 subtests and one existing Windows release timeout cleanup
+race failure. Isolated timeout rerun passed; bounded temporary-directory cleanup
+retries were then implemented and tested (transient retries preserve original
+failure, permanent cleanup failure still raises; no timeout/check weakened).
+
+Next: finish milestone validation, then immutable PAGED cold lookup catalog with
+authenticated root and bounded nodes, supporting original aggregate frontier and
+idempotency lookup. Do NOT keep an eternal SQL anchor/idempotency row per event;
+that recreates unbounded growth. Integrate catalog generation checks/append retry
+before archive deletion is enabled. All raw SQL ledger joins and local recovery
+readers need cold/hot integration, not only events() and continuity. See full
+acceptance order in design. Additional archive/control tables must be budgeted.
+
+F&O decision conditional on final measured budgets: a separate DB is no longer
+needed just for capacity if shared project achieves bounded allocation; Neon is
+fallback if it cannot. Do not migrate host now or lift the 24 MB pilot hold.
+No production import/fingerprint changes yet in this milestone; new modules are
+offline core only. Include them in release fingerprint when writer/reader paths
+are integrated. Owner steps/upload group are assembled at final acceptance,
+not as a sequence of partial hosted experiments.
+
+### Milestone 2: cold lookup/read prototype; no hosted commissioning
+
+cold_catalog.py: immutable bounded 64 KiB Merkle pages, 128-key leaves, copy-on-write
+root updates, verified absence versus missing-page errors, old-root readability,
+full structural audit and filtered reachable-page publication. No SQL metadata
+growth per historical event. Signing/root CAS belongs to the next repository layer.
+ledger_cold_store.py: original prefix sealing plus cold aggregate frontiers and
+event UUID/idempotency indexes; multi-segment restoration, at-least-once lookup,
+cold/hot merge pinned to an independently committed terminal head (detects dropped
+tail, not only broken interior links). Limit 900 rows/32 aggregates to fit bounded
+catalog updates. Active repository readers/outcome SQL joins are NOT wired yet.
+
+Further read-only check: all 43 v1 HMAC events have NULL key_id. Explicit legacy
+binding support added; missing old key blocks rather than substituting current
+signing key. Hosted old material/key compatibility remains owner proof, not claimed
+from fixtures. No key values read. Exact query appended to read-only SQL file.
+
+Additional changed paths: cold_catalog.py, ledger_cold_store.py,
+tests/test_cold_catalog.py, tests/test_ledger_cold_store.py, release_verification.py,
+tests/test_release_packaging.py; milestone 1 files updated where required. Full
+new group currently 15 paths including docs/progress/config. No owner upload yet.
+Strict mypy now includes 23 modules. Targeted core tests passed (latest boundary
+test increases new core total to 63); cleanup regressions passed. Full combined
+milestone suite 83433 completed: 1,807 passed /4 unchanged skips/2 subtests in
+260.54s. Existing offline app boot/import tests are included. Production
+decision source fingerprint is unchanged; new modules not yet imported by app.
+
+Next safe local work after validation: signed root-generation receipts, actual
+transactional archive repository/Drive publication, restricted-role review-only
+migration and all reader/append/recovery integration. Metadata CAS and exact source
+row matching must be atomic before pruning. Do not enable ledger deletion simply
+because the offline restore works. Storage guard/independent alert and daily job
+remain required, as does every growing table's reader/restore/retention coverage.
+
+### Milestone 3: signed generation receipts and review corrections
+
+catalog_receipts.py adds bounded canonical signed receipts linked to a protected
+predecessor root AND predecessor receipt hash. Exact scope/next-generation and
+explicit keyring checks reject wrong scope, skipped generations, competing roots,
+old receipt replay against newer anchor, corruption and missing rotation keys.
+GENESIS is explicit only: callers must NEVER silently bootstrap a missing SQL
+anchor. Signatures cannot detect rollback of BOTH the object and its anchor; the
+protected SQL/independent checkpoint + generation CAS remain required next work.
+No live transport/SQL commit/deletion permission added by this codec.
+
+Self-review corrected two concrete prototype gaps before integration:
+- storage_policy now enforces its 70 MB allowance for cluster bytes outside the
+  inventoried application relations. Being below global warning alone does not
+  permit writes if that allowance or a table budget is exceeded.
+- cold-only history and prepare now reject reused UUID/idempotency identities,
+  not just merged hot/cold history. Tests include correctly signed duplicate
+  identities across valid sealed segments under an inconsistent catalog.
+
+Additional paths: catalog_receipts.py, tests/test_catalog_receipts.py; existing
+policy/cold-reader tests/config/design updated. Current group 17 paths, unfinished,
+NOT a complete owner upload. Strict mypy clean on 24 modules. Targeted receipt/
+policy/reader suite passed 39 tests before four additional duplicate regressions;
+all four duplicate regressions subsequently passed (43 targeted tests total).
+All root/test pyflakes clean; strict mypy clean on 24 modules. Combined full suite
+55258 completed: 1,825 passed /4 unchanged skips/2 subtests in253.35s. Final review
+added five receipt tests (same root/different predecessor receipt, bool/negative/
+overflow generations and DB bigint ceiling); all18 receipt tests pass. Final
+unchanged-code full suite9820 completed: 1,830 passed /4 unchanged skips/2 subtests
+in255.59s. This covers offline app boot/import and disposable SQL engine tests.
+Reviewed local decision fingerprint rechecked unchanged:
+f7ff707c03609986b56276cc1a724d27b71e7ec6b977fccf0d43533e0feb30ae.
+New archive cores still have NO production/runtime/workflow import (rg confirmed).
+Supabase CLI not globally present. Pinned npm CLI2.119.0 discovered via official
+GitHub release; top-level, migration, migration-new help successfully read using
+local-only approved escalation (CLI metadata in user .supabase is outside sandbox).
+No login/link or hosted connection. npm cache in temporary kiran-storage-cli-cache.
+Unescalated help retries failed on CLI telemetry writes; do not loop them.
+Used pinned CLI with explicit workspace --workdir migration-new per skill. Generated
+supabase/migrations/20261005194922_permanent_storage_control_review_only.sql.
+CLI also writes local supabase/.temp/cli-latest: CACHE, NOT an upload deliverable.
+
+Follow-up readonly queries saved verbatim in inventory SQL: 19:40 UTC cluster still
+493,984,565/current DB478,710,931; 19:41 relation/TOAST/index/activity estimates.
+No hosted changes. Metadata counters are cumulative, not daily growth or proof of
+bloat. Outcomes TOAST59,498,496/index393,216; ledger TOAST43,089,920/no deletes.
+Fresh hosted timestamp retained as returned (Oct5UTC), no relabel to Oct6local.
+
+Important integration risk found by code inspection: owner built-in --migrate
+path drops/recreates immutable ledger triggers and replaces their function. Must
+update/test this before installing an archive guard, or a subsequent migration
+could overwrite it. Runtime ensure_schema is validate-only; existing migration
+secret/workflow is NOT a generic executor for review-only SQL drafts. Source
+production_repository.py lines592-604 and scheduled-collector.yml lines41-46.
+
+### Milestone 4 in progress: bounded protected SQL root metadata
+
+New review-only migration above and tests/test_catalog_roots_sql.py. Current group
+19 paths (not counting CLI cache); DO NOT APPLY independently. No hosted changes.
+Bounded two-scope quant_storage.catalog_roots with explicit owner bootstrap only
+(no root inserted by migration), monotonic generation/predecessor/root checks,
+no DELETE, runtime SELECT only, separate NOINHERIT non-bypass archiver UPDATE only.
+RLS enabled/forced, public function access revoked, public/default-privilege leftovers
+removed for known public/collection roles. Unknown shape/policies/version or unsafe
+role attributes/memberships cause rollback, not silent replacement. No ledger
+DELETE privilege, signature key in SQL, or SQL archive source-proof bypass added.
+Control table budget added: 43 explicit relations,235.75 MB+70=305.75 MB target.
+Tests execute actual migration in disposable PostgreSQL, including role denials,
+replay, wrong predecessor, rollback, rerun preservation and invalid-role rejection.
+Targeted first10 SQL tests passed; expanded SQL/policy run40501 completed:
+33 tests passed in13.01s (14 SQL+19 policy). Full milestone4 suite16935 completed:
+1,844 passed /4 unchanged skips/2 subtests in254.49s, including offline app boot/
+imports and disposable PostgreSQL SQL tests. No running validation sessions remain.
+Strict types24 modules and root/test pyflakes clean.
+Still need atomic exact-source archive repository, all readers/writers, guard/alert,
+daily reporting and all-table retention. Passing root tests is NOT goal completion.
+
+STORAGE_UPLOAD_MANIFEST.md now records exact folders for all20 working paths
+(including itself). NOT an upload authorization; final owner package remains
+unfinished. No app/repository/workflow changes, no live fingerprint change here.
+Final self-review of this milestone fixed generation bigint overflow, receipt
+predecessor substitution, cross-segment duplicate identities, omitted other-cluster
+budget enforcement and public/default grant leftovers in the draft. No known
+defect remains in these tested cores; do not confuse this with production/storage
+acceptance. Whole goal remains active. Next safe work is actual transactional
+exact-row archive/Drive publication and cold-aware append/all outcome/recovery
+readers, then all-table retention, guard/independent alert and daily self-check job.
+Do not stop at metadata scaffolding, enable ledger pruning, loosen evidence gates,
+or dispatch owner migrations. Legacy key/material and real concurrency/steady-state
+proof are still commissioning requirements, not claimed from synthetic fixtures.
+
+### Milestone 5 in progress: real archive transaction and private-object readback
+
+CLI-generated second review draft:
+supabase/migrations/20261005200414_permanent_storage_ledger_review_only.sql.
+Local CLI migration-new only; no login/link/hosted action. New modules:
+ledger_archive_publication.py, ledger_archive_repository.py. New tests:
+tests/test_ledger_archive_guards_sql.py, tests/test_ledger_archive_publication.py,
+tests/test_ledger_archive_repository_sql.py. Working manifest now26 paths, NOT
+READY for owner upload/application. Native UUID normalization/regression added to
+ledger_segments; ColdLedger exposes segment_records for bounded publication proof.
+ledger_control budget added:44 relations,236 MB+70 MB=306 MB target.
+
+Publication re-reads all new objects, authenticates sealed original records and
+UUID/idempotency locators, binds receipt to exact segment/date/key, and precedes
+the SQL connection. Commit locks root and sorted aggregate IDs, compares exact
+native to_jsonb(row)::text, stages only indexed UUID/hash/nativeSHA/sequence proof,
+checks actual DELETE RETURNING set/count, advances root via CAS and exercises
+deferred commit checks. Retry verifies remote bytes again and requires exact
+successor root with no selected source UUIDs left. No production imports yet.
+
+Disabled-by-default SQL ledger control is owner commissioned; runtime cannot
+change it/delete. Dedicated archiver still has source SELECT/DELETE only (no
+UPDATE). Tests found FOR UPDATE would require extra source UPDATE privilege:
+removed, preserving least privilege; DELETE locks rows and trigger rechecks hash
+after waits. Also fixed accessing NEW.scope on a source DELETE trigger (nested
+branch), removed public/default privilege leftovers on control, rejected unsupported
+owner/role/version/policies, retained UPDATE immutability. Private archiver is
+trusted to perform remote/HMAC verification; SQL proofs alone do not verify Drive.
+
+Targeted integrated run81322:99 passed in29.18s. Strict mypy clean26 modules,
+all root and direct tests pyflakes clean. Full suite76892 completed:1888 passed/
+4 unchanged skips/2 subtests in279.11s, including offline app boot/import and
+disposable SQL tests. Earlier
+47 guard/codec tests passed and10 actual repository SQL tests passed. The first
+repository run caught the FOR UPDATE permissions flaw; fixed and retested.
+No Supabase writes/DDL/deletes/VACUUM or settings/push/dispatch performed.
+
+Next work remains actual private Drive transport, all cold-aware append/readers/
+SQL joins/local recovery and logical dependency inventory; protected migration
+path; all-table archive/restore; write guard/alert and daily automated report.
+Do not enable pruning or derivative collection from these tests. Production legacy
+key/material and real concurrent append/archive still require owner acceptance.
+
+Fresh read-only Supabase check20:20:10.59088 UTC (saved exact query in inventory
+SQL): postgres connector, cluster493984565/current478710931 unchanged since19:40.
+Still6,015,435 nominal decimal bytes headroom; not proof of sustainable operation.
+Official Drive properties/scopes docs read. Critical transport design requirement:
+appProperties are app-private; a separate read-only identity must not depend on
+the writer's private metadata. Use cross-client kind/digest discovery in private
+files, test actual folder permissions independently, keep runtime reader credential
+separate from writer OAuth. Sources linked in design. No hosted reads of credentials
+and no Drive/network publication during these tests.
+
+Milestone5 final self-review found duplicate supplied originals could otherwise
+replace an omitted record in standalone verification (repository already rejects
+duplicate UUIDs). Added explicit original UUID/idempotency uniqueness regression.
+Also collapsed proof staging from up to900 statements into one parameterised
+insert (max4500 parameters) and configured PostgreSQL17 transaction_timeout30s
+in addition to per-statement30s/lock2s. A statement timeout alone does not bound
+the whole lock-holding transaction. Official PG17 docs linked in design. Targeted
+publication/repository review suite23 passed before the max-batch staging test.
+Must run final full suite after these final code changes, not report1888 as final.
+
+Additional final review: ProductionRepository.connect does not commit on context
+exit. Archive repository now explicitly BEGINs/commits/rolls back; tests use a
+faithful non-committing injected connection so COMMITTED cannot mean an implicit
+rollback on close. Targeted final24 tests pass, strict26-module mypy clean.
+Equity release_fingerprint utility rechecked unchanged:
+f7ff707c03609986b56276cc1a724d27b71e7ec6b977fccf0d43533e0feb30ae.
+Do not confuse app._runtime_code_hash (narrower unrelated lineage hash) with the
+EXPECTED_EQUITY_CODE_SHA256 release manifest utility. No production imports changed.
+
+Review also added explicit SQL rejection of NULL staged source_count (SQL three-
+valued logic must not accidentally accept an undeclared count), with regression.
+Full final-suite33772 was interrupted for this final guard fix; NOT a passing
+result. Next final suite must cover the final SQL/new NULL regression as well.
+
+Timestamp integration review caught PostgreSQL JSON fractional-zero trimming:
+the original signer datetime.isoformat uses .123400 while to_jsonb(row) emits
+.1234. SourceCapture now restores canonical signer UTC timestamp representation
+for signature verification while preserving untouched native row text/digest
+for SQL deletion. Cold history fixture now uses123400 microseconds; repository
+SQL fixtures assert actual trimmed native output and original six-digit archive
+timestamp. Invalid/missing/naive source clocks are explicitly rejected, not guessed.
+Targeted native integration94921:56 passed in28.83s. Final clock/publication/
+repository suite27 passed in7.44s; strict26 modules clean. Final full suite is
+running (see subsequent result/handle). No original event hash or production
+evidence was changed.
+
+Final full suite96404 completed on final milestone5 code:1894 passed/4 unchanged
+skips/2 subtests passed in278.33s. Includes offline AppTest/import/disposable SQL
+checks. No validation process remains running. All root/direct test pyflakes and
+strict26-module mypy clean after the final source-clock change.
+No production/runtime/workflow import of the new archive modules. Safe next
+implementation is real private Drive transport and cold-aware production readers/
+append, including migration guard and all logical dependencies before pruning.
+
+Reader integration requirement discovered during review (not implemented yet):
+ColdLedger.merged requires an independently protected terminal head. Do NOT pass
+the latest row from the same hot ledger as that head: truncating a valid hot tail
+would then shorten both evidence and the claimed expectation. Add bounded protected
+hot aggregate heads updated atomically on append and retired only when the committed
+cold frontier exactly reaches them; cold-only heads remain in the signed catalog.
+Include its allocation in budgets and test tail-loss/rollback/concurrent archive.
+Historical bootstrap can verify available genesis-to-head signatures but cannot
+prove no pre-commissioning tail loss without an independent older receipt. Document
+that scope; don't fabricate historical tamper-evidence. Never put Drive lookup
+inside the locked append transaction; resolve against a root and recheck root CAS
+after locking, with retries outside locks. Runtime cold reader credential stays
+read-only and separate from the archive writer credential.
+
+Milestone5 local completion: exact archive transaction and publication verification
+validated. Whole storage goal ACTIVE/unfinished; this is NOT a ready owner upload
+or a reason to apply either migration. Current26-path working manifest is complete
+for files so far, not the final group. No production imports, workflow changes or
+hosted mutations; equity expectation unchanged. Next turn has safe local work and
+must continue Drive transport + protected hot heads + cold-aware readers/append/
+dependency protection, then all-table archive/restore, guard/alerts/daily reporting.
+Do not mark the goal complete/blocked merely because this milestone is green.
+
+## Permanent storage milestone6 — transport and legacy migration protection
+
+Added cold_drive_objects.py and tests/test_cold_drive_objects.py. Create-only
+content-addressed private My Drive protocol with bounded HTTP responses, exact
+SHA readback, private folder/file ACL checks, distinct GET-only viewer mode,
+cross-client properties discovery, no PATCH/delete/redirect or payload logging.
+Unknown/duplicate/incomplete search is never absence. Uncertain upload retry
+discovers and validates the existing object. Read-only service-account factory
+pins Google OAuth endpoint/default universe/scope and excludes delegation and
+quota-project fields. Credentials remain owner supplied, untested live.
+
+Transport's first run failed because a test tried JSON-encoding fixture bytes
+while asserting metadata did not use appProperties; corrected the assertion.
+Self-review also fixed a raw response.close provider exception escaping the safe
+error boundary; added success/error close-path regressions. No hidden passing
+claim for that initial failure. Final transport33 and migration9 =42 tests pass.
+
+ProductionRepository legacy setup now refuses protected quant_storage before
+any DDL. Both existing review-only SQL drafts and that setup acquire the same
+transaction advisory lock before checking/DDL, preventing cooperating migration
+paths racing to overwrite ledger archive triggers. Strict boolean namespace
+result required; missing/invalid result fails closed. Actual disposable SQL test
+asserts all ledger guard function IDs/names survive the refused setup.
+No cold runtime imports yet; validate-mode runtime remains unchanged.
+
+Targeted integrated65454:91 passed in39.51s. All root/direct test pyflakes clean;
+strict mypy clean27 modules. Full suite87885 is running; do NOT claim a full pass
+until its terminal result is recorded. Code is frozen during that suite.
+Local fingerprint now dc9f2b82a0e01e299e4b4afa8ab1bc0319903ae787727a22d08506c25979ed5a
+because ProductionRepository changed. DO NOT change the live expected fingerprint
+or upload this unfinished group. Working manifest30 paths, not commissioning ready.
+
+Fresh hosted read-only SELECT (exact query saved in inventory SQL)20:54:22.070763
+UTC: postgres connector, cluster493984565/current478710931, still6,015,435 nominal
+decimal bytes headroom. No hosted writes/DDL/VACUUM/Drive publication/settings/push.
+Unchanged over these checks is not bounded growth or free-space reuse proof.
+
+Whole storage goal ACTIVE. Next meaningful integration: protected bounded hot
+terminal heads and cold-aware ProductionRepository append/events/all SQL readers,
+then local recovery and unresolved logical dependency protections. Real viewer
+ACL compatibility/legacy HMAC material/real concurrent locking remain owner proof.
+All-table archive/restore, transaction size guard/independent alert/daily report
+and physical steady-state acceptance still unfinished. No pruning/derivative pilot.
+
+Additional read-only namespace/count query (saved exact SQL) returned9782 events
+in4913 aggregates: decision3299/3299; feature13/8; feature-quality6045/1181;
+options43/43; safety312/312; scan70/70 (events/aggregates). Longest chain2474
+feature-quality events. No IDs, payloads or research performance inspected.
+Protected-head allocation must account for this measured cardinality, not assume
+one global chain or an unbounded per-event SQL cold index. Cold-only heads belong
+in the signed catalog; protected SQL hot heads must be retired safely when the
+whole aggregate becomes cold. Segmented restore must cover the2474-event chain.
+
+Milestone6 final verification87885 completed on unchanged final code:1936 passed,
+4 unchanged skips,2 subtests passed in282.31s. Includes offline app boot/import
+and all disposable PostgreSQL tests. No validation process remains active.
+Post-suite root/direct-test pyflakes clean; strict27-module mypy clean. Local
+release_fingerprint rechecked dc9f2b82a0e01e299e4b4afa8ab1bc0319903ae787727a22d08506c25979ed5a.
+Final self-review fixed fixture serialization, close-exception leakage,
+alternate authentication universe/extra credential forwarding, strict namespace
+boolean parsing and cooperating migration check/DDL race. Actual hosted viewer
+ACL visibility, concurrency and legacy signatures remain expressly unverified.
+
+This is verified progress, not completion or owner-blocked status. Goal ACTIVE;
+continue protected hot heads/cold-aware production integration next. Manifest30
+paths remains NOT READY FOR UPLOAD/DDL/commissioning. No hosted mutations, no
+Drive publication, no live fingerprint/settings change and no research inspection.
+
+## Permanent storage milestone7 — protected heads and actual reader integration
+
+Generated third review migration using pinned CLI2.119.0 migration new after help:
+supabase/migrations/20261005210149_permanent_storage_heads_review_only.sql.
+No CLI login/link/database command or hosted mutation. It adds a read-only-to-
+workers hot-terminal table,2 MB budget (45 relations/238 MB +70 MB other=308 MB).
+The preceding ledger draft now declares disabled heads_enabled and explicit
+head_audit_sha256; pruning requires tracking. Both drafts still UNAPPLIED local.
+Synthetic SQL fixtures were updated to install the third draft and bootstrap
+their known test heads; that helper is NOT an owner production instruction.
+
+Actual AFTER INSERT atomically checks/advances the independent head, preserving
+ON CONFLICT skips and rollbacks. Deferred root commit retires only fully cold
+aggregates whose staged terminal exactly matches; prefix archival retains head.
+Cold reappend requires root-bound frontier/fingerprint stage. Owner commissioning
+must verify available original signatures before pinning heads; no automatic
+bootstrap and no claim about already-missing pre-commissioning history.
+
+Security self-review found privilege escalation risk if SECURITY DEFINER queried
+caller TEMP views/domains/RLS/generated expressions. Fixed with exact physical
+temporary heap/built-in-type checks BEFORE querying values; hostile view/custom-
+domain regressions pass. Private trigger context and search path, no general
+PUBLIC/worker function execution, no direct worker head DML. Unexpected table,
+column or function grants fail review rather than stay silently active. These
+are deliberate protected trigger writes, not a permission-error workaround.
+
+Added ledger_runtime_reader.py: same repeatable-read READ ONLY snapshot of root,
+head and native hot rows; explicit rollback/close BEFORE any Drive fetch. Verifies
+receipt, catalog, sealed originals and terminal; no missing evidence fallback.
+ProductionRepository.events routes through an optional injected reader; live
+factory is NOT yet configured. Reader/transitive modules are now included in
+equity release manifest. ColdLedger.frontier exposes verified cold metadata.
+Actual runtime-role SQL tests cover archive round trips, cold/hot merge, missing/
+corrupt objects, unknown keys, head/tail loss, permissions and bounded read; a
+2474-event synthetic chain crosses900-row capture and2000-row signature chunks.
+
+First head suite14 passed/1 failed: fixture lacked schema USAGE despite table
+INSERT grant. Corrected fixture to match actual runtime grants,15 pass. Cold-
+frontier stage suite28 pass. Reader original18 passed; extended reader21 pass.
+Security suite68519:65 pass. Final integrated48455:129 passed in87.62s.
+Root/direct test pyflakes clean; strict mypy28 modules clean. Full suite started
+on frozen final code; subsequent entry must record terminal result, not assume pass.
+Working manifest35 files. Local fingerprint63ebc982b91868918916d78e66b0634e17e82d5793f7c38b7a2a3ade8d4b7487.
+Do NOT upload/apply/change live expectation for this unfinished group.
+
+Next: cold-aware actual append (root/head CAS and duplicate identity, no Drive
+inside locks), all SQL joins/global audit and local recovery; owner audited-head
+bootstrap tooling, paging/streaming for large historical restores and unresolved
+dependency inventory; all-table archive/restore, size guard/independent alert/
+daily report and verified physical steady state. Goal ACTIVE, not complete or
+blocked. No secrets, hosted writes, Drive publication, dispatches or research
+performance inspection. Pilot/pruning remains held.
+
+Milestone7 final full suite31142 completed on frozen code:1990 passed,4 unchanged
+skips,2 subtests passed in351.16s. Includes offline boot/import and disposable
+PostgreSQL regression coverage. No validation process remains active. Rechecked
+root/direct-test pyflakes clean and strict mypy clean across28 modules; reviewed
+local release_fingerprint remains63ebc982b91868918916d78e66b0634e17e82d5793f7c38b7a2a3ade8d4b7487.
+Self-review fixes and remaining limitations above still apply. This closes the
+local protected-head/reader milestone only, NOT the permanent storage goal.
+The35-file interim group remains NOT READY FOR UPLOAD/APPLY. Hosted ledger
+pruning, derivative collection and live expectation changes remain held while
+cold-aware writes, every dependent reader/recovery path and operational size
+guards are integrated. Goal ACTIVE; next step remains safe local implementation.
+
+## Append preparation integration — active continuation
+
+Previous turn was verified progress: full suite1990 passed,4 skips,2 subtests.
+Read current writer/reader/archive code and Supabase/Postgres skills again.
+Changelog markdown400; reviewed HTML breaking-change fallback and PostgreSQL17
+locking documentation. No hosted mutation or fresh hosted-size claim.
+
+Added typed AppendEvidence and prepare_append to the actual runtime reader.
+It verifies original hot/cold chain against protected terminal, cold frontier,
+and global cold idempotency identity before any write transaction. Invalid keys,
+missing/corrupt originals, unknown HMAC keys and identity overlap fail closed.
+Shared native-row normalization helper removes duplication. SQL snapshot closes
+before Drive calls, exercised by existing actual-role fixture assertions.
+This is preparation ONLY, not production write authorization; actual writer is
+still hot-only and live factory remains unwired. Do not prune.
+
+Important next integration finding: runtime SELECT alone cannot acquire a root
+locking read. Do not grant catalog UPDATE merely to work around this. A narrow
+protected-root lock boundary must enforce root-before-aggregate ordering and
+compare prepared root+terminal, with re-preparation outside locks on mismatch.
+Actual trigger/archive already follows that ordering; writer must match it.
+
+Tests initially exposed fixture residual publication reads, then the original
+fixture's duplicate=False annotation outside the15 signed fields. Corrected
+assertions to isolate reads and compare all original signed fields, not rehash.
+Targeted44264 final:31 passed in34.57s. Pyflakes clean; strict28-module mypy clean.
+Local fingerprint6f9ee4142ccbb7d84bdd0c52267064ea4f6d2066d1f6990225fdf98db34d3e36.
+Full suite launched on frozen code; record its terminal result before claiming
+final validation. Working group remains35 files, not ready to upload/apply.
+
+Hosted size-only recheck via authorized BEGIN READ ONLY/timeouts/SELECT/ROLLBACK
+at2026-10-05 21:37:01.610116UTC returned cluster493984565/current478710931,
+connector postgres(owner/BYPASSRLS). Exact query saved in inventory SQL. No
+credential/payload inspection or mutation. The unchanged short interval is NOT
+bounded growth/reuse proof and does not relax the24 MB derivative headroom gate.
+
+Final full suite53333 TERMINAL:2000 passed,4 unchanged skips,2 subtests passed
+in351.35s. Includes offline boot/import and disposable PostgreSQL regressions.
+No validation process remains active. Post-suite root/direct-test pyflakes and
+strict28-module mypy rechecked clean; fingerprint remains6f9ee4142ccbb7d84bdd0c52267064ea4f6d2066d1f6990225fdf98db34d3e36.
+Preparation is locally verified progress, NOT complete cold-write commissioning.
+Self-review: global cold identities restored with all15 signed fields; no Drive
+inside snapshot; missing originals/unknown keys blocked; stale snapshot evidence
+cannot be consumed safely without a locked root/head comparison. Scaling of full
+materialized histories and real concurrent transactions remains acceptance work.
+
+Next concrete implementation: narrow root-lock/stage validation SQL boundary
+without catalog UPDATE grant, then wire ProductionRepository.append_evidence_event
+to preparation, locked root+terminal comparison, original cold duplicate request
+matching and atomic insertion. Preserve shared delivery-session per-event commits,
+rollback on stale proof, no Drive inside locks and existing original HMAC material.
+Add actual-role SQL regressions for stale root/head, permission denial, cold retry
+conflicts, shared connection rollback and archive/append ordering. Continue all
+reader/recovery paths, bootstrap, streaming, every-table retention/restore, size
+guard/alerts/report and physical steady-state evidence afterwards. Goal ACTIVE.
+Working35-path upload inventory remains NOT READY; no hosted mutation or owner
+action is required for the next safe local implementation step.
+
+## Actual cold-aware writer integration — local, not commissioned
+
+Previous turn was verified progress(2000 full-suite passes). Read authoritative
+writer, reader and third unapplied draft, skills and current official changelog/
+PostgreSQL CREATE FUNCTION guidance. Used Supabase/Postgres safety guidance for
+lock ordering and minimum privileges; no hosted write/advisor/application.
+
+Extended the existing CLI-generated UNAPPLIED third draft with a deliberate
+private lock_ledger_append boundary. It validates the exact physical TEMP proof,
+commissioned fingerprint/root, then takes root-before-aggregate locks and compares
+the expected hot terminal. It performs NO permanent metadata edits. Runtime gets
+only this EXECUTE permission, not catalog UPDATE. Archive/public/research roles
+denied; unexpected function grants fail review. Actual original head advancement
+still happens atomically in the existing AFTER INSERT trigger.
+
+Added requested aggregate to AppendEvidence and lock_append staging method.
+ProductionRepository optional-reader path now prepares before writer SQL, locks
+and rechecks the root/head, restores original cold retries, and uses the verified
+cold predecessor for revived aggregates. Active signing key must be in verified
+reader keyring BEFORE insertion; no unsigned/unknown-key cold writes. Stable
+reviewed SQL control codes survive, raw driver/connection/payload errors do not.
+Legacy no-reader behavior remains unchanged. Hosted factory still UNWIRED.
+
+Actual-role disposable PostgreSQL tests cover cold reappend, original hot/cold
+retry, request conflicts(each matched field), shared commits/rollback/reuse,
+stale root and terminal, fingerprint/signing-key mismatch, worker denial, hostile
+TEMP view and sanitized driver errors. Runtime catalog UPDATE absence asserted.
+Initial75 passed; expanded suite30147 had123 passed/1 fixture failure because the
+research role did not exist. Fixture now creates that role with schema USAGE so
+the test exercises FUNCTION denial rather than missing role/schema denial.
+Final writer subset36584:18 passed,31 deselected in22.71s. Full suite launched on
+frozen final code; record its terminal result rather than assume completion.
+Root/direct-test pyflakes clean; strict28-module mypy clean. Local fingerprint
+df16a19d210d522a224803d5a99c13f1a916f095a82c89efdb26a450feaaa336.
+
+Manifest remains35 paths, NOT READY TO UPLOAD/APPLY. Next: wire all production
+SQL joins/global audit/local recovery, audited-head bootstrap and bounded streaming,
+then dependency-aware all-table archive/restore, transactional size guard,
+independent alert, daily report and physical steady-state proof. Real concurrent
+locking and actual hosted ACL/legacy-key material remain separate acceptance.
+Goal ACTIVE. No hosted mutations, Drive publication, secret changes, dispatch,
+2025/2026 research inspection or order placement. Derivative pilot/pruning held.
+
+Reader follow-up inspection: verify_evidence_ledger_continuity still uses hot-only
+LAG/genesis SQL and can certify an empty hot table after complete archival. The
+training/readiness joins and pending_observations likewise only join hot rows.
+Do NOT commission the optional writer/reader globally or prune until these are
+replaced with verified cold-aware enumeration. Current hashed catalog supports
+identity lookup, not authenticated enumeration yet; discover all aggregates via
+verified paged catalog traversal/locator metadata, bind audit to a consistent
+SQL root/head snapshot, and stream originals rather than materialize unbounded
+history. This is the next concrete safe local integration work, not owner-blocked.
+
+Final writer milestone full suite93250 TERMINAL:2018 passed,4 unchanged skips,
+2 subtests passed in369.15s. Includes offline app boot/import and disposable
+PostgreSQL regressions. No test process remains active. Post-suite pyflakes clean
+(explicit nonzero-exit propagation), strict28-module mypy clean; local reviewed
+fingerprintdf16a19d210d522a224803d5a99c13f1a916f095a82c89efdb26a450feaaa336.
+Self-review fixed unverified active signing keys and raw driver-error exposure;
+permissions tests assert actual function denial with an existing research role
+and confirm runtime cannot UPDATE roots. Hostile temporary views are rejected
+before privileged reads. Original HMAC material/idempotency equality unchanged.
+
+This is verified local writer progress, NOT the full storage goal or a release.
+The35-file interim group remains NOT READY FOR UPLOAD/APPLY. No live fingerprint,
+secrets/settings, migration, pruning or ingestion change. Next safe local step is
+authenticated catalog enumeration and cold-aware global audit/outcome readers,
+then remaining recovery/bootstrap/streaming/all-table retention/guards/alerts/
+reporting/physical steady-state work. Goal ACTIVE, no owner blocker yet.
+
+## Cold-aware global audit and outcome readers — validation in progress
+
+Local implementation continuation. Supabase/Postgres skills read; no hosted
+mutations. Catalog traversal uses a bounded-depth stack and validates
+every page before authenticated enumeration. Cold aggregate directory is checked
+against event-locator counts. Global audit includes fully archived aggregates and
+checks protected SQL root/head fences before/after traversal. Missing originals,
+lost hot terminals and concurrent state changes fail closed.
+
+ProductionRepository optional reader now routes global continuity, training and
+readiness through original verified events. Live factories remain UNWIRED.
+Actual SQL-to-cold consumer regression found a SQL harness flaw: duplicate column
+names collapsed through JavaScript objects. Harness now uses positional arrays.
+It also preserves timestamptz microseconds instead of rounding through JS Date;
+the test adapts its JSON bridge timestamps to psycopg-aware datetime values.
+No production signature/time material or eligibility rule was weakened.
+
+Earlier targeted catalog/cold/runtime run:82 passed in61.72s. Two new consumer
+tests:2 passed,54 deselected in2.89s after harness repair. Root/direct-test pyflakes
+clean; strict28-module mypy clean. New local fingerprint:
+934172f4417be186a983977cf535eff8ff7e7742d0568339b62f9abd28d1e832.
+Full suite44644 running on frozen code; terminal result must be recorded.
+Do not launch a duplicate test process if it is still active.
+
+Manifest now36 paths (additional tests/test_archive_maintenance_sql.py), still
+NOT READY FOR UPLOAD/APPLY. Global reader currently retains aggregate lists,
+per-aggregate chains and global identity sets; bounded spooling/streaming remains
+required before permanent-storage commissioning. Next: pending_observations and
+local recovery, audited bootstrap, streaming, all-table dependency retention and
+restore, transactional size guard/independent alert/daily report/physical proof.
+Goal ACTIVE. No owner blocker or hosted action needed for the next local work.
+
+Fresh hosted size check (SELECT only, BEGIN READ ONLY, statement10s/lock2s,
+ROLLBACK; no research values/secrets):2026-10-05 22:18:59.565546UTC,
+postgres478,727,315 bytes; cluster494,000,949 bytes. Nominal decimal500MB
+headroom5,999,051 bytes. This is16,384 bytes above the previous measurement,
+not proof of steady state or a physical-reclamation result. Derivative pilot held.
+Query shown to owner: SELECT clock_timestamp() AS measured_at,
+current_database() AS database_name,pg_database_size(current_database()) AS
+current_database_bytes,(SELECT sum(pg_database_size(oid)) FROM pg_database)
+AS cluster_bytes. Connector remains owner/BYPASSRLS; transaction is read-only.
+
+Second SELECT-only metadata check (same read-only/timeouts/rollback): top10
+relations via pg_class/pg_namespace/pg_stat_user_tables, ordered by total size.
+Allocations bytes:universe_membership_versions82534400,market_quotes80969728,
+scanner_observations61505536,outcomes60178432,universe_membership56418304,
+evidence_ledger_events55508992,mf_nav43532288,market_daily_volumes8306688,
+mf_disclosures6529024,feature_observations4546560. Estimated live/dead respectively:
+61366/5320,106672/0,52364/8449,445/89,40031/0,9619/0,70659/0,63681/10691,
+11159/13,2925/0. These are statistics estimates, NOT exact row/physical-free counts.
+Query:SELECT n.nspname AS schema_name,c.relname AS table_name,
+pg_total_relation_size(c.oid) AS total_bytes,pg_relation_size(c.oid) AS heap_bytes,
+s.n_live_tup,s.n_dead_tup,s.last_autovacuum FROM pg_class c JOIN pg_namespace n
+ON n.oid=c.relnamespace LEFT JOIN pg_stat_user_tables s ON s.relid=c.oid
+WHERE c.relkind='r' AND n.nspname IN
+('quant_app','equity_research','equity_operations') ORDER BY
+pg_total_relation_size(c.oid) DESC LIMIT10 (actual executed SQL uses LIMIT 10).
+
+Global-reader milestone full suite44644 TERMINAL:2030 passed,4 unchanged skips,
+2 subtests passed in397.41s. Includes disposable SQL and offline app boot.
+No test process remains active. Self-review verified complete-archive audit,
+missing-object failures, unchanged-root/head fences, legacy SQL pairing parity
+and timestamp preservation; no original hash was regenerated on restoration.
+Next local implementation is cold-aware pending_observations. Still NOT READY
+TO UPLOAD/APPLY; goal ACTIVE and no owner action needed for this next step.
+
+## Cold-aware pending-outcome collector — full validation in progress
+
+ProductionRepository.pending_observations optional-reader route now joins frozen
+pending facts to scanner observations, without requiring hot original ledger rows.
+All originals verified first; count10000/JSON2MiB staging limits fail rather than
+truncate. Explicit read-only SQL on the reader's connection source, statement10s,
+lock2s, UTC, finally rollback. Final root/head fence rejects concurrent outcome
+changes. No Drive request while SQL is open. Legacy unconfigured route unchanged.
+SQL NULL cannot equal literal "None"; original target must be a string, horizon
+must fit SQL integer. Missing levels/stage2 rules unchanged. Driver errors stable
+and sanitized. This still does not archive scanner rows or commission the factory.
+
+New regression suite compares actual pending SQL with cold/hot and fully cold
+history, matured/unmatured, signed/null/negative horizons, invalid horizons,
+missing execution levels, oversized count/bytes, unavailable objects, SQL grant
+failure/rollback recovery and final root/head fence. Initial failures exposed
+misuse of canonical_json (mapping-only) for the JSON array; switched to explicit
+json.dumps array encoding, retaining original hash helpers unchanged. Expanded
+targeted54316 TERMINAL:20 passed,55 deselected in21.60s. Pyflakes clean;
+strict28-module mypy clean. Fingerprint:
+9a9ab0b58f66e2c04d072aa92eabd0a3ba9cefaa17f60fb5cb3b28fe65f46d75.
+Full suite launched on frozen code; record its process ID/result next.
+Full suite process96733 (do not launch another while this is running).
+Manifest remains36 paths, NOT READY TO UPLOAD/APPLY. No hosted mutation, ingestion,
+dispatch, secret/settings change or frozen-period research examination. Next
+local work: recovery reader/dependencies, audited bootstrap and bounded spooling,
+then all-table archive/restore/guards/alert/reporting/physical steady-state proof.
+Goal ACTIVE; no owner action needed for this next local implementation.
+
+Next-step inspection (not implemented yet):recovery_drill.verify_isolated_target
+still runs raw hot-only LAG and duplicate SQL, which can PASS an empty hot ledger
+after full archival without verifying any cold originals. Route the isolated DR
+check through verified hot/cold original audit and bind its reader to the explicit
+DR connection, never implicitly production. Also inspect no-reader factory paths:
+an archived generation must not silently fall back to hot-only training/readiness/
+audit. Local SQLite verification/outbox dependencies are separate from SQL DR;
+do not claim cold recovery commissioned from the runtime reader tests alone.
+
+Pending-reader milestone full suite96733 TERMINAL:2049 passed,4 unchanged skips,
+2 subtests passed in397.99s. Includes full offline app boot and disposable SQL
+tests. Post-suite root/direct-test pyflakes clean and strict28-core-module mypy
+clean. Fingerprint unchanged from pending-reader validation:
+9a9ab0b58f66e2c04d072aa92eabd0a3ba9cefaa17f60fb5cb3b28fe65f46d75.
+No test process remains active. Self-review fixed mapping-only JSON serialization
+for array staging, SQL NULL-vs-literal-None mismatch and raw driver-error exposure;
+count/byte overflow fails before SQL, zero-limit still verifies dependencies,
+SQL always rolls back before the final original-ledger root/head check.
+No original event is synthesized/re-signed during restoration and no features
+are recomputed. Synthetic originals are signed only in disposable test fixtures.
+
+NEXT CONCRETE LOCAL STEP:replace recovery_drill hot-only verification and protect
+no-reader fallback paths after archived generations, with isolated-target
+original-audit tests; then local SQLite recovery/dependency protection and audited
+bootstrap/bounded spooling. All-table retention/restore, transaction-enforced
+admission, independent alert/daily report and measured physical steady-state
+remain required. The36-file inventory is interim, NOT READY FOR UPLOAD/APPLY.
+No owner action needed yet for this next local work. Goal remains ACTIVE, not
+complete/paused/blocked. Hosted changes and derivative pilot remain held.
+
+## Original-ledger DR and legacy-fallback protections — locally verified
+
+Previous turn classified VERIFIED PROGRESS (2049 full passes), not a wait or
+blocker. Read current progress/code. Supabase/Postgres skills read, privilege
+reference read; changelog markdown400, HTML breaking-change fallback checked.
+PG17 SET TRANSACTION documentation reviewed. No hosted query/mutation this turn.
+
+New typed ledger_storage_access.py: unconfigured legacy readers allow namespace
+absence or exact storage genesis only. Root check/source query share bounded
+repeatable-read/read-only snapshot; any archived generation requires configured
+cold originals. Five production readers routed; legacy writer admission also
+rejects archived generations before retry/aggregate lookup. Existing SQL head/
+temporary-proof trigger remains the independent concurrent-archive write guard.
+
+New typed ledger_recovery.py: trusted original source witness(count+ordered signed
+identity digest); full original HMAC/root/head verification before certification.
+Empty source, missing originals and differing expected content cannot PASS. No
+source witness is synthesized from a recovery target. Known Supabase direct/
+pooler and Neon pooled/unpooled URLs normalized, no passwords in identity hashes;
+explicit database and no identity-changing URI query overrides. Unknown proxy
+aliases still require owner endpoint review, not network-isolation proof.
+
+recovery_drill.verify_isolated_target no longer certifies hot-only LAG/empty SQL.
+Requires trusted witness, source URL and target-bound reader factory. Rejects
+same source identity, owner/BYPASSRLS/privileged membership and a reused production
+reader. Supports SELECT-only verification; never calls schema setup/health writes.
+Only stable reviewed failure codes leave the function. Original-ledger PASS is
+explicitly NOT full application recovery/approval. CLI currently fails closed
+until private factory/witness wiring is completed; no live factory changes yet.
+
+Shared begin_read_snapshot in ledger_archive_repository enforces actual mode
+via SET TRANSACTION as well as BEGIN, protecting already-begun wrapper contexts.
+Used by runtime/legacy/pending/DR reads; rollback finally even setup failure.
+Fixtures now support faithful rollback. Initial27639:100 passed/3 fixture-mode
+failures; corrected damaged-root fixture to explicitly bypass trigger+CHECK only
+in disposable operator-damage test, fixed wrappers lacking rollback, and enforced
+mode despite nested BEGIN. Targeted31677 TERMINAL:41 passed in24.61s before shared
+initializer consolidation. Final expanded90689 TERMINAL:117 passed in111.77s.
+Full suite95771 running on frozen code; do not launch a duplicate. Record its
+terminal result before changing implementation or marking this milestone verified.
+
+Manifest42 paths: add two typed core modules, recovery_drill.py, two new SQL test
+files and tests/test_equity_delivery_repository.py (all other paths already in
+manifest). Strict30-module mypy clean; root/direct-test pyflakes clean.
+Local fingerprint6a234dc090b83614a31d1b08227802b23f845f68e6c82df1e590b92be9c42263.
+NOT READY TO UPLOAD/APPLY. Next local work: local SQLite recovery dependencies,
+audited bootstrap/bounded spooling, then all-table retention/restore/transaction
+admission/independent alert/daily report/physical steady-state proof. Goal ACTIVE;
+no owner action needed yet for remaining local work. Derivative pilot stays held.
+
+Continuation inspection: local ImmutableEvidenceLedger and remote signed ledger
+are distinct evidence domains. Local-only events are not necessarily delivered;
+sender passes requests, not original local signed envelopes. Do NOT splice remote
+cold events into local chains or compare local/remote event_hash as if identical.
+Next recovery acceptance must cover local original integrity, pending-outbox
+dependencies, remote receipt/request matching and commit-before-ACK retries,
+plus separately restored scan checkpoints. No local pruning is authorized.
+Self-review found no further change needed in the current recovery/fallback code.
+Root/direct-test pyflakes and strict30-module mypy rechecked clean; fingerprint
+unchanged. Full suite95771 remains the only active validation process.
+
+Full suite95771 TERMINAL:2086 passed,4 unchanged skips,2 subtests passed in490.52s
+(8m10s). Includes disposable SQL and offline Streamlit boot/import checks. No
+test process remains active. Lint/strict30-module types were clean on this frozen
+code; final post-suite recheck recorded below. Manifest remains42 paths, NOT READY
+TO UPLOAD/APPLY. Current original-ledger recovery/fallback milestone verified,
+not whole-application recovery or permanent-storage goal completion.
+
+NEXT LOCAL STEP:implement bounded local recovery dependency/readback verification
+without conflating local and remote envelopes; cover pending predecessors and
+commit-before-ACK original request idempotency, then audited bootstrap/bounded
+historical spooling. Live factories remain unwired. All-table archive/restore,
+transaction-enforced admission, independent alert, daily report, NAV latest-value
+protection and measured physical steady state remain required. No owner mutation
+is requested from this interim milestone. Hosted writes, pilot and frozen research
+remain untouched. Goal objective retained in full; do not mark complete.
+
+Final post-suite check:root/direct-test pyflakes clean; strict30 source modules
+mypy clean. Fingerprint unchanged:
+6a234dc090b83614a31d1b08227802b23f845f68e6c82df1e590b92be9c42263.
+Self-review complete for this milestone; no further implementation defect found.
+No hosted connection/query/mutation, publication, data deletion or live expectation
+change occurred during this continuation. Progress and interim42-file inventory
+updated; no upload/commissioning requested yet.
+
+## 6 October capture-hour boundary and first relief; local recovery validation
+
+User asked for dependency isolation and current storage measurements before the
+next milestone. Supabase/Postgres skills and privilege reference read. Official
+changelog checked(HTML fallback aftermarkdown400). No hosted mutation. Every
+hosted query BEGIN READ ONLY/timeouts10s/2s/ROLLBACK, postgres owner/BYPASSRLS.
+
+At03:21:16.394344UTC(08:51:16IST), current478784659/cluster494058293 bytes:
+nominal decimal500MB headroom5941707. +57344 since prior22:18:59.565546UTC,
++73728 since owner's18:05UTC. These are quiet overnight numbers, not today's
+market-hours rate. Table allocations broadly unchanged; ledger55508992. Six
+ledger events since18:05UTC, all21:00UTC bucket, storedpayload2218 bytes. NAV
+one-timeOct4 eligibility52113rows/14230681 rowbytes; not physical reclaim.
+NAV has no userDELETEtrigger. App historical NAV readers use external providers;
+archive protectslatest per scheme andexact re-match. Existing reviewed workflow
+can provide owner-run NAV relief NOW without uploading interim runtime/migrations.
+No guaranteedphysicalshrink; NAVfreepagescannotabsorb ledgergrowth. NoVACUUMFULL.
+
+Static task closure overlaps workingmanifest at equity_runtime_health.py and
+release_verification.py, NOT production_repository.py. Freeze sharedcapture
+modules/dependencies/.venv during09:00–15:40IST. Get-ScheduledTask returned no
+visible namedtasks, so actualregisteredactions remain ownerverified. No tasks
+changed. New local_ledger_recovery.py unreferencedbycapture/livefactories; only
+newmodule/tests/docs/read-onlySQLedited, no sharedruntimecodechangedthisturn.
+
+Local recovery bounded20000rows/32MiB: freshSQLite query_only read snapshot,
+everyHMACkey/schema/sequence/previoushash verified, originalrequests bind exact
+equityoutbox entries. Immutable detachedrequeststrings; closesSQLbefore remote
+receiptlookup. Unknown/unsignedkeys, missingpredecessors/orphanoutbox, mismatched
+requests, acknowledged-but-missingremote, unreadableobjects/errors failclosed.
+Pendingremotecommit/beforeACK legitimate and counted; never sends/repairs/deletes.
+Expectedwitnessincludestransportstate from independentlyreviewedsource. Legacy
+non-equity transport blocked untiladapter; no wholeappDRapproval fromthisscope.
+
+Initial12testsbodiespassed but pytestdefaulttempcleanup failed WinError5; command
+thencontinued lint/types, not recordedas success. Re-rununique--basetemp/explicit
+exitpropagation:32passed(includingexistingatomicdelivery/sender)in6.24s. Added
+empty/unsigned/freshconnection/witnesscases afterthat. Fullsuite97048 nowrunning,
+onlyactiveprocess; recordterminalresult. Newmodule strictmypy andpyflakesclean.
+Fingerprintunchanged6a234dc090b83614a31d1b08227802b23f845f68e6c82df1e590b92be9c42263.
+Manifest46paths. STORAGE_FIRST_RELIEF.md plus sql/storage_first_relief_read_only.sql
+are standalone owner instructions for existingreleasedworkflow; no interimcode
+uploadneeded. PermanentpackageNOTREADY; fullgoalunchanged, derivativepilotheld.
+
+Follow-up03:31:53.011973UTC(09:01:53IST):current478784659/cluster494058293
+unchanged, zeroledgerrows since03:21:16.394344UTC. Still pre-market, not sufficient
+for today's actualmarket-hoursgrowthrate. Earlier6.8MBdailyburst exceeds5.94MB
+nominalheadroom. Do not waitforpermanentpackage; NAVownerrelief availablefirst,
+then transactionadmissionguard urgentpriority beforefurtherlargeintegration.
+No pausedtasks/collector settingschanged. Newcore separatelystrictchecked; shared
+30-moduleconfig untouchedduringcapturehours. Fullsuite97048stillrunning.
+
+Fullsuite97048 TERMINAL:2102passed,4unchangedskips,2subtestspassed in453.74s
+(7m33s), includingofflineappboot/import/disposableSQL. +16tests versus2086,
+no testcountdrop. No testprocessactive. Currentnewmodule unreferencedbyliveapp
+or scheduledcapture, so existinglocalfingerprintunchanged and no liveexpectation
+change requested. Sharedcapture/runtime sources were notedited duringthisturn.
+Self-review hardened detachedrequests toimmutablestrings, witnesscount/hash
+validation, duplicateoriginalIDs, callbackerrorredaction and connectioncleanup;
+these finalchanges are coveredbythe fullsuite. No source repair/pruning implemented.
+
+NEXT PRIORITY:transaction-enforced storage admission/independentalert, before
+furtherlargecoldbootstrap integration. Owner can execute existingreleased NAV
+preview/export/trial/boundeddelete using standalonefirstreliefguide, nointerim
+runtimeupload/DDL. This createsNAVreuse, not a guarantee ofphysicalheadroom or
+capacityforledger. Permanentgoal(alltables/readers/restores/budgets/physicalsteady
+state) remainsunfinished. Localrecovery privatefactory/remoteverifiedlookup,
+legacytransportadapter, largehistoryspooling and checkpointDR acceptance remain
+open; newmodule is scopedproof only. Goalretained, notcomplete/paused/blocked.
+
+Finalpost-suite:root/direct-testpyflakesclean, strict30existingmodules plus new
+localrecoverymodule separatelyclean. Fingerprintunchanged6a234dc090b83614a31d1b08227802b23f845f68e6c82df1e590b92be9c42263.
+No hostedwrites, taskchanges, secrets, actualmarketdataexports or frozenperiod
+performanceanalysis. All hosteddiagnostics SELECT-only underreadonly/timeouts.
+
+## Oct 6 morning task failure: separate repair staging, storage remains urgent
+
+Elevated READ-ONLY task listing confirms all three registered tasks load this
+workspace .venv/runner; earlier sandbox listing could not certify them. No task
+changed. Sanitized recent receipts show prepare and polls BLOCKED/SCHEDULER_BLOCKED.
+Today's config.json absent; polls therefore have no recipe. Current licence ACK
+valid and clock PASS. Fixed official NSE GET reproduced ReadTimeout (~20 seconds),
+consistent with preparation receipt timing, not proof of its historical exception.
+No source-hash mismatch established for today because preparation never published.
+Private root stays outside repository; no secret/raw path or payload output.
+
+Active shared modules remain UNCHANGED during market hours. Complete replacements
+staged_capture_repair/forward_nifty_schedule.py and nifty_previous_close.py contain
+transport redaction, explicit missing-recipe and source mismatch codes/mode receipts,
+and post-close incomplete/75-missed audit only when recipe AND state absent.
+Unexplained state fails closed. No after-open freeze, synthetic close, retry/window
+relaxation, network fallback or catch-up capture. Availability still uncommissioned.
+Owner replaces root files only with tasks stopped/disabled or after today's tasks.
+New tests prefer staging locally, fall back to uploaded root files in CI. Do not
+upload staged directory as task runtime. No unrelated interim storage runtime upload.
+
+Supabase SELECT-only READ ONLY/10s statement/2s lock queries recorded in
+sql/capture_morning_storage_read_only.sql. At04:17:54UTC/09:47:54IST:
+current479104147, cluster494377781, nominalheadroom5622219; +319488 since owner's
+09:20 reading. Initial datallowconn-only sum understated cluster; corrected to ALL
+databases. Short interval does not identify table growth or predict bursts.
+Outcomes total60178432/heap253952/index393216/TOAST59498496; parent dead0/autovacuum
+today01:28UTC but TOAST12646live/2900dead,lastautovacuumOct4 23:16UTC, no reloptions.
+NAV43532288,61537live/9122dead;ledger55508992,9619live/dead0. Stats approximate.
+Allocated-minus-live payload is not exact bloat/free-space. Ordinary owner vacuum
+after fresh blocker checks; NO FULL/REINDEX/rewrite. NAV verified relief now through
+existing workflow; table-local reuse cannot protect new ledger allocation.
+
+CAPTURE_MORNING_REPAIR_2026-10-06.md contains owner sequence and complete-file
+destination mapping; STORAGE_FIRST_RELIEF.md corrects actual task inspection.
+Focused59passed; staged replacements also ran ALL47existing capture/source tests
+successfully via isolated import path. Pyflakes and strictmypy2replacementfilesclean.
+Fullsuite73602 running (2102baseline+newtests), record terminal result before handoff.
+Fullsuite began before one new fallback-loader test; final focused rerun must include
+that test. Permanent storage admission/alert still NEXT PRIORITY, not complete.
+
+Follow-up SELECT-only blocker counts allzero (transactions>5min, snapshot-retaining
+slots, preparedtransactions, runningvacuum); recheckbeforeownermaintenance. Per-table
+allocation/write counters captured, statsresetAug25, not dailycounts. SQL now also
+records that bounded top15 query for later delta attribution. Short growth interval
+not yet attributable; no claim ledger drove all319488bytes. Fingerprintstill
+6a234dc090b83614a31d1b08227802b23f845f68e6c82df1e590b92be9c42263; no livechange.
+
+Fullsuite73602 TERMINAL:2114passed,4unchangedskips,2subtestspassed514.28s.
+Final focused60passed13.40s includes one fallback-loader test added after fullsuite
+collection; separately13newtests passed1.39s. No testcountdrop: baseline2102+12
+fullsuite tests, plus13thnewtest verifiedfocused. Existing47capture/source tests
+also ran againststaged replacements and passed9.99s. Finalpyflakes/strictmypy
+bothreplacementmodulesclean. Fullsuiteincludesofflineappboot/import/disposableSQL;
+does not validateNSEavailability or hostedquota protection. No testsrunning.
+Self-review: explicitzero-countaudit refusesanyunexplainedstate; transportredaction
+coversGETandstream; stagedfilesnotactive; uploadtestfallbackavoidsmissing-stagingCI
+failure; historicaltimeoutcauseleftunproven; clustercalculationcorrectedALLdbs.
+Capture repair readyforownermaintenance review, permanentpackageNOTREADY. Updated
+eightpaths:stagedtwofiles,newtest,newrunbook,newreadonlySQL,andthreeexistingdocs
+(STORAGE_FIRST_RELIEF,STORAGE_UPLOAD_MANIFEST,AUTOMATION_PROGRESS). No livefingerprint
+change requested. No activecapturemodule/secret/task/hostedresource/data changed.

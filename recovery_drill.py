@@ -13,9 +13,13 @@ import hashlib
 import json
 import os
 from dataclasses import asdict, dataclass
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 
-from evidence_ledger import GENESIS_HASH
 from production_repository import ProductionRepository
+from ledger_archive_repository import Connection, begin_read_snapshot
+from ledger_runtime_reader import LedgerRuntimeReader
+from ledger_recovery import RecoveryWitness, RecoveryCheckError, database_identity, verify_original_recovery
 
 
 UTC = dt.timezone.utc
@@ -63,37 +67,60 @@ def request_restore(plan: RecoveryPlan, *, access_token: str, session,
     }
 
 
-def verify_isolated_target(database_url: str) -> dict:
-    """Read-only post-restore verification; never accepts the production URL implicitly."""
+def verify_isolated_target(database_url: str, *, source_database_url: str | None = None,
+                           expected: RecoveryWitness | None = None,
+                           reader_factory: Callable[[Callable[[], AbstractContextManager[Connection]]],
+                                                    LedgerRuntimeReader] | None = None) -> dict:
+    """Verify original recovery on an explicit target, not empty-hot SQL continuity.
+
+    The expected witness must come from a reviewed source audit. The factory must
+    bind to this explicit target connection; no production reader may be reused.
+    This scope is original ledger recovery, not whole-application disaster recovery.
+    """
     if not str(database_url).strip():
         raise ValueError("Explicit DR database URL is required")
-    repo = ProductionRepository(database_url, schema_mode="validate", enforce_restricted_role=True)
-    health = repo.health()
-    if not health.get("connected"):
-        return {"status": "FAILED", "health": health, "ledger_chain_verified": False}
-    with repo.connect() as conn:
-        broken = conn.execute("""
-            WITH ordered AS (
-              SELECT aggregate_id,sequence_no,previous_hash,event_hash,
-                     lag(event_hash) OVER (PARTITION BY aggregate_id ORDER BY sequence_no) AS prior_hash
-              FROM quant_app.evidence_ledger_events
-            )
-            SELECT COUNT(*) FROM ordered
-            WHERE (sequence_no=1 AND previous_hash<>%s)
-               OR (sequence_no>1 AND previous_hash IS DISTINCT FROM prior_hash)
-        """, (GENESIS_HASH,)).fetchone()[0]
-        duplicates = conn.execute("""
-            SELECT COUNT(*) FROM (
-              SELECT aggregate_id,sequence_no FROM quant_app.evidence_ledger_events
-              GROUP BY aggregate_id,sequence_no HAVING COUNT(*)>1
-            ) AS duplicate_sequences
-        """).fetchone()[0]
-    valid = int(broken) == 0 and int(duplicates) == 0
-    return {
-        "status": "PASS" if valid else "FAILED", "health": health,
-        "ledger_chain_verified": valid, "broken_links": int(broken),
-        "duplicate_sequences": int(duplicates),
-    }
+    failure = {'status': 'FAILED', 'ledger_chain_verified': False,
+               'originals_verified': False, 'approval_authority': False,
+               'application_recovery_verified': False}
+    if expected is None:
+        return {**failure, 'reason': 'RECOVERY_EXPECTATION_REQUIRED'}
+    if not isinstance(expected, RecoveryWitness):
+        return {**failure, 'reason': 'RECOVERY_EXPECTATION_INVALID'}
+    if not source_database_url:
+        return {**failure, 'reason': 'RECOVERY_SOURCE_IDENTITY_REQUIRED'}
+    if reader_factory is None:
+        return {**failure, 'reason': 'RECOVERY_READER_NOT_CONFIGURED'}
+    try:
+        if database_identity(database_url) == database_identity(source_database_url):
+            raise RecoveryCheckError('RECOVERY_TARGET_IS_SOURCE')
+        # No schema setup or privilege escalation. Read-only verification supports
+        # a SELECT-only role; it does not require the app's INSERT privilege.
+        repo = ProductionRepository(database_url, schema_mode="validate")
+        with repo.connect() as conn:
+            try:
+                begin_read_snapshot(conn)
+                role = conn.execute('''SELECT r.rolsuper,r.rolbypassrls,
+                    EXISTS(SELECT 1 FROM pg_roles p WHERE (p.rolsuper OR p.rolbypassrls)
+                      AND pg_has_role(current_user,p.oid,'MEMBER'))
+                    FROM pg_roles r WHERE r.rolname=current_user''').fetchone()
+                if role is None or len(role) != 3 or any(type(value) is not bool or value for value in role):
+                    raise RecoveryCheckError('RECOVERY_TARGET_ROLE_UNSAFE')
+            finally:
+                conn.rollback()
+        reader = reader_factory(repo.connect)
+        if not isinstance(reader, LedgerRuntimeReader) or reader.connect != repo.connect:
+            raise RecoveryCheckError('RECOVERY_READER_TARGET_MISMATCH')
+        return {**verify_original_recovery(reader, expected), 'approval_authority': False,
+                'application_recovery_verified': False}
+    except RecoveryCheckError as exc:
+        known = {'RECOVERY_TARGET_IS_SOURCE', 'RECOVERY_TARGET_ROLE_UNSAFE',
+                 'RECOVERY_READER_TARGET_MISMATCH', 'RECOVERY_DATABASE_IDENTITY_INVALID',
+                 'RECOVERY_EXPECTATION_INVALID', 'RECOVERY_SOURCE_EMPTY',
+                 'RECOVERY_ORIGINALS_UNVERIFIED'}
+        reason = str(exc)
+        return {**failure, 'reason': reason if reason in known else 'RECOVERY_TARGET_UNVERIFIED'}
+    except Exception:
+        return {**failure, 'reason': 'RECOVERY_TARGET_UNVERIFIED'}
 
 
 def main(argv=None) -> int:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -9,10 +10,33 @@ from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 import tempfile
+import time
+from collections.abc import Iterator
 import zipfile
 
 
 MANIFEST = "SHA256_MANIFEST.json"
+
+
+@contextmanager
+def _verification_workspace() -> Iterator[str]:
+    """Clean only this invocation's temporary directory with bounded lock retries.
+
+    Windows can briefly retain child process/antivirus handles after communicate.
+    Permanent cleanup failure is still an error; never ignore it or relax imports.
+    """
+    workspace = tempfile.TemporaryDirectory(prefix="quant-release-check-")
+    try:
+        yield workspace.name
+    finally:
+        for attempt in range(20):
+            try:
+                workspace.cleanup()
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.05)
 
 
 def safe_member(root, name):
@@ -156,7 +180,7 @@ def verify_archive(archive, *, timeout=120):
     environment; requirements/constraints travel with the release. This is not
     a bundled Python interpreter or a provider/authenticated functional test.
     """
-    with tempfile.TemporaryDirectory(prefix="quant-release-check-") as temporary:
+    with _verification_workspace() as temporary:
         home = Path(temporary)
         extracted = home / "bundle"
         extracted.mkdir()
