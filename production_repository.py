@@ -13,7 +13,6 @@ import hashlib
 import hmac
 import json
 import math
-import re
 import os
 import threading
 import urllib.parse
@@ -25,10 +24,6 @@ from typing import Iterable, Mapping
 
 from evidence_ledger import GENESIS_HASH, LEDGER_SCHEMA_VERSION, canonical_json
 from deployment_security import assess_database_role
-from ledger_runtime_reader import LedgerRuntimeReader, LedgerReadError, append_error
-from ledger_segments import FIELDS
-from ledger_storage_access import hot_read, require_hot_only
-from ledger_archive_repository import begin_read_snapshot
 
 try:
     import psycopg
@@ -198,9 +193,7 @@ class ProductionRepository:
 
     def __init__(self, database_url: str | None = None, *, connect_timeout: int = 10,
                  evidence_signing_key: str | bytes | None = None,
-                 schema_mode: str = "migrate", enforce_restricted_role: bool = False,
-                 cold_ledger_reader: LedgerRuntimeReader | None = None,
-                 cold_ledger_fingerprint: str | None = None):
+                 schema_mode: str = "migrate", enforce_restricted_role: bool = False):
         self._database_url = str(database_url or os.environ.get("DATABASE_URL") or "").strip()
         self._connect_timeout = max(3, int(connect_timeout))
         if evidence_signing_key is None:
@@ -216,8 +209,6 @@ class ProductionRepository:
         if self._schema_mode not in {"migrate", "validate"}:
             raise ValueError("schema_mode must be 'migrate' or 'validate'")
         self._enforce_restricted_role = bool(enforce_restricted_role)
-        self._cold_ledger_reader = cold_ledger_reader
-        self._cold_ledger_fingerprint = cold_ledger_fingerprint
 
     @property
     def configured(self) -> bool:
@@ -252,22 +243,6 @@ class ProductionRepository:
             if self._schema_ready:
                 return
             with self.connect() as conn:
-                # The reviewed storage migrations acquire the same lock before
-                # any DDL, closing the namespace-check/trigger-replacement race.
-                conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
-                             ("quant-storage-schema-v1",))
-                # Legacy setup below replaces ledger mutation triggers. Once
-                # protected cold storage exists, only reviewed owner migrations
-                # may alter this schema. Do not silently remove archive guards.
-                storage = conn.execute("""
-                    SELECT EXISTS(SELECT 1 FROM pg_namespace
-                                  WHERE nspname='quant_storage')
-                """).fetchone()
-                if (storage is None or len(storage) != 1
-                        or type(storage[0]) is not bool or storage[0]):
-                    raise RepositoryUnavailable(
-                        "Protected storage requires reviewed migrations; legacy schema setup refused"
-                    )
                 with conn.cursor() as cur:
                     cur.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
                     cur.execute(f"""
@@ -1224,17 +1199,7 @@ class ProductionRepository:
                              limit=100) -> list[dict]:
         """Return passed signals missing their immutable decision-horizon outcome."""
         self.ensure_schema()
-        if self._cold_ledger_reader is not None:
-            try:
-                rows = self._cold_pending_observations(str(target_version), int(limit))
-            except LedgerReadError:
-                raise
-            except Exception:
-                raise LedgerReadError('LEDGER_PENDING_READ_FAILED') from None
-            names = ["observation_id", "as_of_date", "observed_at", "instrument_key", "trading_symbol",
-                     "entry", "stop", "target", "features", "horizon_sessions"]
-            return [dict(zip(names, row)) for row in rows]
-        with hot_read(self.connect) as conn:
+        with self.connect() as conn:
             rows = conn.execute(f"""
                 SELECT o.observation_id,o.as_of_date,o.observed_at,o.instrument_key,o.trading_symbol,
                        o.entry,o.stop,o.target,o.feature_json,
@@ -1257,74 +1222,6 @@ class ProductionRepository:
         names = ["observation_id", "as_of_date", "observed_at", "instrument_key", "trading_symbol",
                  "entry", "stop", "target", "features", "horizon_sessions"]
         return [dict(zip(names, row)) for row in rows]
-
-    def _cold_pending_observations(self, target_version: str, limit: int) -> list[tuple]:
-        """Join bounded original pending facts without requiring hot ledger rows.
-
-        Archive originals are fully verified before SQL opens. The final root/head
-        fence rejects an outcome arriving during the join. Missing cold evidence
-        cannot be mistaken for no pending work. No persistent staging writes.
-        """
-        reader = self._cold_ledger_reader
-        if reader is None:
-            raise LedgerReadError('LEDGER_COLD_READER_NOT_CONFIGURED')
-        if limit < 0:
-            raise LedgerReadError('LEDGER_PENDING_LIMIT_INVALID')
-        before = reader.overview()
-        facts: list[dict[str, object]] = []
-        for decision, outcome in self._cold_decision_pairs(include_unmatured=True):
-            if outcome is not None:
-                continue
-            payload = decision['payload']
-            if not isinstance(payload, Mapping):
-                raise LedgerReadError('LEDGER_PENDING_IDENTIFIERS_INVALID')
-            identifiers = payload.get('identifiers') or {}
-            if not isinstance(identifiers, Mapping):
-                raise LedgerReadError('LEDGER_PENDING_IDENTIFIERS_INVALID')
-            original_target = identifiers.get('target_version')
-            if original_target is None:
-                continue  # SQL NULL must not match the literal string "None".
-            if not isinstance(original_target, str):
-                raise LedgerReadError('LEDGER_PENDING_IDENTIFIERS_INVALID')
-            if original_target != target_version:
-                continue
-            raw_horizon = identifiers.get('horizon_sessions')
-            if raw_horizon is None:
-                continue  # SQL NULL does not satisfy horizon_sessions > 0.
-            text = str(raw_horizon).strip()
-            if not re.fullmatch(r'[+-]?[0-9]+', text):
-                raise LedgerReadError('LEDGER_PENDING_IDENTIFIERS_INVALID')
-            horizon = int(text)
-            if not -(2**31) <= horizon < 2**31:
-                raise LedgerReadError('LEDGER_PENDING_IDENTIFIERS_INVALID')
-            if horizon > 0:
-                facts.append({'aggregate_id': decision['aggregate_id'], 'horizon_sessions': horizon})
-            if len(facts) > 10_000:
-                raise LedgerReadError('LEDGER_PENDING_REQUIRES_PAGINATION')
-        stage = json.dumps(facts, sort_keys=True, separators=(',', ':'), allow_nan=False)
-        if len(stage.encode()) > 2*1024*1024:
-            raise LedgerReadError('LEDGER_PENDING_REQUIRES_PAGINATION')
-        # Use the same connection source as the verified ledger, not a potentially
-        # different repository database. Always roll back the short read transaction.
-        with reader.connect() as conn:
-            try:
-                begin_read_snapshot(conn)
-                rows = conn.execute(f"""
-                    SELECT o.observation_id,o.as_of_date,o.observed_at,o.instrument_key,o.trading_symbol,
-                           o.entry,o.stop,o.target,o.feature_json,decision.horizon_sessions
-                    FROM {SCHEMA}.scanner_observations o
-                    JOIN jsonb_to_recordset(%s::jsonb)
-                      AS decision(aggregate_id text,horizon_sessions integer)
-                      ON decision.aggregate_id='decision:' || o.observation_id
-                    WHERE o.stage2_pass=TRUE AND o.entry IS NOT NULL
-                      AND o.stop IS NOT NULL AND o.target IS NOT NULL
-                    ORDER BY o.as_of_date,o.instrument_key LIMIT %s
-                """, (stage, limit)).fetchall()
-            finally:
-                conn.rollback()
-        if reader.overview() != before:
-            raise LedgerReadError('LEDGER_GLOBAL_SNAPSHOT_CHANGED')
-        return rows
 
     def archive_mf_nav(self, records: Iterable[Mapping], *, source="AMFI NAVOpen.txt", source_hash="") -> int:
         self.ensure_schema()
@@ -1427,29 +1324,12 @@ class ProductionRepository:
         payload_text = canonical_json(payload)
         algorithm = "HMAC-SHA256" if self._evidence_signing_key else "SHA256 hash chain"
         try:
-            if self._cold_ledger_reader is not None and (
-                    not self._evidence_signing_key
-                    or self._cold_ledger_reader.event_keys.get(self._evidence_key_id)
-                    != self._evidence_signing_key):
-                raise LedgerReadError('LEDGER_WRITER_KEY_UNVERIFIED')
-            prepared = (None if self._cold_ledger_reader is None else
-                        self._cold_ledger_reader.prepare_append(aggregate_id, idempotency_key))
             with (self.connect() if _connection is None else nullcontext(_connection)) as conn:
-                if prepared is None:
-                    # A forgotten reader configuration must not restart an
-                    # archived aggregate or accept an incomplete retry lookup.
-                    require_hot_only(conn)
-                    conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (aggregate_id,))
-                else:
-                    LedgerRuntimeReader.lock_append(conn, prepared, self._cold_ledger_fingerprint)
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (aggregate_id,))
                 existing = conn.execute(
                     f"SELECT event_id,aggregate_id,sequence_no,event_type,recorded_at,effective_at,source,actor_id,idempotency_key,payload,previous_hash,event_hash,hash_algorithm,schema_version,key_id FROM {SCHEMA}.evidence_ledger_events WHERE idempotency_key=%s",
                     (idempotency_key,),
                 ).fetchone()
-                if prepared is not None and prepared.duplicate is not None:
-                    if existing:
-                        raise LedgerReadError('LEDGER_DUPLICATE_IDENTITY_OVERLAP')
-                    existing = tuple(prepared.duplicate[name] for name in FIELDS)
                 if existing:
                     existing_payload = existing[9]
                     if not isinstance(existing_payload, Mapping):
@@ -1472,11 +1352,6 @@ class ProductionRepository:
                         f"SELECT sequence_no,event_hash FROM {SCHEMA}.evidence_ledger_events WHERE aggregate_id=%s ORDER BY sequence_no DESC LIMIT 1",
                         (aggregate_id,),
                     ).fetchone()
-                    if prepared is not None:
-                        if previous is None:
-                            previous = prepared.cold_head
-                        elif (int(previous[0]), str(previous[1])) != prepared.terminal:
-                            raise LedgerReadError('LEDGER_HOT_TAIL_CHANGED')
                     sequence_no = int(previous[0]) + 1 if previous else 1
                     previous_hash = str(previous[1]) if previous else GENESIS_HASH
                     material = canonical_json({
@@ -1522,19 +1397,12 @@ class ProductionRepository:
                 "evidence_write", event_type, 0.0, ok=False,
                 status=type(exc).__name__, correlation_id=aggregate_id[:64],
             )
-            if self._cold_ledger_reader is not None and not isinstance(exc, LedgerReadError):
-                if not (type(exc) is ValueError and str(exc) ==
-                        'Idempotency key is already bound to different durable evidence'):
-                    raise append_error(exc) from None
             raise
 
     def events(self, aggregate_id: str) -> list[dict]:
         """Read one durable aggregate in sequence order for outcome reconciliation."""
         self.ensure_schema()
-        if self._cold_ledger_reader is not None:
-            return [{**row, 'duplicate': False}
-                    for row in self._cold_ledger_reader.events(str(aggregate_id))]
-        with hot_read(self.connect) as conn:
+        with self.connect() as conn:
             rows = conn.execute(
                 f"SELECT event_id,aggregate_id,sequence_no,event_type,recorded_at,effective_at,"
                 f"source,actor_id,idempotency_key,payload,previous_hash,event_hash,hash_algorithm,"
@@ -1559,9 +1427,7 @@ class ProductionRepository:
     def verify_evidence_ledger_continuity(self) -> dict:
         """Read-only global sequence/previous-hash continuity audit."""
         self.ensure_schema()
-        if self._cold_ledger_reader is not None:
-            return self._cold_ledger_reader.audit()
-        with hot_read(self.connect) as conn:
+        with self.connect() as conn:
             row = conn.execute(f"""
                 WITH ordered AS (
                   SELECT aggregate_id,sequence_no,previous_hash,event_hash,
@@ -1599,12 +1465,8 @@ class ProductionRepository:
         import pandas as pd
 
         self.ensure_schema()
-        if self._cold_ledger_reader is not None:
-            pairs = [(d['payload'], o['payload'], d['event_hash'], o['event_hash'])
-                     for d, o in self._cold_decision_pairs() if o is not None]
-        else:
-            with hot_read(self.connect) as conn:
-                pairs = conn.execute(f"""
+        with self.connect() as conn:
+            pairs = conn.execute(f"""
                 SELECT d.payload,o.payload,d.event_hash,o.event_hash
                 FROM {SCHEMA}.evidence_ledger_events d
                 JOIN {SCHEMA}.evidence_ledger_events o
@@ -1612,7 +1474,7 @@ class ProductionRepository:
                  AND o.event_type='OUTCOME_MATURED'
                 WHERE d.event_type='DECISION_EVALUATED'
                 ORDER BY d.effective_at,d.aggregate_id
-                """).fetchall()
+            """).fetchall()
         rows, pit_ok, costs_ok, quotes_ok = [], True, True, True
         for decision_payload, outcome_payload, decision_hash, outcome_hash in pairs:
             decision = dict(decision_payload or {})
@@ -1684,42 +1546,11 @@ class ProductionRepository:
         })
         return frame
 
-    def _cold_decision_pairs(self, *, include_unmatured: bool = False,
-                             first_outcome: bool = False) -> list[tuple[Mapping[str, object], Mapping[str, object] | None]]:
-        """Pair only exhaustively verified originals, preserving existing SQL semantics."""
-        if self._cold_ledger_reader is None:
-            raise LedgerReadError('LEDGER_COLD_READER_NOT_CONFIGURED')
-        decisions: list[dict[str, object]] = []
-        outcomes: dict[str, list[dict[str, object]]] = {}
-        # Exhaust the root/head-fenced iterator before returning any dataset.
-        for row in self._cold_ledger_reader.verified_events():
-            if row['event_type'] == 'DECISION_EVALUATED':
-                decisions.append(row)
-            elif row['event_type'] == 'OUTCOME_MATURED':
-                outcomes.setdefault(str(row['aggregate_id']), []).append(row)
-        decisions.sort(key=lambda row: (_utc_datetime(row['effective_at']),
-                                        str(row['aggregate_id']), int(row['sequence_no'])))
-        result: list[tuple[Mapping[str, object], Mapping[str, object] | None]] = []
-        for decision in decisions:
-            matches = sorted(outcomes.get(str(decision['aggregate_id']), []),
-                             key=lambda row: int(row['sequence_no']))
-            if matches:
-                result.extend((decision, outcome) for outcome in (matches[:1] if first_outcome else matches))
-            elif include_unmatured:
-                result.append((decision, None))
-        return result
-
     def decision_outcome_records(self) -> list[dict]:
         """Read minimal, row-level readiness facts from the immutable evidence spine."""
         self.ensure_schema()
-        if self._cold_ledger_reader is not None:
-            rows = [(d['payload'], _utc_datetime(d['recorded_at']),
-                     None if o is None else o['payload'],
-                     None if o is None else _utc_datetime(o['recorded_at']))
-                    for d, o in self._cold_decision_pairs(include_unmatured=True, first_outcome=True)]
-        else:
-            with hot_read(self.connect) as conn:
-                rows = conn.execute(f"""
+        with self.connect() as conn:
+            rows = conn.execute(f"""
                 SELECT d.payload,d.recorded_at,o.payload,o.recorded_at
                 FROM {SCHEMA}.evidence_ledger_events d
                 LEFT JOIN LATERAL (
@@ -1732,7 +1563,7 @@ class ProductionRepository:
                 ) o ON TRUE
                 WHERE d.event_type='DECISION_EVALUATED'
                 ORDER BY d.effective_at,d.aggregate_id
-                """).fetchall()
+            """).fetchall()
         records = []
         for raw_decision, decision_recorded_at, raw_outcome, outcome_recorded_at in rows:
             decision = (

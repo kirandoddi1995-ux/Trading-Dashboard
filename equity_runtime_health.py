@@ -45,10 +45,6 @@ RELEASE_FILES = (
     "nifty_session_calendar.py",
     "history_freshness.py",
     "release_expectations.py",
-    "ledger_runtime_reader.py", "ledger_archive_repository.py",
-    "ledger_archive_publication.py", "ledger_cold_store.py", "ledger_segments.py",
-    "catalog_receipts.py", "cold_catalog.py",
-    "ledger_storage_access.py", "ledger_recovery.py", "recovery_drill.py",
 )
 
 
