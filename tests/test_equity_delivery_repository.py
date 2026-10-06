@@ -35,7 +35,9 @@ class Connection:
         values = [plain(value) for value in params]
         self.operations.append((sql, values))
         row = None
-        if "WHERE idempotency_key=%s" in sql:
+        if "SELECT EXISTS" in sql and "quant_storage" in sql:
+            row = (False,)  # This fixture models an unarchived legacy database.
+        elif "WHERE idempotency_key=%s" in sql:
             row = self.rows.get(params[0])
         elif "SELECT sequence_no,event_hash" in sql:
             candidates = [r for r in self.rows.values() if r[1] == params[0]]

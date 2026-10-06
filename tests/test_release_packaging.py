@@ -124,6 +124,40 @@ def test_timeout_is_hard_failure(tmp_path):
         verify_archive(target, timeout=.1)
 
 
+def test_temporary_cleanup_retries_transient_locks_but_preserves_original_failure(monkeypatch):
+    import release_verification as module
+    calls = []
+    class Temporary:
+        name = 'synthetic-no-directory-created'
+        def cleanup(self):
+            calls.append('cleanup')
+            if len(calls) < 3:
+                raise PermissionError('synthetic transient lock')
+    monkeypatch.setattr(module.tempfile, 'TemporaryDirectory', lambda **_kw: Temporary())
+    delays = []
+    monkeypatch.setattr(module.time, 'sleep', delays.append)
+    with pytest.raises(RuntimeError, match='original timeout'):
+        with module._verification_workspace():
+            raise RuntimeError('original timeout')
+    assert len(calls) == 3 and delays == [.05, .05]
+
+
+def test_temporary_cleanup_permanent_failure_is_not_suppressed(monkeypatch):
+    import release_verification as module
+    calls = []
+    class Temporary:
+        name = 'synthetic-no-directory-created'
+        def cleanup(self):
+            calls.append('cleanup')
+            raise PermissionError('synthetic permanent lock')
+    monkeypatch.setattr(module.tempfile, 'TemporaryDirectory', lambda **_kw: Temporary())
+    monkeypatch.setattr(module.time, 'sleep', lambda _seconds: None)
+    with pytest.raises(PermissionError, match='permanent lock'):
+        with module._verification_workspace():
+            pass
+    assert len(calls) == 20
+
+
 def test_failed_build_preserves_previous_artifacts(tmp_path, monkeypatch):
     source(tmp_path, "app.py", "import absent_dependency\n")
     old_zip = tmp_path / "release-v22.5.7-futures-history-hotfix.zip"
