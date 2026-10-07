@@ -1,6 +1,18 @@
 # Permanent storage implementation — reviewed packages, not one large upload
 
-## Current handoff: 2B1 merged; 2B2A authenticated identities
+## Current handoff: 2B2A merged; 2B2B offline export/local checkpoint
+
+Exact merged main: ed951e2c36ecb5dd6755cf781c72a40b7454bf0d; read-only checks
+confirm quality, resilience and CodeQL successful. RECOVERY_EXPORT_PACKAGE.md
+defines the new six-path group: consistent single-SQLite export, original-key
+verification and separate local checkpoint CAS/readback/uncertain-response retry.
+Multi-file inventories fail closed; local separate paths are not independent-device
+custody. No real export, encrypted replica, persistent proposal reload, cross-file
+barrier, runtime activation or hot deletion is commissioned. These remain next,
+before legacy intent/remote retries and every-reader wiring. Owner key preservation,
+older-key checks and dummy disk encryption rehearsal proceed in parallel now.
+
+## Historical handoff: 2B1 merged; 2B2A authenticated identities
 
 Owner reports PR8/main b213ec87b11ee4c50b197110c6d26e1105a633c0 green,
 160 focused clean-clone tests and full PR CI. No fingerprint/hosted setting changed.
@@ -47,7 +59,7 @@ a plan to discard evidence or tune the parked rules.
 
 The source of truth is the local folder, but it is NOT identical to main. Main
 was initially inventoried at 62508fd50f6d1e363afabc8961857c98afcd5c05; current main
-is now the exact b213ec8 SHA above. Local sources include
+is now the exact ed951e2 SHA above. Local sources include
 unuploaded runtime changes and SQL drafts. Do not upload by folder selection.
 PERMANENT_STORAGE_LOCAL_INVENTORY.md lists the differences and their stages.
 
@@ -228,9 +240,9 @@ boundedness. Only then expand remaining collection modes and F&O one at a time.
 
 ## What is needed from the owner
 
-Now: review the seven-file Package 2B2A group; Packages 1, 2A and 2B1 are merged.
+Now: review the six-file Package 2B2B group; Packages 1, 2A, 2B1 and 2B2A are merged.
 Preserve the current isolated capture/scan-only setup. No hosted action is required
-for 2B2A. Continue existing storage/archive
+for 2B2B. Continue existing storage/archive
 observations; notify a guard failure or unexpected growth without changing limits.
 
 Before Package 3/4: confirm privately whether the original legacy and historical

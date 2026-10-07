@@ -291,6 +291,13 @@ keys have different roles; credential availability alone proves no restore.
 
 ## Reply needed before commissioning (not before continuing offline work)
 
+After 2B2A merge, RECOVERY_EXPORT_PACKAGE.md adds offline consistent SQLite export
+and a separate LOCAL checkpoint. Neither is commissioned for real private data.
+Do the encrypted current-key note first, then older-version checks and dummy disk
+rehearsal in parallel with review. Do not run a real export, create a hosted secret
+or change tasks/releases based on this library. Independent-device replicas,
+trusted-head retention, cross-file publication and owner restore remain pending.
+
 - Key copies: current found / older found / unknown / not found; not values.
 - USB: edition supports encryption / encrypted and unlock tested / setup pending;
   available capacity only, no serial/account/recovery-key screenshots.

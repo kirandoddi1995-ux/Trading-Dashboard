@@ -1,5 +1,68 @@
 # Automation foundation — continuity record
 
+## Current: 2B2A merged; 2B2B ready for owner review
+
+Owner reports 2B2A exact7-path clean-base rehearsal, focused146 and PR merge at
+ed951e2c36ecb5dd6755cf781c72a40b7454bf0d. Agent read-only GitHub tree389entries,
+nontruncated, and exact-SHA quality/resilience/CodeQL SUCCESS confirmed. No hosted
+writes, private credential/state/holdout access, installed capture change or task/
+collector/release/fingerprint expectation change. Owner key/disk steps remain undone.
+
+New recovery_export.py: explicit caller paths/keys; single-SQLite source pinned
+mode=ro read snapshot/backup API; new exclusive generation/no overwrite/deletion;
+bounded integrity + original-key/witness + full-byte verification before proposed
+manifest. Multi-file contracts BLOCKED. Separate LOCAL metadata SQLite custody
+explicit bootstrap only, strictschema/contract/64KiB bounds, CAS predecessor/heads,
+DELETE journal/FULL sync/readback/exact retry. Missing/corrupt store never recreated.
+Independent replicas, power-loss/whole-app recovery and approval remain false.
+No encryption/Drive/API/owner CLI/persistent proposal reload/cross-file barrier.
+Caller ACLs/quiescence, trusted head retention/replication are NOT proved here.
+This is bounded2B2B groundwork, NOT finished independent backup service or authority
+to export private state/delete hot history. Next adapter completes proposal reload,
+all-app inventory/freeze and independent encrypted replicas/checkpoints/restore.
+
+Six upload paths: NEW recovery_export.py, RECOVERY_EXPORT_PACKAGE.md,
+tests/test_recovery_export.py; MODIFIED OWNER_KEYS_AND_BACKUP_RUNBOOK.md,
+PERMANENT_STORAGE_PACKAGES.md, AUTOMATION_PROGRESS.md. Existing synthetic fixture
+tests/test_local_state_recovery.py unchanged; no unrelated draft/SQL/runtime upload.
+
+Focused180passed14.11s (34new+146previous), pyflakes and strict new2-module types
+clean. Cases: source unchanged, WAL writer during pinned snapshot, missing/wrong
+original/metadata keys, corruption/extra/missing files, schema/head/size failures,
+locks, stale competing successors and lost-response exact retry. Partial files
+retained. Initial tests found Windows rb-fsync invalid handle; now r+b only newly
+exported image. Extra integrity fixture exposed SQLite3.51 mode=ro skipping CHECK
+validation; image alone gets rw+query_only integrity, original stays mode=ro.
+No constraints bypassed to pass tests; full image corruption now rejected even
+outside5-table witness. First fixture repr assertion corrected to actual path,
+junction test expects redacted bootstrap wrapper. Fullsuite44913 was superseded;
+do not claim that interrupted run passing. Final validation results follow.
+Self-review tightened schema enumeration: reject ALL extra objects, including a
+sqlitex-prefixed trigger which a LIKE wildcard exclusion could miss. Added explicit
+regression; stopped superseded fullsuite44913 (exit1/interrupted), not counted as
+a pass. FINAL code focused181passed13.65s (35new cases); fullsuite3705 completed
+against all final code edits. Full root/tests pyflakes and new2-module strict types
+clean. No tests/assertions removed or skipped. Public-tree six-path static check
+PASSED/no blockers; unchanged core7source/fixture blobs match exactmain. Exact
+main-equivalent19-module types/import checks recorded separately; appboot in fullsuite.
+Those checks completed: actual19-module strict set PASS, isolated export/core
+imports PASS, separate synthetic login/Settings boot2passed18.76s. No app imported
+from root/private secrets; boot fixture uses disposable code and synthetic auth.
+No production fingerprint inputs/imports altered; no expectation update needed.
+TERMINAL fullsuite3705 exit0:2621passed,4unchangedskips,2subtests passed523.24s
+(8m43s), exactly35more than2B2A. Full suite includes offline app boot/SQL harness;
+no tests/assertions removed or new skips. Final code preceded focused/full passes;
+later edits docs only. Self-review covered source pin/WAL, redaction, integrity,
+strict bounded schema, CAS/readback and uncertain response; issues fixed above.
+No test processes running. Six-file group ready for clean-clone review/CI, NOT
+unrelated local drafts. RECOVERY_EXPORT_PACKAGE.md has exact paths/commands.
+NEXT: owner preserve/reopen encrypted current-key note; older-key versions/dummy
+encrypted disk rehearsal parallel. Real independent replica commissioning remains
+blocked on these plus licence/ACL/restore proofs. Continue offline all-app inventory,
+cross-file freeze, persistent authenticated proposal/reload and independent trusted
+head/encrypted replica publication. This LOCAL checkpoint alone never authorizes
+deletion. No hosted SQL/settings, release/fingerprint/task action requested.
+
 ## Current: Package 2B1 merged; 2B2A ready for owner review
 
 Owner reports PR8/main b213ec87b11ee4c50b197110c6d26e1105a633c0 green,
