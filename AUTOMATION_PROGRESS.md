@@ -1,5 +1,509 @@
 # Automation foundation — continuity record
 
+## Oct 7 first resumed cron scan accepted; main may unfreeze
+
+Acceptance is based on the owner's reported run #158 and read-only measurements,
+not a fresh agent hosted check this turn. On unchanged main 9eae97f, the 14:37 IST
+cron request received 202, both 24 MB admissions allowed, and actual scan succeeded:
+2,677 quotes/observations, coverage 1.0, canonical_changed=false and
+version_created=false. After/settled cluster size was 456,260,405 bytes, growth
+704,512 bytes, headroom 43,739,595. Ledger allocation grew 647,168 bytes.
+Missing depth for 150 shortlisted instruments remains missing executable evidence.
+
+Decision: accept ONLY the two existing scan recurrences under the unchanged
+transitional guard. Other four modes/F&O ingestion and dashboard release remain
+held. This is not permanent-capacity acceptance: ledger is still unarchived;
+the separate research writer also remains part of total growth monitoring.
+Inspect tonight's ordinary archive and settled cluster size, then the next 10:07
+scan. Unexpected growth above the existing 4 MB trial allowance or headroom below
+24 MB invokes the existing hold/admission procedure; never lower the floor.
+
+Main can unfreeze now for one complete reviewed PR. Add the four existing NSE
+diagnostic files to the previous 14-file group: 18 files total, listed in
+STORAGE_SOURCE_UPLOAD_2026-10-07.md. Preserve root/tests locations and include the
+policy dependency if absent on main. Do not upload other unfinished storage work.
+Wait for quality/resilience/CodeQL on the exact PR SHA; merge when no collector or
+archive is active and verify checks on the resulting main SHA. Record that SHA
+for subsequent runs. DASHBOARD_RELEASE_ENABLED stays false; no equity fingerprint
+update, migration, cron change or new scheduled writer is part of this package.
+
+The required isolated-PC install remains four capture root modules. The two
+diagnostic tools are optional, not runtime dependencies or an instruction to repeat
+the failed network probes. No hosted writes were made by the agent.
+Validation: the two diagnostic tests plus owner-source and storage-checklist tests
+passed together (107 tests, 6.18 seconds). No Python, SQL or workflow changed this
+turn; the previous full-suite result remains 2,363 passed / 4 skipped / 2 subtests.
+A full suite was not rerun for these two documentation-only updates.
+
+## Oct 7 permanent storage contract and explicit owner-file source
+
+Decision: one bounded Supabase hot store, private Drive history and a second
+private backup. ML reads verified frozen files, not hot SQL alone. A paid upgrade
+is optional only if the owner changes the no-payment constraint. Do not add a
+second operational database solely for quota.
+The existing storage cores are tested, but live factories, local outbox/checkpoint
+recovery, complete reader/retention/admission coverage, alerts, streaming and
+concurrency acceptance remain unfinished. Finish recovery and wiring BEFORE ledger
+pruning; then normalize the universe, add non-ledger cold contracts, reach measured
+physical budgets, enforce all-writer admission and independent alerts, and prove
+ten consecutive complete regular-session cycles plus an analytical working-set
+bound. See PERMANENT_STORAGE_ROLLOUT.md for scope, risks and owner gates.
+The proposed 308 MB target and 350/400/450 MB thresholds are future policy, not
+permission to bypass it at today's 455,555,893 bytes. The current 24 MB admission
+guard is unchanged.
+
+Added storage_commissioning.py and its tests: an inactive pure checklist for proof
+hash references, inventory freshness/budgets, consecutive past regular sessions,
+peak/backlog/archive checks and a growth bound. Hash references are NOT signature
+verification. Even a complete checklist grants no deletion or hosted authority.
+No hosted policy, factory or migration was activated.
+
+OwnerbrowserCSV17530bytes/hashaa9e81cd...bbf7/dateOct6 passedofflinecheck;
+authenticity/retrievaltimeunestablished. Chose explicitmanualprospective mode,
+NOTautomaticfallback. Added nse_owner_close.py: ownerassertsexactofficialsource/
+unmodifiedbytes/actualtimezone-awarecurrentmorningdownloadtime; toolretainsbytes,
+hash/readtime, labelsOWNER_ATTESTED_NOT_INDEPENDENTLY_VERIFIED/publicationnull.
+Config nifty-forward-v3-owner-file; v1/v2unchanged; normalproducer/poll/auditconsume
+v3 afterstrictvalidation. License/clock/preopen/token/lock/poll/depth/filllimits
+unchanged. Previewnoreads/noeffects; confirmedmodeclocknetworkcheckstillrequired.
+Allsource/manualflags explicit prepare-only; nosourceHTTPfallback/overwrite/late
+prepare. Oct8needsOct7CSV; agentdidnotreadprivateCSVoractiveinstalledfolderwrite.
+
+Rootforward_nifty_schedule.py wasstalecomparedreviewedstagedmissingrecipe/audit/
+redactionrepair. Portedthosespecificrepairswithoutremovingotherwork andaligned
+manualchangesbothcopies; newASTparitytestchecksoptionalstagingoruploadedroot.
+No stagingfolderrequiredonGitHub; uploadROOTscheduler, notstagedsubstitute.
+Captureenvironmenthashchangesrequirefreshrecipeandpreservedoldcode; equity
+release-fingerprintinputsunchanged, nonewEXPECTED_EQUITY_CODE_SHA256 required.
+
+ChangedROOT: storage_commissioning.py, nse_owner_close.py, nifty_previous_close.py, forward_nifty_producer.py,
+forward_nifty_schedule.py, PERMANENT_STORAGE_ROLLOUT.md, NSE_OWNER_CLOSE_RUNBOOK.md,
+PERMANENT_STORAGE_DESIGN.md, AUTOMATION_PROGRESS.md;
+tests/test_storage_commissioning.py, tests/test_nse_owner_close.py;
+LOCALONLY staged_capture_repair/forward_nifty_schedule.py. No reviewSQLdraftchanged.
+Consistentupload14fileinventory STORAGE_SOURCE_UPLOAD_2026-10-07.md ALSOincludes
+UNCHANGED storage_policy.py/tests/test_storage_policy.py ifmissingonmain: these
+werewithdrawnwithunreadygroup, newchecklistimports policy. DoNOTassumedependency
+alreadyonmain oruploadonlynewtests. Purepolicyimportactivatesnohostedguard.
+Targeted167passed/new-only61passed. Firstfullsuite2363passed/4skipped/2subtests;
+selfreviewroot-only(no staging) rehearsal thenfound7failuresfromstaleROOT
+nifty_previous_close.py. Approvedclone092b181 ANDstagedsourcebothcontainreviewed
+RequestExceptionredactionrepair; porteditspecificblocktoroot, no URL/TLS/timeout
+change. This is localalignment, not a new change to main's existing automaticmode.
+The new parity test covers both root files. Final full suite after the last
+production change: 2,363 passed, 4 skipped, 2 subtests passed in 512.71 seconds.
+This is 61 more passing tests than the previous 2,302-test baseline; none dropped.
+After alignment: root-only rehearsal (optional staging absent) 93 passed.
+Pyflakes is clean; strict mypy passes for all six root modules; import checks pass.
+Final self-review complete: the missing upload dependency and two stale local root
+modules were found and fixed. Root-only GitHub-layout checks pass without staging.
+This is local validation, not a claim that the new upload SHA has passed CI or that
+permanent storage is commissioned. No app/dashboard production source changed.
+Ownersteps: reviewconsistentpackage; installONLYfourcapturemodulesintodisabled
+isolatedfolder, preopenmanualprepare+firstpollsupervised, onlythenpoll/auditenable;
+preparetaskstaysDisabled. Existingcronrestartindependent, release/storagepruningheld.
+No hostedwrites/settings/credentials/actions/taskchangesbyagent.
+
+## Oct 7 trial accepted — scan-only restart; capture file check remains diagnostic
+
+Owner run157/main9eae97f passed both restricted24MBadmissions and actualSCAN.
+Agent ownerconnector READONLY/10sstatement/2slock/ROLLBACK verified run
+748a8a74-05d4-45cc-8d2b-447f19a4ed5a SUCCESS:2677records/storedobservations,
+onecommitted DECISION_BATCH_EVALUATED event/2677candidates/zeroqualityfailures.
+04:35:48UTC/10:05:48IST cluster455555893,headroom44444107,activecron0,
+unexpiredleases0. Trialsettledgrowth671744 (ledger647168); notlongtermgrowthbound.
+Approvedmain source commits directly; dashboardSQLiteoutbox/checkpoints NOTon
+scheduledcollectorpath. Corrected earlier blanketdrainrequirement. Persistence
+countcheck is NOTcryptographicledgerchainaudit. No dashboard scan needed.
+
+Decision: freshchecks14:20,enableGitHubworkflowwhileallcronpaused,thenexisting
+atomicresumeONLYscanjobs2/3 before14:37. Monitorfirstcron scan andnightlyarchive;
+otherfourmodes/releaseheld, nocatchup/migrations/floorchange. Firstdaynewuniverse
+versionlegitimate; same-dayversion inspectsourcechanges. Missingdepth150 remains
+missingexecutableevidence; researchcaptureacceptance nottradeapproval.
+
+CapturealltasksDisabled. OwnerChromeofficialOct6CSVdownload whilePythonGETfailed
+suggestsclient/path-specifictransport, causenotproven. No furtherGETretriesagent;
+noTLS/cookie/fingerprint/IP/deadline bypass. Added nse_close_file_check.py and
+tests/test_nse_close_file_check.py: defaultofflinenoreads, explicitcheckonebounded
+privateoutsidecodeCSV, exactcalendar/date/schema/uniqueniftyclose, hashnotprices,
+origin/retrievaltime NOTESTABLISHED, no writes/network/credentials/preparation.
+Manualfileprovenanceintegration remainsseparatereviewedwork, notsilentfallback.
+Todaylateprepareforbidden; tomorrowneedsOct7file, notOct6. AgentdidnotreadprivateCSV.
+
+Files thisstep: root nse_close_file_check.py, COLLECTOR_TRIAL_ACCEPTANCE_2026-10-07.md,
+POST_NAV_RESTART_2026-10-07.md, COLLECTOR_CRON_HOLD_2026-10-07.md,
+AUTOMATION_PROGRESS.md;
+tests/test_nse_close_file_check.py; sql/collector_trial_acceptance_read_only.sql.
+Onlythisconsistentpackageforreview/upload; preserveotherunfinishedstoragework.
+Focused84passed; pyflakes/strictmypynewhelperclean/importPASS. Fulloffline suite
+2302passed/4skipped/2subtestspassed in489.26s (18morepassingtests than prior2284).
+Previewzero reads/network/writes confirmed. Finalselfreview checked boundedfile
+read/privateoutsidecodepath/redactederrors, holiday/weekend/specialsessiondate,
+noauthenticity/retrievaltimeclaim/no preparation/fallback, directcommit evidence
+vsdashboardqueue distinction, atomicexistingcronresumeinstructions and no
+productionmanifest changes. No known new defect found. Existing storage drafts
+were preserved; root is not a git checkout, no git mutation/push attempted.
+No existingproduction/capturemodule or fingerprintinput changed; no hosted,
+settings/task/activecapturefolderwrites. Ownerrestartcanproceedindependently
+ofuploadingdiagnostichelper. Awaitowner14:37results andofflinefilecheckJSONonly.
+
+## Oct 7 morning — NSE capture transport blocked; collector trial can proceed
+
+Owner prepare09:00 failed NSE_CLOSE_TRANSPORT_UNAVAILABLE, no config/state created,
+poll/auditdisabled. Archive62/main9eae97f allsixsources zeroeligibleSUCCESS (no
+manifestexpected). Sixdispatchcronjobspaused, purgeunchanged, GitHubcollector/release
+paused. AgentREADONLY09:10:25IST cluster454884149/activecollectorjobs0; ownerconnector
+notrestrictedadmission. Decision: proceed09:45SCANexistingchecks,10:07staypaused.
+PCprepare disablependingdiagnosis; no post09:15prepare/fallback/backfill/loosening.
+
+Inspectedinstalledisolatedcapturefiles(readonly); transportreceiptgroupsrequests
+errors;24snotproofspecifictimeout. AddedSEPARATE nse_close_transport_check.py plus
+tests/test_nse_close_transport_check.py: fixedofficialsource/oneGET/defaultoffline/
+TLSverify/no redirects/same5,20timeouts+256KiBlimit; redactedtypedtransportcodes,
+hash/lengthonly, nofiles/state/vault/credentials, explicitnotprepared/notvalidated.
+AgentseparatepublicGET returnedNSE_CLOSE_CONNECTION_ERROR; DNSresolvedandTCP443
+connected. Cause NOTestablished; probesmaydifferinroute/proxy. No source/headers/
+timeouts/certstore/proxychanges. Ownercomparebrowserandinstalledenvironmentonce,
+no retries/securitybypass; see NSE_CLOSE_TRANSPORT_2026-10-07.md. After15:40owner
+manualauditcanrecordmissing75/0recordedwhenno config/state, no capturebackfill.
+
+Changednewroothelper,newtest,runbook,savedreadonlySQL,thisprogress; noexisting
+production/capturemodule or fingerprintinput changed. Targeted66passed; pyflakes
+clean/strictmypynewmoduleclean; previewofflinepasses. Fullsuite2284passed/4skipped/
+2subtestspassed518.76s; diagnosticimportPASS. Finalselfreviewfixedsource/redaction/
+GETandstreamerrors/no fallback/no capturescopechange/transportnotCSVvalidation/
+isolatedfolderinstallation and mainfrozenfortrial; no known new defect found.
+InitialWindows pytestdefaulttemppermissionsandlargeparameterIDfixtureissues fixed
+byuniqueprivatebasetemp and explicitshorttestIDs; no user data removed.
+No hosted/settings/task/activefolderchanges byagent. WAITINGONOWNER transport
+comparison and supervisedcollectorresult. Local validation complete; no production
+capture fix is claimed until the source transport cause is established.
+
+## Oct 7 dispatcher identified — owner pause prepared; no hosted changes
+
+Owner identified Supabase pg_cron1.6.4/pg_net dispatcher, six collector jobs plus
+purge_raw_quotes. AgentREADONLY/10sstatement/2slock/ROLLBACK confirmed exact seven
+names/IDs/schedules/postgres/allactive; cron.timezone GMT at Oct6 20:23:36UTC;
+installed cron.alter_job(bigint,text,text,text,text,boolean), active namedargument.
+No commands/Vault/header/secretvalues queried. Source Edge handler dispatches
+main with apply_migrations stringfalse; hosted parity not claimed. Savedqueries
+sql/post_nav_restart_read_only.sql. Owner cron succeeded is HTTPqueueing only,
+Edge202 is GitHubdispatch acceptance only, neither establishes collected evidence.
+
+Decision: ownerpause allsix collector jobs NOW before03:15, keepGitHubdisabled
+until outstanding requests settled; leave nightly rawquote minimisation untouched.
+Keep10:07paused irrespective09:45trial timing. Archiveverify first, manualSCAN
+09:45existingwindow/checks, disableworkflowafterrunreview. Ifacceptedby14:20,
+enableworkflowthenresumeONLY2scanjobs before14:37; otherwise nextnormal session.
+No catchup/cronrewrite/deletion/secretrotation/migration. Fourothermodesheld,
+releasepromotionlast, isolated PCcapture independent.
+
+Prepared COLLECTOR_CRON_HOLD_2026-10-07.md atomicownerpause/resumeblocks using
+exactnames/STRICTresolution+ownercheck; resumerequiresallcollectorjobspaused.
+Updated POST_NAV_RESTART_2026-10-07.md, savedreadonlySQL,thisprogress. Docs only,
+no production/hashchange; ownerwriteblocksNOTexecuted. Installedsignature read-only
+verified; ownerpostchangeSELECTrequired. Selfreviewcovered rollbackonmissingjob,
+no purgechange/unschedule/secrets, pendingHTTPnotcancelledbycronpause,
+UTCglobal03:15Tue-Sat, no10:07overlap, admissionlimitsnotlowered.
+ExactmarkdownSQLblocks passed offline PGlite rehearsal against simulated cron
+table/function: pause/scan-onlyresume/purge+schedulesunchanged/activejobblock/
+missing+duplicatejobrollback/ownerroleblock/readonlyverification. Notactualpgcron
+orHTTPqueue execution; fullsuite notrerun fordocumentation-onlychanges.
+WAITINGONOWNER pauseverification/archive/trial; dispatcheridentityblockresolved.
+
+## Oct 7 NAV compaction verified — supervised collection restart next
+
+Owner attempt4 NAV_COMPACTION_VERIFIED after main9eae97f/check-only passed.
+Cluster493951797->454884149; NAV42237952->3170304; reclaimed39067648;
+9424rows, row566e821aa5e6c28826d5b5532de895f8/schema b242961c2c703b5e63934f03161b85dc
+unchanged. Independentowner filenode17642->34426, no locks/vacuum/read-only.
+Agent metadata-only READONLY/10sstatement/2slock/ROLLBACK at Oct6 20:17:59UTC
+confirms454884149cluster/3170304NAV/9424rows/defaultROoff. Nominalheadroom45115851.
+Connectorowner/BYPASSRLS: NOTrestrictedcollectorcredentialadmission. Savedactual
+queries sql/post_nav_restart_read_only.sql. No hostedwrites/secrets/privatehistory.
+
+Decision: no more compaction/reset/permanent migration now. Verify normal archive
+schedule switches and latest per-source reconciliation; then isolated supervised
+modeSCAN during09:30-15:15IST with apply_migrationsFALSE, two existing restricted
+storagechecks+schemahealth. Workflowdispatch-only/externaldispatcher must be held
+BEFOREworkflowenable; otherwise one-run isolation is not established. Require actual
+scanSUCCESS notSKIPPED, coverage/counts/healthy delivery, before/after/drained-size
+measurements. Existing24MBfloor and4MBallowance retained; latter is NOTwritecap.
+If archive/scan healthy and growth within allowance, resume only known scan
+dispatches first; other modes each measured separately. Release last, not needed
+for main collector. Keep production drafts and hosted migrations uncommissioned.
+PCcapture isolated supervised09prepare/firstpoll proceeds independently.
+
+Changed documentation only: POST_NAV_RESTART_2026-10-07.md (owner steps),
+sql/post_nav_restart_read_only.sql, this progress. No production/hash change.
+Code suite not rerun for docs-only step; prior NAV pair focused80/full1865passed,
+4unchangedskips/2subtests remain historical validation, not a new test claim.
+Self-review: externaldispatch isolation, defaultALL avoided, migrationFALSE,
+off-windowgreen notcapture, ownerconnector notruntimeadmission, archivebounded
+remaining notignored, no claimed quota reservation/automatic resumption.
+WAITINGONOWNER dispatcher identity/hold and archive+single-supervised-scan results.
+Earlier blocked-maintenance sections below are historical, superseded by this result.
+
+## Oct 7 attempt 3 — deterministic numeric-size defect fixed; check-only next
+
+Ownerlogin-only andURIhelperverification succeeded; attempt3postgresauthenticated
+19:38:13UTC, terminated~1.6s, restore-proof.jsononly, nobefore/afterjson, samefilenode
+anddata/size19:38:39UTC. No evidenceofVACUUMexecution. Oldgenericmessagecannotprove
+whichpriorcheckpassed. SourceSIZE_SQL SUM(bigint)->numeric returnsDecimalvia
+psycopg, strictintsizecheckrejectsit deterministicallyevenonvalidconnection. This
+defectinourtool suffices toexplainblockedconnectedrun; earlierinteger-mocktestsmissed
+realSQLtype. Do NOTretryoldtool/passwordreset/guessSupavisorbug.
+
+Agentread-onlymetadataqueryPG_TYPEOF originalsum / castsum returnednumeric/bigint,
+cluster493951797; secondmetadata-onlyqueryofcorrectedproductionSQLreturnedbothtypes
+bigint, cluster493951797/NAV42237952. Savedbothactualissuedqueries in
+sql/nav_compaction_review_read_only.sql.
+Connectorowner/BYPASSRLS; BEGINREADONLY/10sstatement/2slock/ROLLBACK; noNAVvalues/
+secrets/historyread. Codecastsaggregate::bigint, retainsstrictintPythonvalidation.
+Separatefixedowner/data/schema/sizefailurecodes. Added --check-only mutuallyexclusive
+withcompact, exactmeasurement/blockerqueries BEGINREADONLY/ROLLBACK, noVACUUM/
+receiptfolder/writeconfirmation; failuresNOT_ATTEMPTED, TLS/timeoutsunchanged.
+
+ChangedROOTnav_compaction_owner.py, tests/test_nav_compaction_owner.py, read-onlySQL,
+NAV_COMPACTION_NEXT_STEP_2026-10-06.md,thisprogress. Focused80passedinclactualofflinePG
+productionSIZE_SQLfieldOID20+psycopgloaders andoldDecimalfailure reproduction;
+readonlymodepass/failure/rollbacktests. Strictmypy/lintclean. Finalisolatedapproved-main
+release-packagefullsuite1865passed/4unchangedskips/2subtests320.47s. Finalselfreview
+checkedintegercastnotfloatcoercion/driverboundary/certificate/timeouts/readonlyBEGIN
+andROLLBACKonallcheckpaths/mutuallyexclusivewrite/readmodes/noexistingreceiptwrites/
+fixedcoderedaction anduncertainmaintenanceoutcomehandling. Collectorqueryalready
+uses::bigint; noadjacentcollectorchange needed. No known defect found in revisedpair.
+Decision: ownerreview/installcorrectedcompletepair withgreenCI, --check-only first;
+onlyifpassed refreshdisk/writers, NEWnonexistentattempt4receiptdir thenboundedcompact.
+No hostedwrites/logins/secrets/taskchangesbyagent; collector/releasesremainpaused.
+Appfingerprintverifiedunchangedf7ff707c03609986b56276cc1a724d27b71e7ec6b977fccf0d43533e0feb30ae. WAITINGONOWNERreadonly
+connectedcheckbeforeanymoremaintenance.
+
+## Oct 7 NAV local folder block — cause reproduced; diagnostic repair prepared
+
+Owner foundworkingpostgrespasswordsavedinChrome; ONEverify-fullsessionpoolerlogin
+postgres succeeded. NOpasswordreset. Owner19:00UTCfreshschema/data/size/disk/blocker
+checks unchanged. Maintenanceattemptused an ALREADY-CREATEDemptyreceiptfolder.
+Source main checks folder.exists() BEFORErehearsal/hiddenprompt/connect and raises
+NEW_PRIVATE_RECEIPT_DIRECTORY_REQUIRED; oldcatchmaskedthiswithgenericunknownrewrite.
+Owner noURLprompt/noPGsession/nofiles/19:08UTCunchangedreadchecksagree:nohostedrewrite.
+
+Decision: preservefolder, chooseNEWnonexistentprivatepath, Test-PathFalse, noNew-Item;
+refreshchecks andrunsamealready-reviewedboundedcommand. Noexport/reset/grantchange
+needed; originalapprovedtoolcanproceedwithoutwaitingondiagnostic-onlyupload.
+Changednav_compaction_owner.py fixedallowlistedlocalcodes+phase; beforemaintenance
+NOT_ATTEMPTED, localnetwork/hostedchanges0. Maintenance-phaseexceptionsstillunknown
+commitoutcome/noautomaticretry. Directorygate/TLS/timeouts/scope/invariantsunchanged.
+Changedtests/test_nav_compaction_owner.py existingempty/nonempty/in-repopathprevent
+backup/prompt/network andpreservefiles; connectionversuspostrewritefailureseparated.
+Runbookcorrectedexplicitno-precreateinstruction. NoSecrets/hostedlogin/SQL/taskchanges
+byagent. Finalisolatedapproved-mainrelease-packagefullsuite1852passed/4unchanged
+skips/2subtests345.45s; focused67passedincludingrealofflinePGrestore. Pyflakesclean,
+strictmypy2filesclean; offlinepreviewpasses and releasefingerprintverifiedunchanged
+f7ff707c03609986b56276cc1a724d27b71e7ec6b977fccf0d43533e0feb30ae.
+Finalselfreview: fixedallowlistredaction, phase-specificcertainty, noautomaticretry,
+noexistingfolderoverwrite, testsforpostrewriteerrorpreservebeforeevidence; alloriginal
+guards/TLS/timeout/scope unchanged. WAITINGONOWNERcorrectedpath+freshchecks+bounded
+run. UploaddiagnosticROOTnav_compaction_owner.py+tests/test_nav_compaction_owner.py
+together, plusrunbook/progressdocs; nootherdrafts/verificationfolder. Original
+reviewedtoolcanproceedbeforediagnosticdeploy; noownersecret/hashchange needed.
+
+## Oct 7 owner update — backup/restore verified; owner authentication is next blocker
+
+Owner NAV tools PR merged, all8checks green. Workflowpreviewoffline and confirmed
+NAV_LIVE_BACKUP_REMOTE_VERIFIED9424rows/MD5566e821aa5e6c28826d5b5532de895f8/deleted0;
+actual private download+restore NAV_OFFLINE_RESTORE_VERIFIED with SHA256
+adabc1a8a23f1984850db9c11393aee2d039f5ed41389bf333c926b690f50e39. Owner18:11UTC
+precheck493951797cluster/NAV42237952/9424/schema b242961c2c703b5e63934f03161b85dc,
+all5blockercategories0. No compaction yet. Login-only attempt failed postgres
+sessionpoolerauthentication, threeaddressfailureswithinonetry; ownerstopped.
+Captureisolatedrepairinstalled/tasksdisabled pendingnextsupervised09:00prepare.
+
+Decision: do NOTresetblindly or retryguesses. Ownerprivatelyinventoryconnection
+secretNAME/role/service; recoverexistingpostgrescredentialifavailable, verifyexact
+endpoint/project/URIencoding, ONEreadonlylogin-onlycheck. GitHubdashboardOAuth!=DB
+password. Githubmaskedmigrationsecretcannotberecoveredviasecreteditor. Resetonly
+afterallpostgresconsumersidentified; managedservicesautomaticallyupdatedaccordingto
+officialdocs, externalpostgresURLsmanualupdate/reconnect. Independentcustomrole
+passwordsnotrotated. Do not elevatearchive/runtimeroles or bypassboundedmaintenance
+viaad-hocSQLEditor. NoownerURL/backup/secretsreadorlogin/reset/hostedwritebyagent.
+NAV_COMPACTION_NEXT_STEP_2026-10-06.md updatedwithclickstepsandrecovery/resetsequence.
+Documentation-onlyturn: nopython/workflowchanges, nofingerprintchange, previoustest
+resultsretainednotclaimedrerun. WAITINGONOWNERroleinventory/logincheck; collectorand
+releaseholdremain; refreshedprechecks requiredbeforeeventualrewrite.
+
+## Oct 6 evening NAV relief completed — bounded owner NAV compaction package prepared
+
+Owner completed existingNAVarchivepreview/export/trial/boundedruns cutoffOct4;
+eligible52113 ->0, verified/deletedmatched, latest9424schemes/fingerprintunchanged.
+Owner ordinaryvacuum NAV/outcomes/dailyvolumes12:47UTC. IndependentboundedREADONLY
+check12:57:10UTC/18:27IST confirmedcluster493951797/NAV42237952/allrows9424/latest9424/
+fingerprint566e821aa5e6c28826d5b5532de895f8. Clusterrecovered1228800bytes, notzero;
+headroom6048203 still17951797shortof24MBadmissionfloor. Archivehistoricalevidence
+preserved; noledgerdelete orcollector/promotionresumption. Owner physicaldisk/WAL
+reading received18:42–18:44IST:0.75GBusedof2GB; WAL128MB/system168.8MB/database464.8MB;
+widgettimestampabsent/maylag. Physicalfree~1.2GB, NOTSQLquotaheadroom. No hosted/
+task/Drive changes byagent; autoscalePro-only displaynotassumedprotective.
+
+Independentdecision: mf_nav now simplestFIRSTcompactioncandidate (2.6MBrowbytes
+in42.2MBallocation), beforeoutcomes60MB. NOTa predicted39MBshrink. Oneboundedowner
+FULLnowpreparedconditionalonprivateverifiedsurvivorbackup+actualofflinerestorerehearsal,
+physicalfreecapacity/WALreserves/transientquotaenforcementreview andboundedexclusive
+maintenanceplan. FreshschemaPG17.6/NAVordinarytable/postgresowner/13expectedcolumns/
+primaryscheme,dateconstraint/noreferencingconstraints; RLSfalse/forceRLStrue retained.
+AllSQLissued saved sql/nav_compaction_review_read_only.sql. READONLY10s/2s limits;
+connectorowner/BYPASSRLS. No schema/grant/RLS/index/retention change prepared/applied.
+
+NEWnav_compaction_backup.py: existingrestrictedArchiveRepositoryreadonlysession,
+oneMVCCaggregateSELECTlimit10001, fixedreviewed9424rows+whole-rowMD5, boundedexact
+originalUTF8JSONlines/SHA256, privateDriveexistingtransport verifieddataANDmanifest
+downloads. No sourcewrites/SQLarchive_manifestupdates. Explicitexportconfirmation
+exacttrue; offlinepreviewdefault; secretsreadonlyexport/no rawdrivererrors. Actual
+ownerdownloadedbackuprehearsal viaephemeralPGliteonly/nohostedURL/persistentDBdir;
+originalnumericJSONfeddirectlytoparameterSQL (nofloatroundtrip), rowcount+MD5match.
+New .github/workflows/nav-live-backup.yml manualonly/defaultfalse/contentsread/
+sameverified-drive-archive concurrency/no public dataartifacts/existing3secrets.
+Newtests/test_nav_compaction_backup.py43offlinepassed inclrealSQLsynthetic restore,
+role-readonlyseam/changedsource/bytecorruption/confirmationfalse/TLStransportreuse/
+remote mismatch/secrecy/limits/restorefailure/nohostedwrites. Strictmypy/lintclean.
+NewNAV_COMPACTION_NEXT_STEP_2026-10-06.md ownerbackup/download/rehearsal/disksteps;
+explicitownerstepsnowprovided. Transient500MBquotarewriteenforcementremainsunverified;
+ownerexplicitriskackrequiredor defer. Source/rehearsalproof is data-only notfull
+schema/roles/disasterrecovery. Productionfingerprintunchangedf7ff707c...b30ae.
+Backupgroupfullapprovedmain+capturerepair:1828passed/4unchangedskips/2subtests;
+offlineappboot/import3passed. Newownermaintenance20tests +backup43 =63focusedpassed;
+strictmypy/lintclean. Combinedapproved-main+capturerepair+NAVfullsuite1846passed,
+4unchangedskips,2subtestspassed291.49s. TwoadditionalCLItestsaddedaftercollection:
+final63focusedtests passed (including those2); fullsuitecountthereforeexcludes2newcases.
+FinalselfreviewcheckedTLS/noROoverride/noautomaticretry/byteexactrestore/numeric
+precision/ownerquiescence/unknowncommitoutcome/durablebeforereceipt/isolatedcheckout.
+No knownissueinpreparedpackage; actualquotaenforcement andNSEavailabilitystill
+unverifiedexternals, explicitlygated/notclaimedfixed. WAITINGONOWNERbackup+restore+
+optionalrisk-acknowledgedcompaction andtonightisolatedcaptureinstallation.
+NEWnav_compaction_owner.py defaults offlinePREVIEW. Explicitthreeconfirmations,
+freshCAverify-full/persistentpostgresautocommitsession/5slock/120sstatementlimits,
+actualrestorebeforehiddenURLprompt, noURLargv/env/log/save, beforemetadatafsynced,
+fixedsource/schemafingerprints andblockinglocks/transactions/slotschecked. Physical
+attestationminimum4*NAVallocation+256MB conservativepolicyNOTexactWALbound. Exactly
+oneFULL, postdatadefinition/sizechecks, privatebefore/afterreceipts. Noreadonlyoverride,
+retry/hostedrestore/deletion/promotion/collectorresumption. Posterror mayfollowcommitted
+rewrite:retainreceipts/read-onlyinspect, neverassumerollback. Newtests/test_nav_compaction_owner.py.
+CaptureisolatedinstallationproceedsTONIGHT inparallel; previousrepair60testsgreen
+andfull1784passrecordunchanged. Repairdiagnostic only, noNSEavailabilityguarantee.
+UploadNAV2ROOTmodules+2tests/+workflow5together; cancombinewithcapture3 inoneconsistent
+eight-filePR. ReviewSQL/runbook/progressalso includedasdocuments. Do notuploadwholeworkspace/coldledgerdraft/verificationcheckout. Collector
+anddashboardreleasehold remain. Existingbackupsecretsreuse, no ownerURLfallback.
+
+
+## Oct 6 afternoon restart package — verified locally; owner maintenance next
+
+Owner PR1 merged main092b181bb8f435e1b977c52b88862c4aeda72f0e. Read-only GitHub
+confirmed exact-merge quality312/resilience283/CodeQL456 successful. Owner release
+stillb23323f/promotionfalse/collectorworkflowdisabled. No hosted writes/dispatches,
+task/credential changes, data deletion or source-workspace runtime replacement.
+Read-only16:08:07IST cluster495180597/current479906963:4,819,403nominal headroom;
+outcomes356rows/payload27707282; NAV52113eligibleOct4cutoff.16:11:39IST blockers0
+foroldtransactions/slots/prepared/vacuum; point-in-time only. Saved allissuedSQL in
+sql/storage_capture_restart_read_only.sql; connectorowner/BYPASSRLS butREADONLY,
+10sstatements/2slocktimeout. Mainrepairfinished, not waitingonownermergeanymore.
+
+Independentchoice: repairDrive-onlyforwardcapture tonight +existingverifiedNAV
+relief NOW in parallel. Holdcollector/promotion/newderivativeingestion; unchanged
+24MBadmissionminimum. Need19,180,597additional measuredbytesreclaimed. NAVrowbytes
+arenotphysicalreliefguarantee. Noledgerdelete/noarchiveguardrelaxation/no fabricated
+missedobservations. Ordinaryvacuum first. ClarifyolderblanketFULLprohibition:
+500MBquota!=1GBphysicaldisk; compactioncouldbe reviewedbutactualdisk/WAL, transient
+quotaenforcement, fullsurvivingrowbackup/restore andexclusive-readermaintenance
+remainUNVERIFIED. NoFULLcommand supplied/executed, currentexporteligibleonlyisNOT
+backupofsurvivingoutcomes. Ownerdiskreading/providerconfirmationneededifordinary
+reliefinsufficient; do notpretendthisiscommissioned.
+
+NEWprepare_capture_repair.py checks exactcleanmain,rawpolicychecksum,threepinned
+replacementhashes/safepaths beforecopy into separatecheckout. Previewdefault;
+explicitlocalapplyonly,noGitwrites/publish/task/vaultcalls.16offlinetests pass;
+lint/strictmypyclean. Owner clone/separatevenv/repointtaskActions instructions in
+NEWCAPTURE_STORAGE_RESTART_2026-10-06.md. Do notuseunfinishedworkspace shared
+equity_runtime_health/release_verification as captureinstallation. Newisolated
+verificationcheckout .capture_verify_20261006 containsmain+2stagedrootreplacements
++tests/test_staged_capture_repair.py; do NOT uploadthatfolder.60focusedcapturetests
+passedcleancheckout and60passedexistingstagedsource. Cleancheckoutroot/tests lint,
+19modulemypy passed. Fingerprint unchangedf7ff707c03609986b56276cc1a724d27b71e7ec6b977fccf0d43533e0feb30ae;
+noStreamlitexpectationchange. Fullisolatedsuite TERMINAL:1784passed/4unchangedskips/
+2subtestspassed706.34s. This is approvedmain+thethreecapturefiles, not the unfinished
+workspace storage draft. Newlocalpreparationhelper's16tests pass separately0.66s;
+strictmypy/lintclean. Actualappofflinebootlogin/settings+import3passed62.34s;
+capturedependencyclosure21sourcesverified;pipcheck clean (no brokenrequirements).
+LatestNAV9424schemes/fingerprint566e821aa5e6c28826d5b5532de895f8 from bounded
+READONLYqueryalready in storage_first_relief_read_only.sql; ownerfreshcheckneeded.
+Finalselfreview: pinnedcleanclone/allbytesbeforecopy, redactedallowlistederrors,
+partialcopyrequiresnewclone/tasksdisabled, no sharedruntimeedit, private state/
+vaultpreserved, no codefingerprintchange, noNSEavailabilitysuccessclaim, noquota
+relaxation/eligible-onlybackupmistake. Completecapture uploadgroup ROOTtwofiles
+fromstaged_capture_repair/ andtests/test_staged_capture_repair.py. Newlocalhelper/
+tests andrunbook/read-onlySQL/thisrecordlistedinhandoff. Verificationcheckout
+notanuploadgroup; noGitcommit/push/task/hostedoperationperformed. Waiting onowner
+NAVpreview/export/trial/vacuummeasurements andisolatedcaptureinstallation. Provider
+disk/transientrewrite confirmation neededONLYifmeasuredreliefinsufficient.
+Capturechanges diagnosefailure/missingday only, NOTNSEnetworkavailabilityfix.
+Tomorrow09:00watchgenuinepreopenprepare beforeenablingpolls/audit. Noafternoon
+prepare/backfill/sourcefallback. Remainingcoldledger/allwriterguardsunfinished.
+
+
+## Oct 6 accidental main upload repair — locally verified, owner operation next
+
+Owner reports main0d78993 quality308:11failed/1921passed/1skipped/171errors.
+Read-only GitHub comparison independently confirmed six commits since released
+b23323ffaed67129a1e03d87247bfdec789c44f9. c616decc972149b0152e24e0c77493084e930b86
+also uploaded unfinished runtime sources (not only tests); 7f4aefe8cb86ca89dbbdfb89523f220c4f5b64f5
+uploaded21testfiles. Reverting only tests risks green automatic release of unready
+runtime. No hosted writes/commit/push/settings changes performed. Owner must pause
+dashboard promotion first; collector admission stays, archival/capture unaffected.
+
+NEW prepare_main_ci_repair.py and tests/test_prepare_main_ci_repair.py provide
+fixed exact-SHA, clean SEPARATE checkout plan/application. Restore8original files
+from released commit; withdraw12draftmodules+18unreleasedtests together; untrack
+cache but preserve it on disk and preserve all Git history. Existing original
+tests restored, no skips/SQL gate relaxation or draft migration upload. Missing
+tests/test_collector_storage_preflight.py must ship with this repair. No active
+workspace runtime/capture source touched; drafts/tests remain locally intact.
+NEW MAIN_CI_REPAIR_2026-10-06.md is atomic owner branch/PR recipe; not39webuploads.
+Owner helper refuses HEADchanges/dirt/pathviolations/currentworkspace; no commit,
+push/network. Error output allowlisted, Git calls local/bounded/no shell. Sidecar
+raw-byte checksum validation catches Windows clone newline conversion before edits.
+
+Isolated temporary public main clone repaired and staged only; exact released
+fingerprint f7ff707c03609986b56276cc1a724d27b71e7ec6b977fccf0d43533e0feb30ae.
+Current ahead-of-production workspace hash still6a234dc...42263; DO NOT set it live.
+Focused52passed5.40s/newmodule strictmypy andlintclean. Repaired19module typecheck
+and root/tests lintclean. Initial isolated fullsuite24018 had Windows CRLF policy
+checksum failures; committed policy bytes matchapproved sidecar. Corrected ONLY
+owned temporary checkout to original LF bytes; no policy/sidecar changes in repo.
+Final independent fullsuite34521 TERMINAL:1769passed,4skipped,2subtestspassed438.32s.
+Finalfocused54passed5.26s in the repaired checkout (also54passed5.70s in source).
+Two additional policy-symlink tests were added after fullsuite collection and are
+included in that final focused result; finalhelperfile16tests, not14. Released
+baseline1727 +28collector +14helper =1769fullpass, plus2newtestsverifiedfocused.
+Repairedroot/tests lintclean,19automation strictmodules and2helpers typeclean;
+repository readiness/deployment canaries/resiliencegame-day passed. Actual offline
+app login/settings boot, app import/disposableSQL/packagedimport included in suite.
+Initial clone fullsuite24018 terminal28failed/1739passed/4skipped duepolicyCRLF;
+no missing-feature SQL errors remain. Freshfinalrun green on canonical bytes.
+Owner instructions require core.autocrlf=false clone, keeppolicy gate unchanged.
+Permanent storage work remains unfinished. Release stays atb23323f until owner
+reviews consistent repair and exact-SHArequired gates pass. This repair supersedes
+any suggestion to obtain green by withdrawing only tests. Full terminal results,
+finalself-review complete: exactHEAD/cleanclone/path/postcondition guards, cache
+retaineduntracked/historypreserved, no Gitnetwork/push/commit, staticredactedcodes,
+policybytes/symlinks, releasedtests restored, emergencygate kept. No testsrunning.
+Source workspace existing runtime/tests/capture untouched, unfinishedwork retained.
+Hand-off files: newprepare_main_ci_repair.py,newtests/test_prepare_main_ci_repair.py,
+newMAIN_CI_REPAIR_2026-10-06.md,existingmissing-on-main
+tests/test_collector_storage_preflight.py; updatedthisrecordandSTORAGE_UPLOAD_MANIFEST.
+Do not upload helper alone before preparing owner repair (HEADpinned). Owner must
+disablepromotion, prepare separateclone, oneconsistentrepairbranch/PR, getexactSHA
+requiredgates, capacityassess beforepromotion. No liveexpectationchange needed.
+
 ## Oct 6 market-hours emergency admission — local verification complete, owner step next
 
 Latest owner growth measurement changes first relief order: collector admission

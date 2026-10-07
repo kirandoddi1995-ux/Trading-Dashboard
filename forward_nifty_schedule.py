@@ -19,6 +19,7 @@ from forward_nifty_job import main as capture
 from forward_nifty_producer import ROOT, prepare_config, validate_config
 from forward_windows_credentials import load, read_secret
 from nifty_previous_close import fetch, validate as validate_close
+from nse_owner_close import from_file as owner_close_file
 from nifty_session_calendar import cash_session
 from research_integrity import IntegrityError, require_hash
 from research_replay_comparison import ObservationJournal, instant
@@ -54,15 +55,21 @@ def receipt(root: Path, result: dict[str, Any]) -> None:
                                                         approval_authority=False, fill_evidence=False))
 
 
-def prepare(root: Path) -> dict[str, Any]:
-    """Fetch official exact prior close before the open, never overwrite a recipe."""
+def prepare(root: Path, *, owner_file: Path | None = None,
+            owner_download_at: str | None = None, source_attested: bool = False) -> dict[str, Any]:
+    """Explicit source selection before open; no fallback or recipe overwrite."""
     timestamp = now()
     day = timestamp.astimezone(IST).date()
     path, _ = session_paths(root, day)
     opening = datetime.combine(day, datetime.min.time(), tzinfo=IST) + timedelta(hours=9, minutes=15)
     if timestamp >= opening:
         raise IntegrityError('PREOPEN_PREPARATION_REQUIRED')
+    manual = owner_file is not None or owner_download_at is not None or source_attested
+    if manual and (owner_file is None or owner_download_at is None or source_attested is not True):
+        raise IntegrityError('OWNER_CLOSE_ATTESTATION_REQUIRED')
     if path.exists():
+        if manual:
+            raise IntegrityError('SESSION_ALREADY_PREPARED')
         config = json.loads(path.read_bytes())
         validate_config(config, ROOT)
         if config['version'] != 'nifty-forward-v2' or instant(config['session_open']) != opening.astimezone(timezone.utc):
@@ -71,18 +78,32 @@ def prepare(root: Path) -> dict[str, Any]:
     probe = cast(Callable[[], dict[str, Any]], measure_clock)()
     if cast(Callable[..., str | None], clock_error)(probe, now=now(), maximum_offset=1.0):
         raise IntegrityError('CLOCK_UNVERIFIED')
-    import requests
-    with requests.Session() as session:
-        provenance = fetch(session, day, received_clock=now)
+    if manual:
+        assert owner_file is not None and owner_download_at is not None
+        provenance = owner_close_file(owner_file, day, observed_download_at=owner_download_at,
+                                      read_at=now().isoformat(), attested=source_attested, code_root=ROOT)
+    else:
+        import requests
+        with requests.Session() as session:
+            provenance = fetch(session, day, received_clock=now)
     frozen = now().isoformat()
     if instant(frozen) >= opening:
         raise IntegrityError('PREOPEN_PREPARATION_REQUIRED')
-    value = validate_close(provenance, day, frozen)
+    from nse_owner_close import validate as validate_owner_close
+    validator = validate_owner_close if manual else validate_close
+    value = validator(provenance, day, frozen)
     config = prepare_config(day.isoformat(), value, provenance['sha256'], frozen)
-    config.update(version='nifty-forward-v2', previous_close_provenance=provenance)
+    config.update(version='nifty-forward-v3-owner-file' if manual else 'nifty-forward-v2',
+                  previous_close_provenance=provenance)
     validate_config(config, ROOT)
+    if now() >= opening:
+        raise IntegrityError('PREOPEN_PREPARATION_REQUIRED')
     path.parent.mkdir(parents=True, exist_ok=True)
     write_once(path, config)
+    if manual:
+        return {'status': 'CONFIG_PREPARED_OWNER_FILE', 'source_sha256': provenance['sha256'],
+                'previous_close_date': provenance['close_date'], 'source_network_calls': 0,
+                'source_authenticity': provenance['source_authenticity'], 'clock_check': 'PASS'}
     return {'status': 'CONFIG_PREPARED', 'source_sha256': provenance['sha256'],
             'previous_close_date': provenance['close_date'], 'network_calls': 1}
 
@@ -111,7 +132,7 @@ def poll(root: Path) -> int:
         raise IntegrityError('SESSION_NOT_PREPARED')
     config = json.loads(path.read_bytes())
     validate_config(config, ROOT)
-    if config['version'] != 'nifty-forward-v2':
+    if config['version'] not in ('nifty-forward-v2', 'nifty-forward-v3-owner-file'):
         raise IntegrityError('AUTOMATIC_SOURCE_CONFIG_REQUIRED')
     opening, ending = instant(config['session_open']), instant(config['session_close'])
     slot = opening + timedelta(seconds=int((timestamp-opening).total_seconds() // 300)*300)
@@ -130,7 +151,6 @@ def audit(root: Path) -> dict[str, Any]:
         ending = datetime.combine(day, datetime.min.time(), tzinfo=IST) + timedelta(hours=15, minutes=30)
         if timestamp < ending + timedelta(minutes=5):
             raise IntegrityError('POSTSESSION_AUDIT_REQUIRED')
-        # Missing recipe does not prove zero rows if unexplained state exists.
         if state.exists():
             raise IntegrityError('SESSION_STATE_WITHOUT_CONFIG')
         return {'status': 'SESSION_CAPTURE_INCOMPLETE', 'code': 'SESSION_NOT_PREPARED',
@@ -139,7 +159,7 @@ def audit(root: Path) -> dict[str, Any]:
                 'approval_authority': False}
     config = json.loads(path.read_bytes())
     identity = validate_config(config, ROOT)
-    if (config['version'] != 'nifty-forward-v2'
+    if (config['version'] not in ('nifty-forward-v2', 'nifty-forward-v3-owner-file')
             or instant(config['session_open']).astimezone(IST).date() != now().astimezone(IST).date()):
         raise IntegrityError('CURRENT_AUTOMATIC_SESSION_REQUIRED')
     if now() < instant(config['session_close']) + timedelta(minutes=5):
@@ -206,6 +226,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--mode', choices=['prepare', 'poll', 'audit', 'plan'], default='plan')
     parser.add_argument('--confirm-run', action='store_true')
+    parser.add_argument('--owner-close-file', type=Path)
+    parser.add_argument('--owner-download-at', help='Actual owner-observed download time with timezone')
+    parser.add_argument('--attest-nse-source', action='store_true',
+                        help='Confirm direct official URL download and unmodified CSV; not independent verification')
     plans_mode = parser.add_mutually_exclusive_group()
     plans_mode.add_argument('--write-task-plans', action='store_true')
     plans_mode.add_argument('--verify-task-plans', action='store_true')
@@ -215,7 +239,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         private_root(args.root)
         if args.write_task_plans or args.verify_task_plans:
-            if args.confirm_run or args.mode != 'plan' or not args.start_date or not args.owner_sid:
+            if (args.confirm_run or args.mode != 'plan' or not args.start_date or not args.owner_sid
+                    or args.owner_close_file or args.owner_download_at or args.attest_nse_source):
                 raise IntegrityError('TASK_PLAN_ARGUMENTS_REQUIRED')
             start = date.fromisoformat(args.start_date)
             plans = args.root / 'task-plans'
@@ -238,6 +263,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({'status': 'PREVIEW', 'network_calls': 0, 'credential_reads': 0,
                               'approval_authority': False}))
             return 0
+        if args.mode != 'prepare' and (args.owner_close_file or args.owner_download_at or args.attest_nse_source):
+            raise IntegrityError('OWNER_CLOSE_PREPARE_ONLY')
         definition = cast(Callable[[date], dict[str, Any]], cash_session)(now().astimezone(IST).date())
         if definition['kind'] != 'REGULAR':
             print(json.dumps({'status': 'SKIPPED_' + definition['kind'], 'network_calls': 0}))
@@ -245,7 +272,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.mode == 'prepare':
             if read_secret('FORWARD_CAPTURE_LICENSE_ACK') != 'true':
                 raise IntegrityError('LICENSE_ACK_REQUIRED')
-            result = prepare(args.root)
+            result = prepare(args.root, owner_file=args.owner_close_file,
+                             owner_download_at=args.owner_download_at,
+                             source_attested=args.attest_nse_source)
         elif args.mode == 'poll':
             code = poll(args.root)
             result = {'status': 'POLL_COMPLETED' if code == 0 else 'POLL_BLOCKED', 'exit_code': code}
@@ -268,6 +297,10 @@ def main(argv: list[str] | None = None) -> int:
         allowed.update({'LICENSE_ACK_REQUIRED', 'SESSION_NOT_PREPARED', 'SESSION_STATE_WITHOUT_CONFIG',
                         'NSE_CLOSE_TRANSPORT_UNAVAILABLE', 'FORWARD_CONFIG_MISMATCH',
                         'AUTOMATIC_SOURCE_CONFIG_REQUIRED', 'CURRENT_AUTOMATIC_SESSION_REQUIRED'})
+        allowed.update({'OWNER_CLOSE_ATTESTATION_REQUIRED', 'OWNER_CLOSE_PREPARE_ONLY',
+                        'OWNER_CLOSE_PROVENANCE_INVALID', 'OWNER_CLOSE_TIMING_INVALID',
+                        'OWNER_CLOSE_BYTES_MISMATCH', 'SESSION_ALREADY_PREPARED',
+                        'LOCAL_PRIVATE_FILE_REQUIRED', 'SOURCE_OUTSIDE_CODE_FOLDER_REQUIRED'})
         failure_code = str(error) if isinstance(error, IntegrityError) and str(error) in allowed else 'SCHEDULER_BLOCKED'
         result = {'status': 'BLOCKED', 'code': failure_code, 'stage': args.mode,
                   'approval_authority': False}
