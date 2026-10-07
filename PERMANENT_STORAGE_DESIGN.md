@@ -1,5 +1,11 @@
 # Permanent storage design — implementation in progress
 
+Oct 7 decision/implementation order is now in PERMANENT_STORAGE_ROLLOUT.md.
+NAV compaction and the accepted scan have provided 44.4 MB nominal headroom,
+not commissioned this design. The new storage_commissioning.py checklist makes
+proof/observation gaps explicit; receipt references are not independently verified
+by it and it never authorises pruning. Existing review-only migrations remain held.
+
 Scope is the entire eight-part goal, not the completed emergency patch.
 Do not upload/commission this unfinished group as a complete storage solution.
 No hosted writes or deletion commands have been run. Keep the derivative pilot held.
