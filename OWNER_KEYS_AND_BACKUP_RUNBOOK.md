@@ -14,6 +14,76 @@ whose original signatures or permitted retention cannot be established.
 
 ## 1. Safe key availability check
 
+### Current observations and decision (7 October, after Package 2A)
+
+Owner found the exact key name in Streamlit and GitHub, but no private backup.
+The August project secrets file is a POSSIBLE historical source, not evidence of
+today's configured key. Preserve it unchanged. Do not rotate, overwrite, move or
+delete either project credential file during this inventory.
+
+Read-only filename inventory of exact public main
+56c5508566a5ff700c2411d68617d8f0566193c4 found neither
+`.streamlit/secrets.toml` nor `client_secret.json`. This is current-tree evidence
+only, not a full Git history/exposure audit. Their contents were not opened.
+`.gitignore` excludes these paths, but GitHub web uploads do not obey it.
+Never select a whole project folder for upload. If either file was ever published,
+stop and report the path/date only for an exposure-response decision; do not
+paste its contents or erase history as a substitute for credential remediation.
+
+### Make a current backup privately — owner only
+
+Yes, a recoverable private copy should exist outside the public project. Prefer
+an encrypted password-manager secure note, not a new plaintext file. Do not
+create a new signing key or change either hosted secret to make a backup.
+
+1. Unlock your existing private password manager and create a dated secure note
+   labelled for this app and Streamlit's current configuration. Confirm the vault
+   itself has an independent recovery method; do not export it to plaintext.
+2. Open the deployed app's Manage app -> Settings -> Secrets (or the app's
+   workspace settings -> Secrets). Work privately: no screen sharing, screenshots,
+   chat paste, terminal commands or agent access to the values.
+3. Preserve the current Secrets TOML exactly in the encrypted secure note, with
+   the app/source/date recorded separately. A complete encrypted configuration
+   backup avoids accidentally altering TOML escapes or confusing a key from a
+   section with another similarly named key. Do not press Save/change hosted
+   configuration. Close/cancel the settings after making the private copy.
+4. Do not transfer through a synced clipboard or clipboard-history service. If
+   safe transfer cannot be arranged, stop rather than put values in a temporary
+   plaintext document. Clear the temporary clipboard after the private transfer.
+5. Lock and reopen the vault and privately confirm the backup is readable and
+   includes the exact ledger-key name. Report only "current encrypted backup
+   made and reopen checked". This proves availability, NOT signatures, historical
+   coverage, or equality with GitHub's independently configured secret.
+
+Streamlit exposes deployed secrets through app settings and explicitly warns
+against committing the local secrets file:
+[official secrets instructions](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management).
+The agent neither retrieves secrets nor performs these owner steps. The existing
+presence checker cannot read an encrypted vault note; that is not a reason to
+export it to plaintext. Future signature verification will use a reviewed private
+key interface and report proof results, not key material.
+
+### Older copies and the August local file
+
+Check password-manager entry titles, dates and version history first. Preserve
+each dated source separately; do not merge key values by guesswork. GitHub's
+secret-name list cannot recover earlier values. Do not reset the key if none are
+found: affected history must remain protected until original signatures verify.
+
+The August file may be inspected by the owner privately, not by the agent. If the
+owner uses the TOML presence checker below, first COPY (not move) that one file
+through Explorer to an already private, access-restricted location outside the
+project. Do not create a plaintext copy on an unencrypted USB, shared folder,
+Drive sync folder or public repository. If protection is unverified, keep it in
+place and defer the checker. Label its source/date as August, not "current".
+The checker still accepts only an explicit external path; its safety guard is
+not relaxed. A positive result establishes a name/nonempty value only.
+
+For the USB, next report only Windows edition, capacity/free space, whether it
+already contains files needing protection, and encryption/unlock status. Inspect
+first; do not format or enable encryption before protecting existing contents.
+The setup sequence and independent-copy limitations are below.
+
 The code's relevant exact name is `EVIDENCE_LEDGER_SIGNING_KEY`. Do not substitute
 `MODEL_ARTIFACT_SIGNING_KEY`, `RUNTIME_EVIDENCE_SIGNING_KEY`, a database password,
 an OAuth token, or a newly generated key. No rotation/reset is requested.
@@ -65,6 +135,61 @@ affected history; do not delete it, re-sign it or fabricate a replacement.
 
 ## 2. Prepare the USB destination — owner steps, not agent actions
 
+### Confirmed owner facts and Home-edition route
+
+Owner reports Windows 11 Home and an empty, unencrypted 1 TB external hard disk
+(about 931 GB usable), not a USB stick. BitLocker To Go is unavailable. There is
+no reason to buy a Windows upgrade or format this disk for our backup design.
+Use password-encrypted `.7z` backup generations with encrypted filenames. This
+protects the archives, NOT other files/temporary files on the external disk.
+No plaintext secret or market-data file should ever be staged on that disk.
+
+A read-only check found no 7-Zip File Manager in the two standard Program Files
+locations and no 7z.exe on PATH. This is not an exhaustive installed-app search;
+owner can check Start/Installed apps for a nonstandard installation before adding
+another. No software was downloaded, installed or executed by the agent.
+
+Owner-only setup, if choosing this route:
+
+1. Check Settings -> System -> About -> System type. Use the matching Windows
+   architecture installer from the [official download page](https://www.7-zip.org/download.html),
+   not an advert, search-result download mirror or bundled utility. On 7 October
+   that page lists 26.04 (5 October 2026). Recheck the official current release
+   when installing; record the installed version only. Do not bypass a Windows
+   security warning; stop for review if one appears. Installation is your action,
+   not an instruction for the agent to change the PC.
+2. For rehearsal ONLY, create a harmless text file containing a fixed test phrase
+   in a private PC folder outside the project. No secrets, live SQLite files,
+   market data, 2025/2026 holdout or actual backup generation goes into this test.
+3. In 7-Zip File Manager select that test file -> Add. Choose a NEW dated archive
+   filename, Archive format `7z`, Encryption method `AES-256`, and tick Encrypt
+   file names. Leave Show Password, Delete files after compression and Create SFX
+   unchecked. Store the resulting test archive on the PC, not over an existing
+   archive. Enter/re-enter a strong unique password through the masked GUI fields;
+   keep it privately in the password manager, never in a command/filename/chat.
+   The [official format](https://www.7-zip.org/7z.html) supports AES-256;
+   these controls are in the [official GUI source](https://github.com/ip7z/7zip/blob/main/CPP/7zip/UI/GUI/CompressDialog.rc).
+4. Close 7-Zip, reopen the test archive and verify it requests the password before
+   revealing internal filenames. A missing password prompt fails this rehearsal.
+   Run Test with the private password; require no errors. Extract only the harmless
+   test file to a different private PC folder and compare its fixed phrase.
+5. Copy only that encrypted test archive to the verified external disk. Compare
+   its SHA-256 with the PC archive (Explorer/owner read-only hash command, not key
+   material); safely eject/reconnect the disk and repeat Test and extraction into
+   a separate private PC folder. Do not extract plaintext onto the external disk.
+   Keep the unlock password/recovery method separate from that disk.
+6. Report installed version and test/copy/hash/extraction PASS/FAIL only. Keep the
+   disk disconnected afterwards. Do not erase the rehearsal or any existing
+   files on the agent's behalf. This proves a backup-container transport path,
+   NOT original signatures, source authenticity or whole-application restore.
+
+Real generations wait for reviewed consistent export, retained source witnesses,
+licence permission and independent restore verification. Encryption alone is not
+that verification. Signing keys belong in a separately recoverable private vault,
+not inside the market-data archive. Do not create a plaintext key file merely
+because 7-Zip accepts only file inputs. If no safe private source location or vault
+recovery exists, stop before real data/credentials; the dummy rehearsal can wait.
+
 First inspect Windows Settings -> System -> About -> Windows specifications for
 the edition, and File Explorer -> this USB drive -> Properties for free space.
 Do not format a drive, erase existing contents, reset an existing encryption key
@@ -99,8 +224,9 @@ utility on the agent's behalf. An owner-reviewed encrypted 7z archive is an
 alternative; its format supports AES-256, but it requires a separate password
 and a successful decryption/restore test.
 [Official 7z encryption format](https://www.7-zip.org/7z.html).
-We need to confirm the available tool/UI before writing its exact setup steps;
-no plaintext market-data copy to an unencrypted USB is requested now.
+The confirmed Home-edition owner route above supplies the setup and dummy
+rehearsal. It is not yet installed/tested. No plaintext market-data copy to an
+unencrypted external disk is requested now.
 
 ## 3. What the second copy must contain
 

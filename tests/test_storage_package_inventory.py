@@ -194,10 +194,17 @@ def test_unknown_files_are_not_declared_obsolete():
 def test_first_core_package_imports_without_unfinished_runtime_modules(tmp_path):
     root = Path(tool.__file__).resolve().parent
     pinned = tool.load_baseline(tool.read_source(root, tool.BASELINE))
-    original = tool.read_source(root, 'evidence_ledger.py')
-    assert tool.status(original, pinned.files['evidence_ledger.py']) in (
-        'MATCHES_MAIN', 'MATCHES_MAIN_NEWLINES_ONLY')
     names = ['ledger_segments', 'cold_catalog', 'catalog_receipts', 'ledger_cold_store']
+    # The baseline is historical, not a ban on later reviewed ledger changes.
+    # Include the real companion explicitly and still reject omitted drafts.
+    members = [name + '.py' for name in [*names, 'evidence_ledger']]
+    assert tool.check_package(root, pinned, members)['blockers'] == []
+    original = tool.read_source(root, 'evidence_ledger.py')
+    if tool.status(original, pinned.files['evidence_ledger.py']) == 'MODIFIED_FROM_MAIN':
+        omitted = tool.check_package(root, pinned, [name + '.py' for name in names])
+        assert any(item['dependency'] == 'evidence_ledger.py'
+                   and item['code'] == 'DEPENDENCY_NOT_IN_PACKAGE'
+                   for item in omitted['blockers'])
     for name in [*names, 'evidence_ledger']:
         shutil.copyfile(root / (name + '.py'), tmp_path / (name + '.py'))
     script = ("import importlib,pathlib,sys; root=pathlib.Path(sys.argv[1]); "

@@ -1,5 +1,89 @@
 # Automation foundation — continuity record
 
+## Package 2A merged; Package 2B1 local retry identity ready for owner review
+
+Owner reports 2A merged at 56c5508, 99 focused tests, exact eight-file rehearsal
+and green status checks. Read-only public Git tree confirmed full SHA
+56c5508566a5ff700c2411d68617d8f0566193c4, non-truncated; neither reported
+credential path is in that current tree. This is NOT a historical exposure audit.
+Agent did not open .streamlit/secrets.toml or client_secret.json, inspect real
+keys/private backups, or change hosted resources/installed capture. Existing
+scan-only recurrence/24MB admission and other modes/F&O/release holds remain.
+
+2B1 fixes local ledger explicit effective_at retry mismatch. A different instant
+fails before any new/reset delivery row; equivalent UTC/IST timestamps retry
+the original; omission/None retains its first time despite restart/later clock;
+explicit empty/false/zero fail. Original HMAC envelopes and atomic transactions
+are unchanged. New deterministic offline tests cover these and delivered ACKs.
+No legacy intent inferred, no re-signing, no remote/factory/cold reader activation.
+Remote retry gap and authenticated durable witness/consistent export/restore,
+cross-file identity and legacy intent remain 2B; every reader/adapter follows in3.
+
+Seven-file upload: ROOT evidence_ledger.py, LOCAL_LEDGER_RETRY_PACKAGE.md,
+OWNER_KEYS_AND_BACKUP_RUNBOOK.md, PERMANENT_STORAGE_PACKAGES.md,
+AUTOMATION_PROGRESS.md; tests/test_ledger_retry_time.py and
+tests/test_storage_package_inventory.py. Exclude the two credential
+files and all unrelated local drafts; .gitignore does not protect web uploads.
+Private current key backup should be encrypted password-manager secure note,
+owner-only from current Streamlit configuration without changes; reopen check
+is availability not historical-signature proof. August file preserved as possible
+historical source; owner checks password-manager titles/version dates next.
+Owner now confirms Windows11 Home, empty1TB external hard disk (~931GB usable),
+unencrypted/noBitLockerToGo. Standard paths/PATH check found no7Zip (not exhaustive).
+Choose encrypted7z generations, not OS upgrade or disk formatting; owner-only
+official installer/architecture and harmless AES256/header-encryption copy/hash/
+extract rehearsal in the runbook. No installation/encryption/copy performed.
+Actual consistent generations/signatures/independent restore remain uncommissioned.
+No plaintext USB copies or hot deletion before independent verified replicas;
+licence permission remains UNKNOWN and an offline USB cannot receive nightly data.
+
+Candidate fingerprint from exact-main 53-file manifest plus ONLY ledger change:
+c6b33f7db02346303cbea4ea83f0a38debc825cafcb0fa272622ab4b11504c95.
+Baseline main fingerprint f7ff707c03609986b56276cc1a724d27b71e7ec6b977fccf0d43533e0feb30ae.
+Git blobs verified main-matching local sources; public main originals supplied
+two unrelated drafts (runtime health/production repository). Never hash/upload
+those local drafts accidentally. Owner must recompute in clean candidate checkout.
+No Streamlit expectation change while old release remains live; promotion held.
+
+Initial focused run118passed; new typed test module strictmypy clean. Initial
+default-temp attempt ran assertions but failed stale-temp cleanup (not counted).
+Unique-temp full run found one stale inventory-test assumption: it required
+ledger bytes forever equal Package1 baseline. Fixed test to require changed ledger
+explicitly included, omitted companion BLOCKED, and actual isolated imports without
+unfinished runtime. Pinned baseline unchanged; no validator/gate weakened.
+That superseded full run was1failed/2516passed/4skipped/2subtests (591.77s), NOT PASS.
+Final expanded focused suite160passed in8.04s. Separate synthetic/offline actual
+app boot (login/settings)2passed in29.91s; changed-ledger/companion imports pass.
+FINAL full suite:2517passed/4unchangedskips/2subtests in538.68s (8m58s), exit0.
+Test count increased12 from2A; no skipped/deleted tests added to obtain a pass.
+Full root/tests pyflakes clean. Strictmypy exactmain19-module configuration clean;
+separate strict follow-imports=silent check of seven core/recovery/test modules clean.
+One extra check using the UNUPLOADED expanded local mypy config (30modules,
+follow_imports=skip) reports ledger_segments._json returning Any: canonical_json
+is skipped by that draft configuration. This is a future config/type-boundary
+integration issue, not hidden/suppressed and not shipped in2B1; main config differs.
+Resolve before commissioning that broader configuration. No unrelated source or
+configuration changed merely to make its draft check pass.
+Manual final self-review compared both changed existing Python/test files against
+exact public main: only intended retry logic/docstring and companion-aware isolated
+import test differ. Confirmed no signatures/schema/ACK resets, no omitted-draft
+acceptance or private-file read. Fixed the stale-test assumption, clarified clean
+clone interpreter/historical baseline instructions and Home-disk owner route.
+All final code tests passed after that fix. No further code edit after the pass.
+This local suite includes unfinished drafts; exact seven-path owner rehearsal/CI
+remains mandatory, not a claim that mixed local runtime drafts may be deployed.
+Seven-file companion check against read-only exact56c5508 tree PASSED/blockers[].
+Original62508fd CLI flags already-merged P1 resources for the newly changed
+inventory test; not a reason to upload those resources again. Runbook provides
+read-only Git-tree baseline check in clean clone, leaving pinned metadata intact.
+NEXT: owner review/rehearsal/upload only this seven-file group; no migration,
+key rotation, installed capture update or release promotion requested. Offline2B2
+can proceed with authenticated consistent source backup/witness custody and
+cross-file restore identity, followed by legacy-intent/remote retry contracts.
+Current private key backup, older-key coverage, actual7z installation/rehearsal,
+real independent copies and licence permission remain unverified owner steps;
+they block commissioning/deletion, not continued synthetic offline engineering.
+
 ## Package 1 merged; Package 2A consistent local-state proof built offline
 
 Owner reports PR6/main e9067cf, merge quality327/resilience293/CodeQL466 green;

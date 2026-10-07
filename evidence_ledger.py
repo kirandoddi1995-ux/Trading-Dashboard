@@ -213,6 +213,11 @@ class ImmutableEvidenceLedger:
         queue_remote_delivery: bool = False,
         equity_scan_context: bool = False,
     ) -> dict:
+        """Append an original, or retry its identity without changing its time.
+
+        An explicitly supplied effective time is part of request identity.
+        Omitting it (or passing None) on a retry retains the original time.
+        """
         # Opt-in only: existing callers retain their local-only append behavior.
         if queue_remote_delivery:
             identifiers = payload.get("identifiers") or {}
@@ -227,7 +232,8 @@ class ImmutableEvidenceLedger:
             raise ValueError(f"Unsupported evidence event type: {event_type}")
         payload_json = canonical_json(payload)
         recorded_at = _iso()
-        effective_at = _iso(effective_at or recorded_at)
+        explicit_effective_time = effective_at is not None
+        effective_at = _iso(effective_at if explicit_effective_time else recorded_at)
         source = str(source).strip() or "unknown"
         actor_id = str(actor_id).strip() or "unknown"
         idempotency_key = str(idempotency_key or uuid.uuid4())
@@ -249,6 +255,8 @@ class ImmutableEvidenceLedger:
                         and existing_event["source"] == source
                         and existing_event["actor_id"] == actor_id
                         and canonical_json(existing_event["payload"]) == payload_json
+                        and (not explicit_effective_time
+                             or existing_event["effective_at"] == effective_at)
                     )
                     if not same_request:
                         raise ValueError("Idempotency key is already bound to different evidence")
