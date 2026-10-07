@@ -1,5 +1,72 @@
 # Automation foundation — continuity record
 
+## Package 1 merged; Package 2A consistent local-state proof built offline
+
+Owner reports PR6/main e9067cf, merge quality327/resilience293/CodeQL466 green;
+release verification passed/publish held. Read-only public tree confirmed exact
+e9067cf6178ca2e65522ec32b09dae71ab5c46cd, 378 entries/non-truncated. New module's
+only project dependency evidence_ledger.py matches main blob
+f0c1beb1478cce5d282766f18647361735346c4d. No GitHub/hosted writes or fresh DB query.
+Scan-only recurrence/24MB admission and other modes/F&O/release holds unchanged;
+isolated installed capture untouched for owner Oct8 supervised preparation.
+
+Implemented local_state_recovery.py: one SELECT-only SQLite transaction covering
+originals/equity outbox/jobs/candidates/checkpoint outbox; temporary disk spool,
+bounded row/schema/total/cache/source time, no initialization/repair/prune/send.
+Source closes before remote checks. Original HMAC chains, explicit legacy binding,
+all exact delivery intents, candidate/job completeness, fences/conflicts/ACKs/
+finalization and detached spool equality are checked. Source witness must be
+independently retained before restore. Five-table PASS never certifies whole-app
+recovery or approval. Hosted adapters are contracts only, NOT wired/authenticated
+by this module. Legacy/local-only missing intent and historical finalized fences
+fail closed pending their adapters; unsigned or unknown-key history is protected.
+
+Added owner-only ledger_key_availability.py (hidden explicit private TOML path,
+presence/count only, no values/key IDs/paths/network/writes). Agent tested synthetic
+fixtures only and has NOT read private secrets/backups. Historical key availability
+and licence permission remain UNKNOWN. Owner confirmed external USB available;
+choose encrypted normally disconnected second copy, but encryption/capacity/copy/
+restore are not established. Offline USB cannot supply unattended nightly copies:
+no hot deletion before independently verified replicas; model backup lag or later
+review a genuinely separate private provider. OWNER_KEYS_AND_BACKUP_RUNBOOK.md
+contains owner steps and official Microsoft/7z references; no setup performed.
+
+Exact eight-file Package 2A: ROOT local_state_recovery.py, ledger_key_availability.py,
+LOCAL_STATE_RECOVERY_PACKAGE.md, OWNER_KEYS_AND_BACKUP_RUNBOOK.md,
+PERMANENT_STORAGE_PACKAGES.md, AUTOMATION_PROGRESS.md; tests/
+test_local_state_recovery.py and test_ledger_key_availability.py. Four new code/test
+files, two new guides, two updated continuity/package docs. Exclude old local
+recovery drafts, runtime/factory replacements, SQL and unrelated tests. The pinned
+inventory baseline is historical; exact-main package CI/rehearsal still required.
+No change to main's explicit equity fingerprint manifest, so no expectation update.
+
+Verification so far: final focused 99 passed in7.17s; final presence-only subset
+22 passed in0.18s after its NoReturn annotation correction; strict mypy two modules clean,
+pyflakes clean. Final full suite: 2505 passed, 4 skipped, 2 subtests passed in
+503.39s (8m23s); no test count drop. Manual
+self-review fixed phantom complete-job acceptance, indexed candidate lookups to
+avoid per-job full scans, and redacted adapter/private-spool exceptions. Synthetic
+WAL concurrency test verifies one source snapshot despite a concurrent writer.
+Further final review bounded schema metadata before fetching it, rejected a
+junction spool parent, and made malformed CLI arguments redact their values too.
+Final review also made source/spool cleanup independent so one failed close
+cannot skip closing the other; its failure regression verifies no spool remains.
+Earlier full runs were superseded after review fixes, not reported as passing
+final-code runs. Final full run above passed after the fixes. Import-only checks
+pass without app/production_repository imports; eight-file companion check passes
+with blockers empty. This full local suite includes unuploaded drafts and is not
+a substitute for exact complete-PR/main CI. No claim of live app boot or hosted
+recovery commissioning is made for these unintegrated libraries.
+
+Next Package 2B: explicit effective_at mismatch vs omitted-time retry semantics;
+atomic intent and crash tests; legacy/historical policy; authenticated durable
+source witness/export/restore and cross-file backup identity. Then Package 3 every
+reader/factory/historical key/root/streaming adapter, with disposable real-DB
+concurrency proof; Package 4 owner additive-disabled prerequisites and tiny archive
+trials/independent restore; Package 5 PIT universe/non-ledger retention; Package 6
+all-writer budgets/alerts/full-workload boundedness. Do not treat 2A as all of P2
+commissioned or copy private research/holdout into the repo.
+
 ## Oct 7 permanent implementation starts: inventory and offline core package
 
 Owner reports PR5 merged, exact main 62508fd50f6d1e363afabc8961857c98afcd5c05,
