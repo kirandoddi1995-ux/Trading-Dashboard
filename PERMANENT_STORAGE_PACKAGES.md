@@ -1,5 +1,17 @@
 # Permanent storage implementation — reviewed packages, not one large upload
 
+## Current review handoff after Package 1 merge
+
+Owner reports Package 1 merged at e9067cf with exact-merge quality/resilience/CodeQL
+green and promotion held. Package 1 below is historical and must not be uploaded
+again as a new group. Package 2A's exact eight-file offline upload group is in
+LOCAL_STATE_RECOVERY_PACKAGE.md; key/USB owner instructions are in
+OWNER_KEYS_AND_BACKUP_RUNBOOK.md. The USB is available, not yet commissioned.
+The five-table spooled recovery proof is implemented offline; legacy intent,
+explicit effective_at retry semantics, trusted witness/export custody and live
+remote/history-aware adapters remain Package 2B/3 work. No live activation occurs.
+The earlier 62508fd inventory baseline stays pinned, not silently rewritten.
+
 ## Decision in plain language
 
 Start by making the unfinished work auditable, then land the offline building
