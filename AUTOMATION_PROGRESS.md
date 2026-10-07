@@ -1,5 +1,71 @@
 # Automation foundation — continuity record
 
+## Current: Package 2B1 merged; 2B2A ready for owner review
+
+Owner reports PR8/main b213ec87b11ee4c50b197110c6d26e1105a633c0 green,
+160 clean-clone focused tests and full PR CI; public tree confirmed non-truncated.
+No fingerprint expectation changed. Installed capture, scan-only recurrence,
+release/mode/F&O holds unchanged. Private key/vault-version/dummy encrypted disk
+owner steps remain undone; no private credential/state/holdout file was opened.
+
+Decision: authenticated identity bindings FIRST, then consistent actual export
+and durable independent witness/checkpoint/replica custody, then legacy intent and
+remote retries, then all readers/factories and commissioned archival. This first
+2B2A subpackage is not the full 2B2 deliverable and cannot unblock deletion.
+Reuses catalog_receipts.py codec in backup namespace; source witness plus reviewed
+inventory plus every byte identity bound to generation and independent checkpoint.
+Missing/mixed/tampered/rollback data fail closed. Explicit historical checkpoint
+can verify its own old generation; global latest custody is adapter responsibility.
+Results leave consistency, durable custody, original signatures, remote/whole-app
+recovery and approval false. Stream hashing has bounds between reads only; future
+adapter must supply complete immutable streams with its own I/O timeout.
+
+Seven-path group: root recovery_bundle.py (new), RECOVERY_BUNDLE_PACKAGE.md (new),
+OWNER_KEYS_AND_BACKUP_RUNBOOK.md, PERMANENT_STORAGE_PACKAGES.md, AUTOMATION_PROGRESS.md;
+tests/test_recovery_bundle.py (new), tests/test_local_state_recovery.py (modified).
+No schema/runtime factory/workflow/fingerprint input changes, no secret rotation,
+no private copy, actual backup/restore or hosted action. Dependency/public-tree and
+final full-suite/self-review results recorded below.
+Focused 146 passed: 66 new binding tests plus 80 local-state tests (3 new full-image
+integration cases). Synthetic disposable SQLite backup retains original witness;
+auxiliary-table tamper caught even though five-table witness unchanged; missing
+intent rejected. Pyflakes root/tests clean; strict followed-import check of new
+module/test clean. Full suite session15529 completed; terminal result below.
+Initial fixture-only errors (oversized Windows pytest parameter name and global
+clock mock affecting runner) fixed with short IDs and module-local clock stub.
+Strict type fixture errors fixed; final focused run passed after all code edits.
+No tests skipped or removed to pass. Next meaningful milestone is consistent
+export/publication/durable independent custody, not live factory activation.
+Exact b213ec8 public-tree static companion check PASSED/blockers[]; only root
+Python blob metadata needed for direct project imports, no baseline rewritten.
+Actual public main 19-module strict type-check set passes; two new typed modules
+pass strict followed-import checking. Offline imports pass; separate synthetic
+app boot login/Settings passes 2 tests (24.76s). No real app import/secret load.
+Self-review of existing test against exact public main confirms only added imports
+and 3 disposable-image cases, no altered assertions/fixtures. Canonical manifest
+comparison is byte-serialized, avoiding Python bool/int equality ambiguities.
+Reviewed stream/decode bounds, caller-owned trust/consistency limits and receipt
+codec reuse. New library is not in actual-main fingerprint inputs/imports; no
+EXPECTED_EQUITY_CODE_SHA256 update.
+TERMINAL validation: session15529 exit0,
+2586 passed, 4 unchanged skips, 2 subtests passed in553.02s (9m13s). Increase69
+over2B1: 66 new binding cases and3 disposable-image cases. Full suite includes
+offline app boot/SQL harness; separate boot2passed. Full root/tests pyflakes and
+main-equivalent19-module strict check clean; final new2-module strict check clean.
+Direct/transitive unchanged catalog_receipts, cold_catalog, ledger_segments,
+local_state_recovery and evidence_ledger sources all MATCH exact b213ec8 blobs.
+All code edits preceded final focused/full passes; subsequent edits docs only.
+Final self-review fixed canonical type comparison, confirmed no existing test
+assertions removed and no inappropriate whole-app/custody success claims. No
+tests/processes still running. Only the exact7-path group is ready, not unrelated
+runtime/migration drafts; exact clean-clone rehearsal and candidate-SHA CI remain
+owner gates. RECOVERY_BUNDLE_PACKAGE.md contains complete paths/commands.
+NEXT: owner review this package; current encrypted vault note first, older-version
+checks/dummy disk rehearsal parallel. Continue offline consistent export+durable
+independent custody adapter, then legacy-intent/remote retry. Actual key coverage,
+licence permission, independently retained encrypted replicas and whole-app
+restore remain required before commissioning/deletion. No hosted action requested.
+
 ## Package 2A merged; Package 2B1 local retry identity ready for owner review
 
 Owner reports 2A merged at 56c5508, 99 focused tests, exact eight-file rehearsal

@@ -1,6 +1,20 @@
 # Permanent storage implementation — reviewed packages, not one large upload
 
-## Current review handoff after Package 2A merge
+## Current handoff: 2B1 merged; 2B2A authenticated identities
+
+Owner reports PR8/main b213ec87b11ee4c50b197110c6d26e1105a633c0 green,
+160 focused clean-clone tests and full PR CI. No fingerprint/hosted setting changed.
+RECOVERY_BUNDLE_PACKAGE.md defines the next exact seven-file group: offline
+authenticated source-witness/component bindings, not a persistent backup.
+It reuses catalog receipt authentication and requires an independent reviewed
+inventory/checkpoint. Signed proposed checkpoints do not establish durable custody.
+Actual consistent export, cross-file freeze and independently retained encrypted
+replicas/checkpoints are the next subpackage, before legacy intent/remote retry
+and every-reader/factory work. No migration, runtime activation or deletion yet.
+Current private key backup, older-key coverage and harmless disk encryption
+rehearsal remain owner steps; they block commissioning, not synthetic coding.
+
+## Historical review handoff after Package 2A merge
 
 Update after owner Package 2A merge: exact public main is
 56c5508566a5ff700c2411d68617d8f0566193c4. Owner reports green status checks and
@@ -33,7 +47,7 @@ a plan to discard evidence or tune the parked rules.
 
 The source of truth is the local folder, but it is NOT identical to main. Main
 was initially inventoried at 62508fd50f6d1e363afabc8961857c98afcd5c05; current main
-is the exact 56c5508 SHA above. Local sources include
+is now the exact b213ec8 SHA above. Local sources include
 unuploaded runtime changes and SQL drafts. Do not upload by folder selection.
 PERMANENT_STORAGE_LOCAL_INVENTORY.md lists the differences and their stages.
 
@@ -214,9 +228,9 @@ boundedness. Only then expand remaining collection modes and F&O one at a time.
 
 ## What is needed from the owner
 
-Now: review the seven-file Package 2B1 group; Packages 1 and 2A are already merged.
+Now: review the seven-file Package 2B2A group; Packages 1, 2A and 2B1 are merged.
 Preserve the current isolated capture/scan-only setup. No hosted action is required
-for 2B1. Continue existing storage/archive
+for 2B2A. Continue existing storage/archive
 observations; notify a guard failure or unexpected growth without changing limits.
 
 Before Package 3/4: confirm privately whether the original legacy and historical

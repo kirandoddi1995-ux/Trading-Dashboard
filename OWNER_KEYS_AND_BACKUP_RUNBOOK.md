@@ -272,6 +272,23 @@ backup is allowed. No new retention window or deletion schedule is activated by
 this document. Frozen 2025/2026 data stays unexamined and protected; if a licence
 conflicts with preservation requirements, stop for an explicit reviewed decision.
 
+## Priority after 2B1 merge — no new hosted key setup
+
+First preserve the current original ledger key in the encrypted password-manager
+note and privately reopen it as described above. Do not rotate it, remove the
+possible historical project copy, or put values in terminal commands/chat/output.
+Then check older vault versions and perform the harmless encrypted disk rehearsal;
+these can proceed alongside offline Package 2B2A development/review.
+
+RECOVERY_BUNDLE_PACKAGE.md authenticates declared source-witness/file identities.
+It does not yet export real state or securely persist its proposed checkpoint.
+A checkpoint stored only inside the same replaceable backup cannot independently
+detect rollback. The next reviewed adapter must retain the expected contract and
+checkpoint separately, publish complete generations safely, and verify independently
+recoverable copies before any deletion. Do not invent a new hosted secret now.
+Backup-authentication keys, encryption passwords and historical original-signing
+keys have different roles; credential availability alone proves no restore.
+
 ## Reply needed before commissioning (not before continuing offline work)
 
 - Key copies: current found / older found / unknown / not found; not values.
