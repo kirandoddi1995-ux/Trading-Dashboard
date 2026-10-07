@@ -1,5 +1,66 @@
 # Automation foundation — continuity record
 
+## Oct 7 permanent implementation starts: inventory and offline core package
+
+Owner reports PR5 merged, exact main 62508fd50f6d1e363afabc8961857c98afcd5c05,
+checks green; installed isolated capture's four root modules hash-match main,
+tasks disabled for Oct8 supervised preparation. Scan-only recurrence remains
+accepted, owner-reported cluster 456,260,405/headroom43,739,595. Other modes,
+F&O ingestion and release remain held. No fresh hosted DB query this turn.
+
+Read-only GitHub connector confirmed the exact commit and non-truncated public
+tree (365 entries). Saved only public source-path/blob metadata (333 files) in
+STORAGE_MAIN_BASELINE_2026-10-07.json. All 18 required files from the previous
+package are present; PR's 17-file diff count is not a missing dependency.
+Direct unauthenticated public-tree fetch failed transport; the connector succeeded.
+No GitHub writes, private research reads, credentials or hosted changes.
+
+Added storage_package_inventory.py and tests: fixed allowlisted source locations,
+bounded reads, traversal/symlink/junction rejection, Git-blob comparison including
+CRLF/LF-only matches, stage classification, static/literal import and explicit
+baseline/SQL companion checks. No import of inspected sources, data history scan,
+network, writes or authority. Dynamic resources/package/runtime compatibility
+still require separate rehearsal and exact-SHA CI; unknown files are not obsolete.
+
+Source scan found 51 new/modified artifacts including the tool/test. Inventory and
+package decisions are in PERMANENT_STORAGE_LOCAL_INVENTORY.md and
+PERMANENT_STORAGE_PACKAGES.md. Historical capture helper is pinned to 092b181;
+do not run it on current main/installed capture. Legacy STORAGE_UPLOAD_MANIFEST.md
+is history, not current upload authority. Preserve all drafts/caches/history.
+
+First reviewed package is 14 complete files: inventory tool/test/public baseline,
+two new inventory/package guides and this progress, plus four existing pure core
+libraries and four tests (ledger_segments, cold_catalog, catalog_receipts,
+ledger_cold_store). No runtime factory/repository/fingerprint replacement,
+migration/workflow/settings changes or SQL-dependent tests. Typed self-review
+removed two redundant string casts from ledger_segments.py. A final boundary
+review added early row-count rejection before copying/parsing oversized segments,
+with a regression proving the input is not traversed; byte/row limits unchanged.
+This group does not change main's equity fingerprint or installed capture code.
+
+Next implementation: independent local ledger/outbox/checkpoint restore witness,
+bounded spooling and authenticated remote-request adapter contract. Source audit
+confirmed live factories do not inject cold readers/historical key rings; local
+proof excludes checkpoints and legacy delivery intent. Duplicate request checks
+omit effective_at despite recovery comparing it; correct/test explicit timestamp
+and omitted-time retry semantics before commissioning. Legacy send/queue-after-
+failure has a crash window. Do not upload whole draft runtime files to patch one
+issue. Build order and owner additive-schema/activation order are distinguished.
+
+Then all historical readers/writers/factories -> archive atomic commit/owner trials
+-> universe and all non-ledger retention -> all-writer admission/independent alerts
+-> measured steady-state/whole-app/ML restore acceptance. Owner-only key availability
+and backup/licence questions do not block the current offline package.
+
+Validation: final focused 116 passed in13.17s, pyflakes clean, strict mypy five
+modules clean, isolated-core imports pass without unfinished runtime imports.
+Final full suite after all code/test corrections: 2406 passed, 4 skipped,
+2 subtests passed in 578.92s. This includes unuploaded drafts and is not an
+exact-main package CI result. Manual final self-review fixed the oversized-input
+boundary and redundant casts; focused failure tests and isolated imports pass.
+Current package dependency check passed with no blockers; this is not live
+storage commissioning. No existing test removed or safety gate weakened.
+
 ## Oct 7 first resumed cron scan accepted; main may unfreeze
 
 Acceptance is based on the owner's reported run #158 and read-only measurements,
