@@ -1,14 +1,17 @@
 """Synthetic five-table source/restore and remote-receipt failures, offline."""
 from contextlib import closing
 from dataclasses import replace
+from datetime import datetime
 import hashlib
 import json
+import shutil
 import sqlite3
 
 import pytest
 
 from evidence_ledger import ImmutableEvidenceLedger
 import local_state_recovery as recovery
+import recovery_bundle
 
 KEY = b'synthetic-local-state-key-not-production'
 KEY_ID = hashlib.sha256(KEY).hexdigest()[:16]
@@ -452,3 +455,48 @@ def test_json_duplicate_keys_and_nonfinite_fail():
     for value in ('{"a":1,"a":2}', 'NaN', 'Infinity', None):
         with pytest.raises(recovery.StateRecoveryError, match='JSON_INVALID'):
             recovery._json(value)
+
+
+@pytest.mark.parametrize('damage', ['none', 'outside_witness', 'delete_intent'])
+def test_authenticated_disposable_image_restore(source, tmp_path, damage):
+    """Bind an original source witness and full image; never infer it from restore."""
+    update(source, 'CREATE TABLE auxiliary_metadata(value TEXT)')
+    update(source, "INSERT INTO auxiliary_metadata VALUES('original')")
+    with capture(source, tmp_path) as snapshot:
+        original_witness = snapshot.witness
+    image = tmp_path / 'backup.sqlite'
+    with closing(sqlite3.connect(source)) as before, closing(sqlite3.connect(image)) as after:
+        before.backup(after)
+    contract = recovery_bundle.BackupContract('backup:synthetic_restore', (
+        recovery_bundle.Binding('primary_state', 'local_store', 'sqlite-image-v1'),))
+    with image.open('rb') as stream:
+        identities = (recovery_bundle.measure('primary_state', stream),)
+    custody_key = b'synthetic-separate-custody-key-32bytes'
+    sealed = recovery_bundle.seal(contract, original_witness, identities,
+        bundle_id='00000000-0000-4000-8000-000000000001',
+        cut_id='00000000-0000-4000-8000-000000000002', at=datetime.fromisoformat(AT),
+        previous=recovery_bundle.genesis(contract), key_id='custody', key=custody_key)
+    target = tmp_path / 'restored.sqlite'
+    shutil.copyfile(image, target)  # Closed, disposable test image, never a live DB.
+    if damage == 'delete_intent':
+        update(target, 'DELETE FROM evidence_delivery_outbox')
+        with pytest.raises(recovery.StateRecoveryError):
+            with capture(target, tmp_path):
+                pytest.fail('missing original intent accepted')
+        return
+    if damage == 'outside_witness':
+        update(target, "UPDATE auxiliary_metadata SET value='changed'")
+    with capture(target, tmp_path) as restored:
+        restored_witness = restored.witness
+    assert restored_witness == original_witness
+    with target.open('rb') as stream:
+        observed = (recovery_bundle.measure('primary_state', stream),)
+    arguments = dict(checkpoint=sealed.checkpoint, contract=contract,
+        keyring={'custody': custody_key}, observed=observed, restored_witness=restored_witness)
+    if damage == 'outside_witness':
+        with pytest.raises(recovery_bundle.BundleError, match='RESTORED_ARTIFACT_MISMATCH'):
+            recovery_bundle.verify_restore(sealed.data, **arguments)
+    else:
+        result = recovery_bundle.verify_restore(sealed.data, **arguments)
+        assert result['status'] == 'BACKUP_IDENTITIES_VERIFIED'
+        assert result['application_recovery_verified'] is False
