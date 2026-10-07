@@ -1,6 +1,15 @@
 # Permanent storage implementation — reviewed packages, not one large upload
 
-## Current review handoff after Package 1 merge
+## Current review handoff after Package 2A merge
+
+Update after owner Package 2A merge: exact public main is
+56c5508566a5ff700c2411d68617d8f0566193c4. Owner reports green status checks and
+99 focused tests. Package 2B is split: LOCAL_LEDGER_RETRY_PACKAGE.md defines a
+seven-file 2B1 retry-identity fix with its candidate fingerprint. It does not ship
+unfinished remote/factory changes or claim whole-application recovery. Remaining
+2B work is authenticated backup/witness custody, cross-file identity, legacy
+delivery intent and remote retry semantics. Key names exist, but current private
+backup/historical coverage and USB encryption/restore remain unverified.
 
 Owner reports Package 1 merged at e9067cf with exact-merge quality/resilience/CodeQL
 green and promotion held. Package 1 below is historical and must not be uploaded
@@ -23,7 +32,8 @@ History remains available for analysis/ML in verified private files. This is not
 a plan to discard evidence or tune the parked rules.
 
 The source of truth is the local folder, but it is NOT identical to main. Main
-is confirmed at 62508fd50f6d1e363afabc8961857c98afcd5c05. Local sources include
+was initially inventoried at 62508fd50f6d1e363afabc8961857c98afcd5c05; current main
+is the exact 56c5508 SHA above. Local sources include
 unuploaded runtime changes and SQL drafts. Do not upload by folder selection.
 PERMANENT_STORAGE_LOCAL_INVENTORY.md lists the differences and their stages.
 
@@ -204,8 +214,9 @@ boundedness. Only then expand remaining collection modes and F&O one at a time.
 
 ## What is needed from the owner
 
-Now: review Package 1 and preserve the current isolated capture/scan-only setup.
-No hosted action is required for this package. Continue existing storage/archive
+Now: review the seven-file Package 2B1 group; Packages 1 and 2A are already merged.
+Preserve the current isolated capture/scan-only setup. No hosted action is required
+for 2B1. Continue existing storage/archive
 observations; notify a guard failure or unexpected growth without changing limits.
 
 Before Package 3/4: confirm privately whether the original legacy and historical
