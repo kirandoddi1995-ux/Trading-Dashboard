@@ -327,6 +327,26 @@ def verify(data: bytes, *, checkpoint: BundleCheckpoint, contract: BackupContrac
     return VerifiedBundle(witness, tuple(sorted(artifacts, key=lambda a: a.name)), checkpoint)
 
 
+def admit_proposal(data: bytes, *, previous: receipts.RootAnchor,
+                   contract: BackupContract, keyring: Mapping[str, bytes]) -> SignedBundle:
+    """Authenticate a proposed successor, NOT a committed restore checkpoint.
+
+    The predecessor must come from independently retained custody. The candidate
+    digest is derived here only for HMAC admission; it is never evidence that the
+    candidate was committed, replicated or latest. Restore still requires verify()
+    with an independently retained complete checkpoint.
+    """
+    envelope = _decode(data)
+    try:
+        raw = envelope['receipt'].encode('utf-8')
+        current = receipts.verify(raw, hashlib.sha256(raw).hexdigest(), previous, keyring)
+    except Exception:
+        raise BundleError('BACKUP_PROPOSAL_AUTH_UNVERIFIED') from None
+    checkpoint = BundleCheckpoint(previous, current)
+    verify(data, checkpoint=checkpoint, contract=contract, keyring=keyring)
+    return SignedBundle(data, checkpoint)
+
+
 def verify_restore(data: bytes, *, checkpoint: BundleCheckpoint, contract: BackupContract,
                    keyring: Mapping[str, bytes], observed: tuple[ArtifactDigest, ...],
                    restored_witness: StateWitness) -> dict[str, object]:
