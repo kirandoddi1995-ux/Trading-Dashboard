@@ -1,0 +1,72 @@
+{
+  "version": "storage-native-repair-upload-v1",
+  "source_root": "C:/Users/banga/Desktop/kiran_share_market",
+  "groups": {
+    "native_repair": [
+      {
+        "source": "storage_native_conformance.py",
+        "destination": "storage_native_conformance.py",
+        "sha256_lf": "f9e5a4ae6f92c095d21cf877be1eb5f1177c556cc4761f8a92d0f14ac7961eec"
+      },
+      {
+        "source": "reviewed_upload_check.py",
+        "destination": "reviewed_upload_check.py",
+        "sha256_lf": "28230f3268b1e23210107e20714b6d834518d594333d3cdd6e0b3797877bee84"
+      },
+      {
+        "source": "tests/test_storage_native_conformance.py",
+        "destination": "tests/test_storage_native_conformance.py",
+        "sha256_lf": "4291f3d6d92632b4a9dde6b85b86943a767192ba75ea32045794caa0bb8f5199"
+      },
+      {
+        "source": "tests/test_reviewed_upload_check.py",
+        "destination": "tests/test_reviewed_upload_check.py",
+        "sha256_lf": "29f956651c393fd4d7bedd01bdc2f54d28fd0762dd21be33d6abc57267898ecf"
+      },
+      {
+        "source": "STORAGE_NATIVE_REPAIR_2026-10-11.md",
+        "destination": "STORAGE_NATIVE_REPAIR_2026-10-11.md",
+        "sha256_lf": "362f66fec96e5106972fe2d67de0b746a3a3f6ce98861c107d080cd7dc3b9221"
+      },
+      {
+        "source": "AUTOMATION_PROGRESS.md",
+        "destination": "AUTOMATION_PROGRESS.md",
+        "sha256_lf": "d4fcd633c4eb6d7b927180aefdfc889ddc85863f688f93528baddd873a07d9df"
+      },
+      {
+        "source": "STORAGE_NATIVE_REPAIR_UPLOAD_2026-10-11.json",
+        "destination": "STORAGE_NATIVE_REPAIR_UPLOAD_2026-10-11.json",
+        "sha256_lf": null
+      }
+    ]
+  },
+  "prerequisites": {
+    "native_repair": [
+      {
+        "source": "storage_write_guard.py",
+        "destination": "storage_write_guard.py",
+        "sha256_lf": "28cebb83f4587c664cfda9c06a39b9b3dffd352fbd2ab3ef7dee7c8788c3d0e3"
+      },
+      {
+        "source": "collector_storage_preflight.py",
+        "destination": "collector_storage_preflight.py",
+        "sha256_lf": "0c9849afa75e286b1f2adc3c582abec3a8d1587cb31227b835f68aa8cc022a2f"
+      },
+      {
+        "source": "sql/storage_native_fixture_disposable_only.sql",
+        "destination": "sql/storage_native_fixture_disposable_only.sql",
+        "sha256_lf": "34af2edf4504e80633f7b092fb5b95538455e621c9648291c8676f4ea6ed14d6"
+      },
+      {
+        "source": ".github/workflows/storage-native-conformance.yml",
+        "destination": ".github/workflows/storage-native-conformance.yml",
+        "sha256_lf": "88034d1dddc1566ef725d877da69257d1a15f26069cb3535761badd9f4996bce"
+      },
+      {
+        "source": "tests/test_storage_write_guard.py",
+        "destination": "tests/test_storage_write_guard.py",
+        "sha256_lf": "93000d81454d5dbec1170a6bff5a74a2acc4863d10b95fb9cbb69093c822e9f7"
+      }
+    ]
+  }
+}
