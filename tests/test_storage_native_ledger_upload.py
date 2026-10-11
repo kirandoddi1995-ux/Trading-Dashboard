@@ -36,7 +36,14 @@ def test_delivered_upload_manifest_exact_sources_and_dependencies() -> None:
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads((root / check.LEDGER_MANIFEST).read_bytes())
     entries = manifest['groups']['native_ledger']
-    check.validate_files(root, entries, set())
+    # Historical package hashes stay immutable. Files superseded by the reviewed
+    # next package are checked against that package, not their old release bytes.
+    successor = json.loads((root / check.OVERNIGHT_MANIFEST).read_bytes())
+    current = successor['groups']['overnight']
+    superseded = {item['destination'] for item in current}
+    check.validate_files(root, [item for item in entries
+                               if item['destination'] not in superseded], set())
+    check.validate_files(root, current, set())
     check.validate_files(root, manifest['prerequisites']['native_ledger'], set())
     assert all(item['source'] == item['destination'] for item in entries)
     names = {item['destination'] for item in entries}
