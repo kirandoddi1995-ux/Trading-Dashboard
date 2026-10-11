@@ -11,6 +11,7 @@ import uuid
 
 from automated_development_checks import write_once
 from drive_archive import DriveArchive, credentials
+from forward_capture_diagnostics import close_drive as close_drive, failure_category as failure_category
 from equity_runtime_health import clock_error, measure_clock
 from forward_nifty_archive import Drive, publish
 from forward_nifty_producer import ROOT, Producer, prepare_config, validate_config
@@ -56,6 +57,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--previous-close', type=float)
     parser.add_argument('--previous-close-source-sha256')
     args = parser.parse_args(argv)
+    stage = 'CONFIGURATION'
+    local_poll_committed: bool | None = False
+    remote_verified = False
+    receipt_written = False
     try:
         if any(path.resolve().is_relative_to(ROOT) for path in (args.config, args.state)):
             raise IntegrityError('PRIVATE_STATE_OUTSIDE_REPOSITORY_REQUIRED')
@@ -79,20 +84,31 @@ def main(argv: list[str] | None = None) -> int:
         if args.backup_only and not (args.state / 'observations.sqlite').is_file():
             raise IntegrityError('EXISTING_CAPTURE_STATE_REQUIRED')
         if args.backup_only:
+            stage = 'LOCAL_BACKUP_OPEN'
             producer = Producer(config, args.state / 'observations.sqlite', InputArchive(args.state / 'inputs'))
-            oauth = cast(Callable[[Any], Any], credentials)(json.loads(os.environ.get('DRIVE_OAUTH_TOKEN_JSON', '{}')))
+            stage = 'DRIVE_CONFIGURATION'
+            build_credentials: Callable[[Any], Any] = credentials
+            oauth = build_credentials(json.loads(os.environ.get('DRIVE_OAUTH_TOKEN_JSON', '{}')))
             drive = cast(Callable[..., Any], DriveArchive)(oauth, os.environ.get('OPTION_CAPTURE_DRIVE_FOLDER_ID', ''))
             try:
+                stage = 'DRIVE_FOLDER_CHECK'
                 drive.check_folder()
+                stage = 'LOCAL_BACKUP_BUNDLE'
                 result = producer.bundle('BACKUP_ONLY', producer.context())
+                stage = 'DRIVE_PUBLISH_VERIFY'
                 acknowledgement = publish(cast(Drive, drive), result)
+                remote_verified = True
+                stage = 'LOCAL_RECEIPT_WRITE'
                 write_once(args.state / ('receipt-' + uuid.uuid4().hex + '.json'), acknowledgement)
+                receipt_written = True
+                stage = 'DRIVE_CLOSE'
             finally:
-                drive.close()
+                close_drive(drive)
             print(json.dumps({'status': 'REMOTE_VERIFIED', 'capture_status': 'BACKUP_ONLY',
                               'recorded_decisions': result['recorded_decisions'],
                               'missing_decisions': result['missing_decisions'], 'approval_authority': False}))
             return 0
+        stage = 'AUTHORIZATION'
         token = os.environ.get('UPSTOX_ANALYTICS_TOKEN', '').strip()
         expiry = os.environ.get('FORWARD_TOKEN_EXPIRES_AT')
         now = datetime.now(timezone.utc)
@@ -105,25 +121,41 @@ def main(argv: list[str] | None = None) -> int:
         opening, closing = instant(config['session_open']), instant(config['session_close'])
         if not opening <= now <= closing + timedelta(minutes=15):
             raise IntegrityError('OUTSIDE_COLLECTION_SESSION')
+        stage = 'CLOCK_CHECK'
         probe = cast(Callable[[], dict[str, Any]], measure_clock)()
         problem = cast(Callable[..., str | None], clock_error)(probe, now=datetime.now(timezone.utc), maximum_offset=1.0)
         if problem:
             raise IntegrityError('CLOCK_UNVERIFIED')
+        stage = 'LOCAL_CAPTURE_OPEN'
         producer = Producer(config, args.state / 'observations.sqlite', InputArchive(args.state / 'inputs'))
         # Validate credential config before collection; scope stays drive.file.
-        oauth = cast(Callable[[Any], Any], credentials)(json.loads(os.environ.get('DRIVE_OAUTH_TOKEN_JSON', '{}')))
+        stage = 'DRIVE_CONFIGURATION'
+        configure_credentials: Callable[[Any], Any] = credentials
+        oauth = configure_credentials(json.loads(os.environ.get('DRIVE_OAUTH_TOKEN_JSON', '{}')))
         drive = cast(Callable[..., Any], DriveArchive)(oauth, os.environ.get('OPTION_CAPTURE_DRIVE_FOLDER_ID', ''))
         import requests
         try:
+            stage = 'MARKET_DATA_READ'
             with requests.Session() as session:
                 bars = read_current(session, token)
+            stage = 'LOCAL_RECORD_POLL'
+            # Persistence can succeed before bundle construction fails. Without
+            # a return, the commit outcome is unknown rather than false.
+            local_poll_committed = None
             result = producer.record_poll(bars, received_at=datetime.now(timezone.utc).isoformat(),
                                           computed_clock=lambda: datetime.now(timezone.utc))
+            local_poll_committed = True
+            stage = 'DRIVE_FOLDER_CHECK'
             drive.check_folder()  # Inputs/journal already durable if Drive is down.
+            stage = 'DRIVE_PUBLISH_VERIFY'
             acknowledgement = publish(cast(Drive, drive), result)
+            remote_verified = True
+            stage = 'LOCAL_RECEIPT_WRITE'
             write_once(args.state / ('receipt-' + uuid.uuid4().hex + '.json'), acknowledgement)
+            receipt_written = True
+            stage = 'DRIVE_CLOSE'
         finally:
-            drive.close()
+            close_drive(drive)
         print(json.dumps({'status': 'REMOTE_VERIFIED', 'capture_status': result['status'], 'recorded_decisions': result['recorded_decisions'],
                           'missing_decisions': result['missing_decisions'], 'approval_authority': False}))
         return 0
@@ -131,15 +163,18 @@ def main(argv: list[str] | None = None) -> int:
         # No transport body, URL, token, private path or raw exception escapes.
         code = str(error) if isinstance(error, IntegrityError) and str(error) in {
             'AUTH_REQUIRED', 'CLOCK_UNVERIFIED', 'LICENSE_ACK_REQUIRED', 'OUTSIDE_COLLECTION_SESSION'} else 'FORWARD_CAPTURE_FAILED'
+        diagnostic = {'stage': stage, 'category': failure_category(error),
+                      'local_poll_committed': local_poll_committed,
+                      'remote_verified': remote_verified, 'receipt_written': receipt_written}
         if (args.confirm_run or args.backup_only) and not args.state.resolve().is_relative_to(ROOT):
             try:
                 args.state.mkdir(parents=True, exist_ok=True)
                 write_once(args.state / ('failure-' + uuid.uuid4().hex + '.json'),
                            {'status': 'BLOCKED', 'code': code, 'at': datetime.now(timezone.utc).isoformat(),
-                            'approval_authority': False, 'fill_evidence': False})
+                            'approval_authority': False, 'fill_evidence': False, **diagnostic})
             except Exception:
                 pass  # Exit remains failed even if local failure receipt cannot commit.
-        print(json.dumps({'status': 'BLOCKED', 'code': code, 'approval_authority': False}))
+        print(json.dumps({'status': 'BLOCKED', 'code': code, 'approval_authority': False, **diagnostic}))
         return 2
 
 
