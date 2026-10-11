@@ -1,5 +1,32 @@
 # Automation foundation — continuity record
 
+## Current checkpoint — 11 October disposable native runner repair
+
+Owner reports Upload 3 merged and disposable native workflow blocked in one second;
+all setup/provisioning steps passed. No raw diagnostic survived the old catch-all.
+Reproduced locally: explicit service='' triggers an empty libpq service lookup
+before connecting; database comment obj_description returns null while
+shobj_description returns the correct shared marker in the offline SQL engine.
+Runner fixes both, refuses service environment discovery by name presence,
+preserves identity/role/native-version/limits, and reports allowlisted stage,
+category and completed cases. Failure, including cleanup failure, remains exit 2.
+Fixture and workflow unchanged. No hosted actions, credentials read, capture changes,
+sealed research access, release/fingerprint changes or GitHub writes.
+
+One seven-file PR group and exact owner steps:
+STORAGE_NATIVE_REPAIR_2026-10-11.md; hashes and unchanged prerequisites:
+STORAGE_NATIVE_REPAIR_UPLOAD_2026-10-11.json. Historical foundation manifest unchanged.
+Focused: 140 passed with offline PGlite catalog regression. Strict mypy on four
+Python files and pyflakes passed. Full credential-free public candidate:
+2945 passed, 4 unchanged skips, 2 subtests passed in 373.82 seconds, including
+synthetic app boot. Final test-only ambient-service isolation was also rechecked
+in the 140-pass focused run. Recursive public-tree pyflakes, imports and offline
+preview pass. Source/dependency package hashes verified locally; actual clean-main
+HEAD rehearsal and exact merged-SHA CI remain owner steps. Self-review completed:
+no further actionable issue found. Native acceptance is pending one owner workflow after green merge;
+no native postgres/initdb/pg_ctl found on local PATH. Permanent storage remains
+uncommissioned; prior custody/all-writer/retention/race owner gates remain in force.
+
 ## Current checkpoint — 11 October storage acceptance foundation
 
 Owner reports both consolidated Oct 8 uploads merged/green, installed capture

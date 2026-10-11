@@ -73,6 +73,7 @@ def test_main_actual_base_and_no_mutations(tmp_path: Path, monkeypatch: pytest.M
 def test_only_specific_native_workflow_allowed() -> None:
     assert check.relative(check.NATIVE_WORKFLOW) == check.NATIVE_WORKFLOW
     assert check.relative(check.FOUNDATION_MANIFEST) == check.FOUNDATION_MANIFEST
+    assert check.relative(check.REPAIR_MANIFEST) == check.REPAIR_MANIFEST
     for name in ('.github/workflows/other.yml', '.github/workflows/../secrets.yml',
                  'other.json', '.github/secrets.py'):
         with pytest.raises(ValueError):
@@ -97,4 +98,25 @@ def test_foundation_manifest_explicit_selection(tmp_path: Path, monkeypatch: pyt
     assert 'REQUIRES_TESTS_AND_CI' in capsys.readouterr().out
     assert check.main(['--group', 'capture', '--manifest', check.FOUNDATION_MANIFEST,
                        '--base', 'a' * 40, '--root', str(tmp_path)]) == 2
+    assert 'MANIFEST_VERSION_INVALID' in capsys.readouterr().out
+
+
+def test_native_repair_manifest_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                         capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / 'sample.py').write_bytes(b'pass')
+    manifest = {'version': 'storage-native-repair-upload-v1', 'groups': {'native_repair': [
+        entry('sample.py', b'pass'), {'destination': check.REPAIR_MANIFEST, 'sha256_lf': None}]}}
+    (tmp_path / check.REPAIR_MANIFEST).write_text(json.dumps(manifest), encoding='utf-8')
+    def git(root: Path, *args: str) -> str:
+        return {('rev-parse', 'HEAD'): 'a' * 40,
+                ('rev-parse', '--show-toplevel'): str(tmp_path),
+                ('diff', '--name-only', 'a' * 40, '--'): '',
+                ('ls-files', '--others', '--exclude-standard'): 'sample.py\n' + check.REPAIR_MANIFEST}[args]
+    monkeypatch.setattr(check, 'git', git)
+    args = ['--group', 'native_repair', '--manifest', check.REPAIR_MANIFEST,
+            '--base', 'a' * 40, '--root', str(tmp_path)]
+    assert check.main(args) == 0
+    assert 'REQUIRES_TESTS_AND_CI' in capsys.readouterr().out
+    args[1] = 'foundation'
+    assert check.main(args) == 2
     assert 'MANIFEST_VERSION_INVALID' in capsys.readouterr().out

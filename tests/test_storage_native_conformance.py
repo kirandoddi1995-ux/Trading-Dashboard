@@ -70,6 +70,8 @@ def test_connect_failure_redacted(monkeypatch: pytest.MonkeyPatch, capsys: Any) 
 
 def test_fixture_explicit_connection_parameters_no_environment_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     import psycopg
+    for name in ('PGSERVICE', 'PGSERVICEFILE', 'PGSYSCONFDIR'):
+        monkeypatch.delenv(name, raising=False)
     seen: list[dict[str, Any]] = []
     sentinel = object()
     def connect(**kwargs: Any) -> object:
@@ -81,7 +83,7 @@ def test_fixture_explicit_connection_parameters_no_environment_fallback(monkeypa
     row = seen[0]
     assert row['host'] == row['hostaddr'] == '127.0.0.1'
     assert row['dbname'] == native.DATABASE and row['user'] == native.ROLE
-    assert row['service'] == '' and row['sslmode'] == 'disable'
+    assert 'service' not in row and row['sslmode'] == 'disable'
     assert row['password'] == native.FIXTURE_PASSWORD and row['port'] == 55432
 
 
@@ -163,3 +165,146 @@ def test_workflow_no_secrets_no_schedule_no_production_trigger() -> None:
     assert 'schedule:' not in body and 'push:' not in body and 'pull_request:' not in body
     assert 'inputs.confirm_disposable == true' in body
     assert 'contents: read' in body and 'storage_conformance_sandbox' in body
+
+
+def test_shared_database_comment_catalog() -> None:
+    from pathlib import Path
+    assert 'shobj_description(' in native.PROFILE_SQL
+    assert '\n    obj_description(' not in native.PROFILE_SQL
+    fixture = (Path(__file__).resolve().parents[1] /
+               'sql/storage_native_fixture_disposable_only.sql').read_text()
+    assert f"COMMENT ON DATABASE {native.DATABASE} IS '{native.MARKER}'" in fixture
+
+
+def test_actual_shared_comment_lookup_in_offline_sql_engine() -> None:
+    """Actual catalog semantics, NOT native backend/lock acceptance."""
+    import os
+    import subprocess
+    module = os.environ.get('EQUITY_TEST_PGLITE_MODULE')
+    if not module:
+        pytest.skip('Local SQL harness not configured')
+    script = """
+const {PGlite}=require(process.argv[1]);
+(async()=>{const db=new PGlite(); await db.waitReady;
+ await db.exec("COMMENT ON DATABASE template1 IS 'disposable-storage-guard-v1'");
+ const old=await db.query("SELECT obj_description(oid,'pg_database') AS marker FROM pg_database WHERE datname=current_database()");
+ const corrected=await db.query(process.argv[2],[],{rowMode:'array'});
+ console.log(JSON.stringify({old:old.rows[0].marker,corrected:corrected.rows[0][4]}));
+ await db.close();})().catch(()=>{process.exitCode=1;});
+"""
+    result = subprocess.run(['node', '-e', script, module, native.PROFILE_SQL],
+                            capture_output=True, text=True, timeout=35, check=False)
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {'old': None, 'corrected': native.MARKER}
+
+
+@pytest.mark.parametrize('name', ['PGSERVICE', 'PGSERVICEFILE', 'PGSYSCONFDIR'])
+@pytest.mark.parametrize('value', ['', 'synthetic-private-service'])
+def test_service_environment_refused_before_driver(name: str, value: str,
+                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    import psycopg
+    monkeypatch.setenv(name, value)
+    monkeypatch.setattr(psycopg, 'connect', lambda **_: pytest.fail('driver called'))
+    with pytest.raises(native.ConformanceError) as caught:
+        native.connect_fixture(55432)
+    assert caught.value.category == 'SERVICE_ENVIRONMENT'
+
+
+@pytest.mark.parametrize('state,category', [
+    ('28P01', 'AUTHENTICATION'), ('42501', 'PERMISSION'),
+    ('42P01', 'FIXTURE_TABLE_MISSING'), ('42883', 'DATABASE_FUNCTION_MISSING'),
+    ('23505', 'UNIQUE_CONSTRAINT'), ('57014', 'QUERY_CANCELLED'),
+    ('08001', 'CONNECTION'), ('08006', 'CONNECTION'),
+    ('private-token', 'REDACTED_EXCEPTION'), (None, 'REDACTED_EXCEPTION'),
+])
+def test_allowlisted_error_categories(state: object, category: str) -> None:
+    error = RuntimeError('private-message')
+    error.sqlstate = state  # type: ignore[attr-defined]
+    assert native._category(error) == category
+
+
+@pytest.mark.parametrize('connection_number', [1, 2])
+def test_connection_stage_and_cleanup(connection_number: int,
+                                      monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:
+    first = Connection(set(), Lock(), 100)
+    calls = 0
+    def connect(_: int) -> Connection:
+        nonlocal calls
+        calls += 1
+        if calls == connection_number:
+            raise RuntimeError('private connection string')
+        return first
+    monkeypatch.setattr(native, 'connect_fixture', connect)
+    assert native.main(['--execute', '--confirm-disposable']) == 2
+    output = capsys.readouterr().out
+    assert 'private' not in output
+    report = json.loads(output)
+    assert report['stage'] == ('CONNECT_FIRST' if connection_number == 1 else 'CONNECT_SECOND')
+    assert report['passed_cases'] == []
+    assert report['error_category'] == 'REDACTED_EXCEPTION'
+    assert calls == connection_number
+    assert first.closed is (connection_number == 2)
+
+
+@pytest.mark.parametrize('failure_stage', [
+    'VERIFY_FIRST_PROFILE', 'VERIFY_SECOND_PROFILE', 'VERIFY_EMPTY_FIXTURE',
+    'COMMITTED_APPEND', 'CONCURRENT_WRITER', 'BODY_ROLLBACK', 'CALLER_COMMIT',
+    'CONSTRAINT_ROLLBACK',
+])
+def test_case_diagnostics_and_no_false_pass(failure_stage: str,
+                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(native, '_clock', lambda: __import__('test_storage_write_guard').NOW)
+    shared: set[int] = set()
+    lock = Lock()
+    connections = [Connection(shared, lock, 100), Connection(shared, lock, 101)]
+    original = native._query
+    profiles = 0
+    targets = {'VERIFY_EMPTY_FIXTURE': 'SELECT count(*) FROM public.guard_probe',
+               'COMMITTED_APPEND': 'INSERT INTO public.guard_probe VALUES(1)',
+               'CONCURRENT_WRITER': 'INSERT INTO public.guard_probe VALUES(2)',
+               'BODY_ROLLBACK': 'INSERT INTO public.guard_probe VALUES(4)',
+               'CALLER_COMMIT': 'INSERT INTO public.guard_probe VALUES(6)',
+               'CONSTRAINT_ROLLBACK': 'SELECT count(*) FROM public.guard_probe WHERE id=1'}
+    def query(connection: Any, sql: str) -> Any:
+        nonlocal profiles
+        if sql == native.PROFILE_SQL:
+            profiles += 1
+            if failure_stage == ('VERIFY_FIRST_PROFILE' if profiles == 1 else 'VERIFY_SECOND_PROFILE'):
+                raise DuplicateError('private query text')
+        if failure_stage in targets and sql.startswith(targets[failure_stage]):
+            raise DuplicateError('private query text')
+        return original(connection, sql)
+    monkeypatch.setattr(native, '_query', query)
+    iterator = iter(connections)
+    with pytest.raises(native.ConformanceError) as caught:
+        native.run_native(lambda: next(iterator))
+    assert caught.value.stage == failure_stage
+    assert caught.value.category == 'UNIQUE_CONSTRAINT'
+    assert all(connection.closed for connection in connections)
+
+
+def test_diagnostic_payload_does_not_accept_free_text() -> None:
+    error = native.ConformanceError('private-message', stage='private-stage',
+                                    category='private-category', checks=('private-query',))
+    assert error.stage == 'UNEXPECTED'
+    assert native._category(error) == 'REDACTED_EXCEPTION'
+    assert error.checks == ()
+
+
+@pytest.mark.parametrize('number', [0, 1])
+def test_cleanup_failure_is_blocked_not_passed(number: int,
+                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(native, '_clock', lambda: __import__('test_storage_write_guard').NOW)
+    shared: set[int] = set()
+    lock = Lock()
+    connections = [Connection(shared, lock, 100), Connection(shared, lock, 101)]
+    def close() -> None:
+        connections[number].closed = True
+        raise RuntimeError('private cleanup text')
+    monkeypatch.setattr(connections[number], 'close', close)
+    iterator = iter(connections)
+    with pytest.raises(native.ConformanceError) as caught:
+        native.run_native(lambda: next(iterator))
+    assert caught.value.stage == ('CLOSE_FIRST' if number == 0 else 'CLOSE_SECOND')
+    assert len(caught.value.checks) == 6
+    assert all(connection.closed for connection in connections)
