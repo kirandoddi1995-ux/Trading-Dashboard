@@ -24,6 +24,7 @@ from typing import Iterable, Mapping
 
 from evidence_ledger import GENESIS_HASH, LEDGER_SCHEMA_VERSION, canonical_json
 from deployment_security import assess_database_role
+from ledger_historical_views import LedgerHistoricalViews
 
 try:
     import psycopg
@@ -193,7 +194,17 @@ class ProductionRepository:
 
     def __init__(self, database_url: str | None = None, *, connect_timeout: int = 10,
                  evidence_signing_key: str | bytes | None = None,
-                 schema_mode: str = "migrate", enforce_restricted_role: bool = False):
+                 schema_mode: str = "migrate", enforce_restricted_role: bool = False,
+                 historical_views: LedgerHistoricalViews | None = None):
+        if historical_views is not None:
+            if (not isinstance(historical_views, LedgerHistoricalViews)
+                    or str(schema_mode).strip().casefold() != "validate"
+                    or enforce_restricted_role is not True
+                    or not isinstance(database_url, str)
+                    or not database_url.strip().startswith(("postgresql://", "postgres://"))):
+                raise RepositoryUnavailable("HISTORICAL_REPOSITORY_EXPLICIT_READ_ONLY_CONFIG_REQUIRED")
+            # A read-only view needs no writer signing secret or environment fallback.
+            evidence_signing_key = b""
         self._database_url = str(database_url or os.environ.get("DATABASE_URL") or "").strip()
         self._connect_timeout = max(3, int(connect_timeout))
         if evidence_signing_key is None:
@@ -209,6 +220,7 @@ class ProductionRepository:
         if self._schema_mode not in {"migrate", "validate"}:
             raise ValueError("schema_mode must be 'migrate' or 'validate'")
         self._enforce_restricted_role = bool(enforce_restricted_role)
+        self._historical_views = historical_views
 
     @property
     def configured(self) -> bool:
@@ -232,6 +244,8 @@ class ProductionRepository:
             code = _connection_error_code(exc)
             raise RepositoryUnavailable(f"PostgreSQL connection failed [{code}]") from exc
         try:
+            if self._historical_views is not None:
+                conn.read_only = True
             yield conn
         finally:
             conn.close()
@@ -1312,6 +1326,8 @@ class ProductionRepository:
                               effective_at=None, source="quant-terminal", actor_id="system",
                               idempotency_key=None, _connection=None) -> dict:
         """Append one durable event under a transaction-level aggregate lock."""
+        if self._historical_views is not None:
+            raise RepositoryUnavailable("HISTORICAL_REPOSITORY_READ_ONLY")
         self.ensure_schema()
         aggregate_id = str(aggregate_id).strip()
         event_type = str(event_type).strip().upper()
@@ -1402,6 +1418,8 @@ class ProductionRepository:
     def events(self, aggregate_id: str) -> list[dict]:
         """Read one durable aggregate in sequence order for outcome reconciliation."""
         self.ensure_schema()
+        if self._historical_views is not None:
+            return self._historical_views.events(aggregate_id)
         with self.connect() as conn:
             rows = conn.execute(
                 f"SELECT event_id,aggregate_id,sequence_no,event_type,recorded_at,effective_at,"
@@ -1427,6 +1445,8 @@ class ProductionRepository:
     def verify_evidence_ledger_continuity(self) -> dict:
         """Read-only global sequence/previous-hash continuity audit."""
         self.ensure_schema()
+        if self._historical_views is not None:
+            return self._historical_views.audit()
         with self.connect() as conn:
             row = conn.execute(f"""
                 WITH ordered AS (
@@ -1465,6 +1485,15 @@ class ProductionRepository:
         import pandas as pd
 
         self.ensure_schema()
+        if self._historical_views is not None:
+            projected = self._historical_views.matured_decision_rows(
+                strategy_id=strategy_id, target_version=target_version,
+                horizon_sessions=horizon_sessions)
+            frame = pd.DataFrame.from_records(projected.rows)
+            if not frame.empty:
+                frame["target_before_stop"] = pd.array(frame["target_before_stop"], dtype="Int8")
+            frame.attrs.update(projected.attributes)
+            return frame
         with self.connect() as conn:
             pairs = conn.execute(f"""
                 SELECT d.payload,o.payload,d.event_hash,o.event_hash
@@ -1549,6 +1578,8 @@ class ProductionRepository:
     def decision_outcome_records(self) -> list[dict]:
         """Read minimal, row-level readiness facts from the immutable evidence spine."""
         self.ensure_schema()
+        if self._historical_views is not None:
+            return self._historical_views.decision_outcome_records()
         with self.connect() as conn:
             rows = conn.execute(f"""
                 SELECT d.payload,d.recorded_at,o.payload,o.recorded_at
@@ -1650,3 +1681,4 @@ class ProductionRepository:
             "targets": int(row[2]), "mf_nav_rows": int(row[3]), "last_successful_collection": row[4],
             "ledger_events": int(row[5]),
         }
+

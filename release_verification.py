@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
+from collections.abc import Iterator
+import time
 import hashlib
 import json
 import os
@@ -13,6 +16,27 @@ import zipfile
 
 
 MANIFEST = "SHA256_MANIFEST.json"
+
+
+@contextmanager
+def _verification_workspace() -> Iterator[str]:
+    """Clean only this invocation's temporary directory with bounded lock retries.
+
+    Windows can briefly retain child process/antivirus handles after communicate.
+    Permanent cleanup failure is still an error; never ignore it or relax imports.
+    """
+    workspace = tempfile.TemporaryDirectory(prefix="quant-release-check-")
+    try:
+        yield workspace.name
+    finally:
+        for attempt in range(20):
+            try:
+                workspace.cleanup()
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.05)
 
 
 def safe_member(root, name):
@@ -78,7 +102,7 @@ def release_members(root, seeds):
         tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=name)
         module = reverse.get(name, "")
         package = module if path.name == "__init__.py" else module.rpartition(".")[0]
-        requested = []
+        requested: list[str] = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 requested.extend(alias.name for alias in node.names)
@@ -156,7 +180,7 @@ def verify_archive(archive, *, timeout=120):
     environment; requirements/constraints travel with the release. This is not
     a bundled Python interpreter or a provider/authenticated functional test.
     """
-    with tempfile.TemporaryDirectory(prefix="quant-release-check-") as temporary:
+    with _verification_workspace() as temporary:
         home = Path(temporary)
         extracted = home / "bundle"
         extracted.mkdir()
@@ -199,11 +223,12 @@ def verify_archive(archive, *, timeout=120):
                 # Windows venv launchers can have a child interpreter holding the
                 # extraction directory open. Stop this specific process tree
                 # before removing its temporary files, not just the launcher.
-                if os.name == 'nt':
+                if os.name == 'nt' and process.poll() is None:
                     subprocess.run(
                         [str(Path(os.environ['SystemRoot']) / 'System32' / 'taskkill.exe'),
                          '/PID', str(process.pid), '/T', '/F'],
-                        capture_output=True, timeout=10, check=False)
+                        capture_output=True, timeout=10, check=False,
+                        creationflags=subprocess.CREATE_NO_WINDOW)
                 if process.poll() is None:
                     process.kill()
                 process.communicate(timeout=10)
@@ -211,3 +236,4 @@ def verify_archive(archive, *, timeout=120):
             if process.returncode != 0 or "RELEASE_IMPORT_VERIFIED" not in stdout.splitlines():
                 raise RuntimeError("Extracted release import failed; release not published\n" + stderr[-12000:])
         return {"files": len(manifest), "import_verified": True}
+
