@@ -364,16 +364,21 @@ def _temporary_spool(parent: Path) -> Iterator[Path]:
 
 @contextmanager
 def capture(connect: Callable[[], sqlite3.Connection], keys: Mapping[str, bytes], *,
-            spool_parent: Path) -> Iterator[StateSnapshot]:
+            spool_parent: Path, include_terminal_intents: bool = False) -> Iterator[StateSnapshot]:
     """Copy five tables in one SELECT-only transaction; close it before yielding.
 
     A private existing spool directory is explicitly required. The caller must
     establish its ACL/disk capacity; this is not a live deployment mechanism.
     Bounds never truncate to a passing prefix. All originals must have a proved
     equity delivery intent; legacy/local-only intent needs a later adapter.
+    The explicit six-table adapter uses include_terminal_intents=True; its eager
+    bounded copy runs in this SAME source transaction before rollback/close.
+    The original five-table witness and validation are unchanged.
     """
     source: sqlite3.Connection | None = None
     spool: sqlite3.Connection | None = None
+    if type(include_terminal_intents) is not bool:
+        raise StateRecoveryError('STATE_CAPTURE_SCOPE_INVALID')
     if not spool_parent.is_dir() or spool_parent.is_symlink() or spool_parent.is_junction():
         raise StateRecoveryError('STATE_PRIVATE_SPOOL_REQUIRED')
     with _temporary_spool(spool_parent) as temporary:
@@ -420,6 +425,9 @@ def capture(connect: Callable[[], sqlite3.Connection], keys: Mapping[str, bytes]
                         spool.execute('INSERT INTO requests VALUES(?,?,?)',
                                       (row['idempotency_key'], _encode([row['idempotency_key']]), request))
                     spool.execute('INSERT INTO records VALUES(?,?,?,?)', (position, table, identity, body))
+            if include_terminal_intents:
+                from terminal_intent_snapshot import capture_into
+                capture_into(source, spool, deadline)
             source.rollback()
             source.close()
             source = None

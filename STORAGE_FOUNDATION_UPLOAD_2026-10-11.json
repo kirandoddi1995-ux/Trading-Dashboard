@@ -1,0 +1,101 @@
+{
+  "version": "storage-foundation-upload-v1",
+  "groups": {
+    "foundation": [
+      {
+        "source": "local_state_recovery.py",
+        "destination": "local_state_recovery.py",
+        "sha256_lf": "178c4e707fb132d3227852d28fcc2a4dd895163754f40f620b543779425b0efd"
+      },
+      {
+        "source": "terminal_intent_snapshot.py",
+        "destination": "terminal_intent_snapshot.py",
+        "sha256_lf": "99b65e969fb46953fb84e249f0fd62048657db257f936a7f1df79773d62713c5"
+      },
+      {
+        "source": "storage_native_conformance.py",
+        "destination": "storage_native_conformance.py",
+        "sha256_lf": "8bb8eedc1ea2be6d4b4110f46e967356b390ca5154d6056ee327942e11f15ac3"
+      },
+      {
+        "source": "reviewed_upload_check.py",
+        "destination": "reviewed_upload_check.py",
+        "sha256_lf": "5e844eb78808bedadb9fc66daa25c750b978d49d0c3b0ff3bd04db10ae08252c"
+      },
+      {
+        "source": "tests/test_terminal_intent_snapshot.py",
+        "destination": "tests/test_terminal_intent_snapshot.py",
+        "sha256_lf": "f6196962f875ad7893a07b1eaaa479aab3fd0bc1a1ce4d66fdc84f65f24a8bc2"
+      },
+      {
+        "source": "tests/test_storage_native_conformance.py",
+        "destination": "tests/test_storage_native_conformance.py",
+        "sha256_lf": "7c40c068f882f39dd670c0fc1dbe8e9b893ef0a5e365877fa6f9bc6721234d20"
+      },
+      {
+        "source": "tests/test_reviewed_upload_check.py",
+        "destination": "tests/test_reviewed_upload_check.py",
+        "sha256_lf": "87f0549aba59357b575979c2264ca8846f86f61f58e72a780747e852fa627140"
+      },
+      {
+        "source": "sql/storage_native_fixture_disposable_only.sql",
+        "destination": "sql/storage_native_fixture_disposable_only.sql",
+        "sha256_lf": "34af2edf4504e80633f7b092fb5b95538455e621c9648291c8676f4ea6ed14d6"
+      },
+      {
+        "source": ".github/workflows/storage-native-conformance.yml",
+        "destination": ".github/workflows/storage-native-conformance.yml",
+        "sha256_lf": "88034d1dddc1566ef725d877da69257d1a15f26069cb3535761badd9f4996bce"
+      },
+      {
+        "source": "RUNTIME_PASSWORD_ROTATION_OWNER.md",
+        "destination": "RUNTIME_PASSWORD_ROTATION_OWNER.md",
+        "sha256_lf": "0208fd7f7dada72f1f46e87aa8728f7eb342cd5cf5f607ab2d221e8c3a3b0f60"
+      },
+      {
+        "source": "STORAGE_FOUNDATION_2026-10-11.md",
+        "destination": "STORAGE_FOUNDATION_2026-10-11.md",
+        "sha256_lf": "a8faf3de1e12150127e0655f8bc853d14f576dbcb985684abea822b7b591745d"
+      },
+      {
+        "source": "STORAGE_NEXT_UPLOAD_2026-10-11.md",
+        "destination": "STORAGE_NEXT_UPLOAD_2026-10-11.md",
+        "sha256_lf": "464bab7d1f5872675c07aa78a88a4bade96ffc28df5893a4d7ac5d54b13976b3"
+      },
+      {
+        "source": "AUTOMATION_PROGRESS.md",
+        "destination": "AUTOMATION_PROGRESS.md",
+        "sha256_lf": "2815b7d6b4cbda809b4169836f7e79323f53094729c4833d66cc249324801962"
+      },
+      {
+        "source": "STORAGE_FOUNDATION_UPLOAD_2026-10-11.json",
+        "destination": "STORAGE_FOUNDATION_UPLOAD_2026-10-11.json",
+        "sha256_lf": null
+      }
+    ]
+  },
+  "prerequisites": {
+    "foundation": [
+      {
+        "destination": "storage_write_guard.py",
+        "sha256_lf": "28cebb83f4587c664cfda9c06a39b9b3dffd352fbd2ab3ef7dee7c8788c3d0e3"
+      },
+      {
+        "destination": "collector_storage_preflight.py",
+        "sha256_lf": "0c9849afa75e286b1f2adc3c582abec3a8d1587cb31227b835f68aa8cc022a2f"
+      },
+      {
+        "destination": "finalization_intents.py",
+        "sha256_lf": "eb4725bedba236cf622b022ec1d61536530a9340e8e290c7db2055d4b1276452"
+      },
+      {
+        "destination": "operational_receipt_history.py",
+        "sha256_lf": "f0a27b9988ce39b9f8489ce9765f837b01efc4ac2b6cf4603fd8da9835fb5ace"
+      },
+      {
+        "destination": "evidence_ledger.py",
+        "sha256_lf": "6c410ee20bf664552e0ac42845fb995d652dc1e6488ddf8bfe66dadabd930669"
+      }
+    ]
+  }
+}
