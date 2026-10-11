@@ -74,6 +74,7 @@ def test_only_specific_native_workflow_allowed() -> None:
     assert check.relative(check.NATIVE_WORKFLOW) == check.NATIVE_WORKFLOW
     assert check.relative(check.FOUNDATION_MANIFEST) == check.FOUNDATION_MANIFEST
     assert check.relative(check.REPAIR_MANIFEST) == check.REPAIR_MANIFEST
+    assert check.relative(check.LEDGER_MANIFEST) == check.LEDGER_MANIFEST
     for name in ('.github/workflows/other.yml', '.github/workflows/../secrets.yml',
                  'other.json', '.github/secrets.py'):
         with pytest.raises(ValueError):

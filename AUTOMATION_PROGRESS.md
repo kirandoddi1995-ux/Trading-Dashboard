@@ -1,5 +1,50 @@
 # Automation foundation — continuity record
 
+## Current checkpoint — 11 October native ledger/archive acceptance package
+
+Owner reports Uploads 1–4 merged green and original six native capacity cases
+passed on main affeb07, hosted_changes 0. Prior native-runner acceptance is no
+longer pending. Installed capture/tasks, scan-only recurrence, release hold and
+expectations unchanged. Owner dashboard 394 MB/500 is not a fresh SQL measurement.
+
+Selected next coherent offline chunk: actual ledger archive transaction acceptance
+before live factories/pruning. One fifteen-file group in STORAGE_NATIVE_LEDGER_2026-10-11.md
+and STORAGE_NATIVE_LEDGER_UPLOAD_2026-10-11.json. Actual reviewed migrations unchanged;
+the clean public candidate lacked those three SQL drafts and archive repository,
+so they are explicitly included in the group, not assumed to exist on main.
+synthetic disposable fixture executes them through psql includes. New native runner
+uses actual archive/publication/cold-reader code; eight cases cover identity,
+incomplete delete rollback, root CAS, both append/archive orderings, competing
+archivers, accepted-COMMIT lost reply and pre-COMMIT rollback. Concurrent cases
+require exact pg_blocking_pids dependency, not a timing-only assertion. Restricted
+connector adds only fixed runtime/archiver fixture roles; default remains unchanged.
+Public diagnostics are fixed case/category/completed names; never raw driver text.
+
+No hosted changes, GitHub writes, private credential reads, installed capture
+changes, research data reads, gate loosening or expectation changes. No native
+PostgreSQL binaries on PATH; Docker Linux engine absent. Native acceptance still
+requires one owner disposable workflow on the exact green merged SHA. In-memory
+objects are not independent custody; COMMIT injection is not TCP chaos. Full
+ledger_archive_races_verified/global_enforcement_commissioned remain false;
+immutable operational receipts/fencing takeover/full-image six-table custody,
+all-writer wiring, bounded retention and independently delivered alerts remain open.
+
+Validation complete: exact public candidate focused suite 127 passed; full suite
+2971 passed, 4 unchanged skips, 2 subtests passed in 291.37 seconds (previous 2945
+passed; 26 added, none removed). Synthetic app boot is included. Recursive public
+tree pyflakes, strict mypy on seven Python files, imports and zero-I/O preview
+passed. Serial signed archive/cold reconstruction, missing object failure, cold
+frontier append and both COMMIT fault paths passed in PGlite, NOT native. Self-review
+fixed the missing local-only package dependencies and removed reliance on held
+local SQL-harness methods; tests now run against the actual frozen public harness.
+All fifteen source/destination hashes and twelve unchanged prerequisite hashes
+verified; actual clean-main Git-base rehearsal/merged-SHA CI remain owner steps.
+Public candidate fingerprint remains unchanged:
+03ad7baa68ebaad1f64b1cd3c356455e1c18cb8f23f027652de303b64b4f8478.
+No expectation update is proposed. No further actionable self-review issue found.
+Owner steps: one complete PR then one disposable manual workflow; no
+Supabase SQL/capture installation/Streamlit secret or release changes for this group.
+
 ## Current checkpoint — 11 October disposable native runner repair
 
 Owner reports Upload 3 merged and disposable native workflow blocked in one second;

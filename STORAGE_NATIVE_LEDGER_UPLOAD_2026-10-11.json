@@ -1,0 +1,146 @@
+{
+  "version": "storage-native-ledger-upload-v1",
+  "prerequisites": {
+    "native_ledger": [
+      {
+        "source": "sql/storage_native_fixture_disposable_only.sql",
+        "sha256_lf": "34af2edf4504e80633f7b092fb5b95538455e621c9648291c8676f4ea6ed14d6",
+        "destination": "sql/storage_native_fixture_disposable_only.sql"
+      },
+      {
+        "source": "ledger_archive_publication.py",
+        "sha256_lf": "9cfab58682f8a9c02a8a7f9d1c3d14c285780be813a4c684023fe45990289e71",
+        "destination": "ledger_archive_publication.py"
+      },
+      {
+        "source": "ledger_runtime_reader.py",
+        "sha256_lf": "af95e5b45f34bf35c621cb20c11591f993573510c57c886360d7f65e934bf6c7",
+        "destination": "ledger_runtime_reader.py"
+      },
+      {
+        "source": "ledger_source_capture.py",
+        "sha256_lf": "93a22673cacf43ba377ce0dc2e8468930fdb5e6c7cbcf1617e23e2c185298f59",
+        "destination": "ledger_source_capture.py"
+      },
+      {
+        "source": "ledger_read_contract.py",
+        "sha256_lf": "9140c838d159670cf4db9ac281d7cd2c2d48a16a8b9f4923fe2479695aa7bdc6",
+        "destination": "ledger_read_contract.py"
+      },
+      {
+        "source": "ledger_history_stream.py",
+        "sha256_lf": "564975f27d362080d6e76a1d8cd746fa7763d44231c68ac916a0a56b01530a21",
+        "destination": "ledger_history_stream.py"
+      },
+      {
+        "source": "ledger_cold_store.py",
+        "sha256_lf": "79ce962bd079d9335e03fd8c8a09caee9a19ec94e5e9d8aa27fce51ee04abeb0",
+        "destination": "ledger_cold_store.py"
+      },
+      {
+        "source": "ledger_segments.py",
+        "sha256_lf": "7c398d9ba268ad52a99a35ff0cdac190d66346a196e0b77798b6a5afa5311023",
+        "destination": "ledger_segments.py"
+      },
+      {
+        "source": "cold_catalog.py",
+        "sha256_lf": "4753cab1ca61ff551284c75b1a8004be41b5712ab8534bde9981b1272de7ff8a",
+        "destination": "cold_catalog.py"
+      },
+      {
+        "source": "catalog_receipts.py",
+        "sha256_lf": "ff0608df2cd2efa8feec3749a045c173fc3a6ec40fe46b8d86f439f57cb0e5d2",
+        "destination": "catalog_receipts.py"
+      },
+      {
+        "source": "evidence_ledger.py",
+        "sha256_lf": "6c410ee20bf664552e0ac42845fb995d652dc1e6488ddf8bfe66dadabd930669",
+        "destination": "evidence_ledger.py"
+      },
+      {
+        "source": "storage_write_guard.py",
+        "sha256_lf": "28cebb83f4587c664cfda9c06a39b9b3dffd352fbd2ab3ef7dee7c8788c3d0e3",
+        "destination": "storage_write_guard.py"
+      }
+    ]
+  },
+  "groups": {
+    "native_ledger": [
+      {
+        "source": "storage_native_conformance.py",
+        "sha256_lf": "e1fd0b414a336a0823ba89a89e05faa1c010c3f8876f503833a977ca65a5644c",
+        "destination": "storage_native_conformance.py"
+      },
+      {
+        "source": "storage_native_ledger_conformance.py",
+        "sha256_lf": "9912d6bd3084419b62fc4f6a792766a92de9ce040c52fed7ed483587c15682dc",
+        "destination": "storage_native_ledger_conformance.py"
+      },
+      {
+        "source": "reviewed_upload_check.py",
+        "sha256_lf": "8169ac86e0242454d607660d9720736d0a44e2fa0fdade2c80653d83489bb6fa",
+        "destination": "reviewed_upload_check.py"
+      },
+      {
+        "source": ".github/workflows/storage-native-conformance.yml",
+        "sha256_lf": "22a239927e0507b6f47ff50f46f5475c654e0e7f86770990f64fde09939d2f3c",
+        "destination": ".github/workflows/storage-native-conformance.yml"
+      },
+      {
+        "source": "sql/storage_native_ledger_fixture_disposable_only.sql",
+        "sha256_lf": "d79388f093315d2f1f55a100c16d2b9f76e7054ec81edd30689f810ed85396e4",
+        "destination": "sql/storage_native_ledger_fixture_disposable_only.sql"
+      },
+      {
+        "source": "tests/test_storage_native_ledger_conformance.py",
+        "sha256_lf": "7abc0e34524e0fa78a386b117246aadccfb68f4d0e97ea367716b47583d931bb",
+        "destination": "tests/test_storage_native_ledger_conformance.py"
+      },
+      {
+        "source": "tests/test_storage_native_ledger_upload.py",
+        "sha256_lf": "d7b96a142049d5618cc922758646d40c4f2246b5de8eb7d4a3b759a98bfa8e4e",
+        "destination": "tests/test_storage_native_ledger_upload.py"
+      },
+      {
+        "source": "tests/test_reviewed_upload_check.py",
+        "sha256_lf": "4a124b779ef65eaef458a03d0372fd7cde4d47f23d912cb8d9a2fa1ced579135",
+        "destination": "tests/test_reviewed_upload_check.py"
+      },
+      {
+        "source": "STORAGE_NATIVE_LEDGER_2026-10-11.md",
+        "sha256_lf": "a8500562b14b4472e0b1f5a8cc3fefd481a4a05977ab18b51d9a765fe726ee18",
+        "destination": "STORAGE_NATIVE_LEDGER_2026-10-11.md"
+      },
+      {
+        "source": "STORAGE_NATIVE_LEDGER_UPLOAD_2026-10-11.json",
+        "sha256_lf": null,
+        "destination": "STORAGE_NATIVE_LEDGER_UPLOAD_2026-10-11.json"
+      },
+      {
+        "source": "AUTOMATION_PROGRESS.md",
+        "sha256_lf": "55b64810fdd22946a122725c5e1aa78dcc2b071afffa9e36baff6e64f3dbc573",
+        "destination": "AUTOMATION_PROGRESS.md"
+      },
+      {
+        "source": "supabase/migrations/20261005194922_permanent_storage_control_review_only.sql",
+        "sha256_lf": "415565a7d714e829825464c190bfcdade5a2169a8972da1c96950f61eb937e39",
+        "destination": "supabase/migrations/20261005194922_permanent_storage_control_review_only.sql"
+      },
+      {
+        "source": "supabase/migrations/20261005200414_permanent_storage_ledger_review_only.sql",
+        "sha256_lf": "b9e1d9e6b2351b4c4417cbb8dff9dcd004a5ec5f46bd96b658dc921277ff586f",
+        "destination": "supabase/migrations/20261005200414_permanent_storage_ledger_review_only.sql"
+      },
+      {
+        "source": "supabase/migrations/20261005210149_permanent_storage_heads_review_only.sql",
+        "sha256_lf": "ce437ccd96581f737dbeddac245ff5af876806e322e65f0586d865f932ebc618",
+        "destination": "supabase/migrations/20261005210149_permanent_storage_heads_review_only.sql"
+      },
+      {
+        "source": "ledger_archive_repository.py",
+        "sha256_lf": "2b76ccf3a62d33821668e644ca3de1f230d07c9e72a224d23104509e2300119c",
+        "destination": "ledger_archive_repository.py"
+      }
+    ]
+  }
+}
