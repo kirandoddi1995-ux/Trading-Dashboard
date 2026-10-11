@@ -17,6 +17,12 @@ RUNTIME = ['app.py', 'app_runtime.py', 'scan_jobs.py', 'reliable_charts.py',
            'provider_contracts.py', 'quantitative_services.py', 'iv_surface.py',
            'model_registry.py', 'mf_archive.py', 'risk_engine.py', 'deployment_canary.py',
            'production_repository.py', 'amfi_ingestion.py', 'scheduled_collector.py',
+           # Fingerprinted optional reader sources must exist in the extracted
+           # artifact even when no default app factory activates that reader.
+           'ledger_historical_views.py', 'ledger_historical_repository.py',
+           'ledger_history_consumers.py', 'ledger_history_stream.py',
+           'ledger_runtime_reader.py', 'ledger_read_contract.py', 'ledger_source_capture.py',
+           'ledger_cold_store.py', 'ledger_segments.py', 'cold_catalog.py', 'catalog_receipts.py',
            'trade_contracts.py', 'evidence_ledger.py', 'quant_foundation.py',
            'deployment_security.py', 'environment_preflight.py',
            'resilience_control_plane.py', 'resilience_acceptance.py',

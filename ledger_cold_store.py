@@ -7,13 +7,13 @@ to delete source rows.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 import re
 
 from cold_catalog import Catalog, CatalogPatch, identity
 from ledger_segments import Head, SealedSegment, restore, seal, verify_records
-from evidence_ledger import GENESIS_HASH
+from evidence_ledger import GENESIS_HASH, canonical_json
 
 HEX = re.compile(r"[0-9a-f]{64}")
 MAX_BATCH_ROWS = 900  # 2 identities/event + bounded frontier metadata fits 2000 updates.
@@ -220,11 +220,21 @@ class ColdLedger:
 
     def events(self, aggregate: str) -> list[dict[str, object]]:
         """Recover complete cold prefix; unavailability never silently shortens it."""
+        return list(self.iter_events(aggregate))
+
+    def iter_events(self, aggregate: str) -> Iterator[dict[str, object]]:
+        """Read oldest first with only one decoded segment resident at a time.
+
+        Exhaust the iterator before trusting a complete history. A later missing
+        object raises, not an apparently successful shortened history. Consumers
+        needing atomic visibility must stage the stream before exposing results.
+        The bounded reverse walk retains digests/boundaries, not event payloads.
+        """
         value = self.catalog.lookup(f"aggregate:{aggregate}")
         if value is None:
-            return []
+            return
         expected, segment = _frontier(value)
-        chunks: list[list[dict[str, object]]] = []
+        chain: list[str] = []
         seen: set[str] = set()
         for _ in range(MAX_READ_SEGMENTS):
             if segment in seen:
@@ -233,15 +243,26 @@ class ColdLedger:
             boundary = _boundary(self.catalog, segment, aggregate)
             if expected != (boundary["after_sequence"], boundary["after_hash"]):
                 raise ColdLedgerError("COLD_FRONTIER_MISMATCH")
-            rows = [row for row in self.segment_records(segment) if row["aggregate_id"] == aggregate]
-            chunks.append(rows)
+            chain.append(segment)
             if boundary["previous_segment"] is None:
-                result = [row for chunk in reversed(chunks) for row in chunk]
-                _unique_identities(result)
-                return result
+                break
             expected = (_number(boundary["before_sequence"]), _hash(boundary["before_hash"]))
             segment = _hash(boundary["previous_segment"])
-        raise ColdLedgerError("COLD_READ_LIMIT_REQUIRES_PAGINATION")
+        else:
+            raise ColdLedgerError("COLD_READ_LIMIT_REQUIRES_PAGINATION")
+        for digest in reversed(chain):
+            for row in self.segment_records(digest):
+                if row['aggregate_id'] != aggregate:
+                    continue
+                locator = {'aggregate': aggregate, 'sequence': row['sequence_no'],
+                           'event_id': row['event_id'], 'hash': row['event_hash'],
+                           'segment': digest}
+                # Global catalog locators replace unbounded identity sets. A
+                # reused ID/key cannot point to both original segment positions.
+                if (self.catalog.lookup(f"event:{row['event_id']}") != locator
+                        or self.catalog.lookup(f"idem:{row['idempotency_key']}") != locator):
+                    raise ColdLedgerError('COLD_DUPLICATE_EVENT_IDENTITY_OR_LOCATOR_MISMATCH')
+                yield row
 
     def duplicate(self, key: str) -> dict[str, object] | None:
         """Restore original event for cold at-least-once retry identity checking."""
@@ -278,4 +299,36 @@ class ColdLedger:
         if terminal != expected_head:
             raise ColdLedgerError("COLD_TERMINAL_HEAD_MISMATCH")
         return rows
+
+    def iter_merged(self, aggregate: str, hot: Sequence[Mapping[str, object]],
+                    expected_head: Head) -> Iterator[Mapping[str, object]]:
+        """Bounded streaming counterpart; complete only after exhaustion.
+
+        Hot SQL snapshots retain the existing 20,000-row / 32 MiB bounds. Cold
+        identities resolve through the pinned catalog; hot identities must not
+        already exist anywhere in that catalog. No network belongs in SQL locks.
+        """
+        sequence, digest = expected_head
+        _number(sequence)
+        _hash(digest)
+        if sequence == 0 and digest != GENESIS_HASH:
+            raise ColdLedgerError('COLD_TERMINAL_HEAD_MISMATCH')
+        if (len(hot) > 20_000
+                or any(row.get('aggregate_id') != aggregate for row in hot)):
+            raise ColdLedgerError('COLD_AGGREGATE_MISMATCH_OR_HOT_LIMIT')
+        if sum(len(canonical_json(row).encode()) for row in hot) > 32 * 1024 * 1024:
+            raise ColdLedgerError('COLD_HOT_BYTE_LIMIT')
+        _unique_identities(hot)
+        heads: dict[str, Head] = {}
+        for row in self.iter_events(aggregate):
+            heads = verify_records([row], heads, self.keyring)
+            yield row
+        for hot_row in hot:
+            if (self.catalog.lookup(f"event:{_text(hot_row.get('event_id'))}") is not None
+                    or self.catalog.lookup(f"idem:{_text(hot_row.get('idempotency_key'))}") is not None):
+                raise ColdLedgerError('COLD_DUPLICATE_EVENT_IDENTITY')
+            heads = verify_records([hot_row], heads, self.keyring)
+            yield hot_row
+        if heads.get(aggregate, (0, GENESIS_HASH)) != expected_head:
+            raise ColdLedgerError('COLD_TERMINAL_HEAD_MISMATCH')
 

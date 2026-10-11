@@ -45,6 +45,10 @@ RELEASE_FILES = (
     "nifty_session_calendar.py",
     "history_freshness.py",
     "release_expectations.py",
+    "ledger_historical_views.py", "ledger_historical_repository.py",
+    "ledger_history_consumers.py", "ledger_history_stream.py",
+    "ledger_runtime_reader.py", "ledger_read_contract.py", "ledger_source_capture.py",
+    "ledger_cold_store.py", "ledger_segments.py", "cold_catalog.py", "catalog_receipts.py",
 )
 
 
@@ -189,3 +193,4 @@ if __name__ == "__main__":
         report["clock_check"] = clock_error(report["clock"], now=dt.datetime.now(UTC),
             maximum_offset=float(policy['clock']['maximum_ntp_offset_seconds'])) or "PASS"
     print(json.dumps(report, indent=2))
+

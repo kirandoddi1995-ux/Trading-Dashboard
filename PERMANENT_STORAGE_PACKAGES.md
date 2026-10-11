@@ -1,6 +1,54 @@
 # Permanent storage implementation — reviewed packages, not one large upload
 
-## Current handoff: 2B2A merged; 2B2B offline export/local checkpoint
+## Current owner upload routine supersedes historical groups below
+
+A/B merged by owner; combine remaining C..L into ONE complete reviewed storage PR
+after the capture/upload-tools PR. Exact paths/check/test lines are now in
+CONSOLIDATED_UPLOADS_2026-10-08.md and REMAINING_UPLOADS_2026-10-08.json.
+This consolidation does not authorize commissioning, hosted changes or promotion.
+
+## Current handoff: 2B2B merged; thirteen offline successor groups
+
+Merged main9ce3af9bcf1e8a64a1e04eb5ba57c40a5080d39f verified by read-only
+public branch/tree. Groups A(6),B(3),C(6),D1(4),D2(10),E(4),F(3),G(3),H(6),I(8),J(3),K(3),L(3) are listed
+exactly in OVERNIGHT_STORAGE_HANDOFF_2026-10-08.md. They finish restart admission/
+extracted-copy verification and add universe/transition shadow primitives, NOT
+live permanent storage commissioning. D1/D2/F add bounded atomic original-history
+reading, segment sealing/readback and explicit consumer adapters; E adds tested
+read-only metadata and volume-lookback inventory. Actual live factories are NOT
+changed. No review-only migration or deletion SQL is in these groups.
+G is a separate Windows timeout-cleanup repair from staged_release_timeout_fix/
+release_verification.py -> ROOT release_verification.py. Do NOT upload the staging
+folder or held dirty root draft.62unique destinations; the exact handoff is
+current upload authority. A..H fingerprint overlap is empty; I DOES change it.
+H adds inactive bounded transaction admission and independent-watch calculations.
+It changes no live writer/alert factory. No expiring reservation, no quota increase,
+no notification account/settings and no claimed global enforcement.
+Independent encrypted custody, full-app
+cut and original/remote/all-reader integration remain on the critical path.
+No hosted, capture, credential or fingerprint expectation change.
+
+Latest A..L checks: clean public2809passed/local3095passed,4unchangedskips,
+2subtests each. Final-source K/L91passed after removing one unused module constant;
+all38new Python strict/all44selected Python lint/imports clean. All13 sequential
+dependency closures passed. Exact results and final file/source exceptions in
+handoff/progress. Usage limit stopped new package work, not permanent completion.
+
+I has three staged PUBLIC-base candidates in staged_historical_repository/,
+mapping to ROOT production_repository.py, equity_runtime_health.py, package_release.py.
+Optional explicit read-only historical mode routes four actual APIs; default live
+factories unchanged, append blocked, external proofs/training still false. Release
+seeds include all new fingerprint members after an extracted-artifact test caught
+a missing source. NEVER substitute held dirty root drafts or update an expectation
+against the old held release. J pins original evidence receipts for five-table
+recovery, not checkpoints/run-fence history, resend/ACK or whole-app restore.
+K adds bounded immutable operational receipt reading; FINAL K files also supply
+the strict canonical intent decoder used by L. L preserves original local terminal
+intents across newer ownership, without live initialization or sender wiring.
+Missing proofs, remote writer provenance and sixth-table coherent restore remain
+gated; neither package authorizes ACKs on the deployed app or ledger pruning.
+
+## Historical handoff: 2B2A merged; 2B2B offline export/local checkpoint
 
 Exact merged main: ed951e2c36ecb5dd6755cf781c72a40b7454bf0d; read-only checks
 confirm quality, resilience and CodeQL successful. RECOVERY_EXPORT_PACKAGE.md
@@ -59,7 +107,7 @@ a plan to discard evidence or tune the parked rules.
 
 The source of truth is the local folder, but it is NOT identical to main. Main
 was initially inventoried at 62508fd50f6d1e363afabc8961857c98afcd5c05; current main
-is now the exact ed951e2 SHA above. Local sources include
+is now the exact9ce3af9 SHA above. Local sources include
 unuploaded runtime changes and SQL drafts. Do not upload by folder selection.
 PERMANENT_STORAGE_LOCAL_INVENTORY.md lists the differences and their stages.
 
@@ -238,11 +286,40 @@ met, analytical worst-case working-set bound, second-copy whole-app restore and
 identical frozen ML dataset hashes. Ten days alone does not prove indefinite
 boundedness. Only then expand remaining collection modes and F&O one at a time.
 
+## Overnight 8 Oct local successor groups
+
+Current exact upload authority is the handoff's A..L thirteen groups /62 paths.
+K adds offline immutable original operational receipt history (3new paths) after
+J. Missing receipt never becomes authenticated absence; actual atomic remote
+writer/fence/capacity/retention commissioning remains open. See
+OPERATIONAL_RECEIPT_HISTORY_PACKAGE.md. Older A/B/C descriptions below are history,
+not the final upload list. No live factory/fingerprint/capture/hosted changes.
+L adds inactive original terminal-intent journaling (3new paths), after FINAL K's
+canonical decoder/identity additions. No live local schema installation or sender
+wiring; sixth-table coherent recovery and remote original commit proofs remain
+open. See FINALIZATION_INTENTS_PACKAGE.md.
+
+Package 2B2B merged at9ce3af9bcf1e8a64a1e04eb5ba57c40a5080d39f. New three
+offline groups are listed exactly in OVERNIGHT_STORAGE_HANDOFF_2026-10-08.md:
+A/2B2C restart admission and extracted-copy verification (6paths), B/5A lossless
+universe shadow codec (3paths), C/6A peak/partition prerequisite plans+continuity
+(6paths). Their numbering denotes contract areas, NOT live activation readiness.
+They are independently reviewable groundwork; no hosted SQL/deletion, installed
+capture change, runtime wiring or fingerprint expectation update. B/C can be
+built before ledger commissioning but cannot activate pruning ahead of readers.
+
+Existing ledger/factory/publication/SQL drafts remain HELD. Next critical path
+remains actual protected encrypted custody/full-app cut, original/remote recovery,
+all readers/factories and authenticated archival before structural owner cutover.
+The new replica audit deliberately does not certify encryption or physical-device
+independence from mere directory paths. See each new package runbook for exact
+complete upload paths and commands; no whole-folder uploads.
+
 ## What is needed from the owner
 
-Now: review the six-file Package 2B2B group; Packages 1, 2A, 2B1 and 2B2A are merged.
+Now: review the overnight A/B/C groups; Packages 1,2A,2B1,2B2A and2B2B are merged.
 Preserve the current isolated capture/scan-only setup. No hosted action is required
-for 2B2B. Continue existing storage/archive
+for these offline groups. Continue existing storage/archive
 observations; notify a guard failure or unexpected growth without changing limits.
 
 Before Package 3/4: confirm privately whether the original legacy and historical
