@@ -1,6 +1,530 @@
 # Automation foundation — continuity record
 
-## Current: 2B2A merged; 2B2B ready for owner review
+## Capture recovered; consolidated remaining uploads
+
+Owner reports stored folder C corrected to B; existing PC authorized_user can
+access B (owner-only ACL), backup-only REMOTE_VERIFIED 1/74, supervised 10:20 poll
+2/73, first automatic 10:30 success. Poll/audit enabled by owner; prepare disabled.
+No frozen runtime replaced, GitHub credentials untouched. Treat earlier blocked
+capture sections below as historical, not current status.
+Owner reports storage A/B merged, current main at B merge (SHA not supplied).
+New CONSOLIDATED_UPLOADS_2026-10-08.md supersedes old one-group-at-a-time order:
+Upload1 capture recovery + advisory exact-upload checker (14 paths), Upload2
+complete C..L storage union (53 paths, staged G/I mapped to public roots).
+REMAINING_UPLOADS_2026-10-08.json pins normalized source hashes. Checker uses
+owner's actual clean clone base; old pinned inventory remains unchanged.
+New reviewed_upload_check.py/tests are deterministic/offline/read-only. No branch,
+commit, GitHub/hosted/installed/task/settings changes made. Owner after-close audit,
+backup original code/state, disable tasks and between-session diagnostic-job
+installation precede fresh tomorrow pre-open owner-file preparation and supervised
+poll. Optional pythonw action only after accepted future slot; no hidden launcher
+or scheduler settings changed by agent. Full storage commissioning remains open.
+Final consolidated focused commands: capture136passed35.62s (source-frozen final),
+storage547passed74.12s in the known clean public A..L overlay with pinned disposable
+SQL harness. Upload checker11passed0.10s, strict typing/lint/import PASS.
+No full suite rerun for today's packaging changes; full exact-PR/main CI remains
+required. The known public overlay is NOT a claim to have inspected the owner's
+new B merge SHA. Exact source hashes and prerequisite A/B/Upload1 identity checks
+are pinned in the manifest; owner actual clean base command verifies that tree.
+Prior K/L full suites are historical references. Self-review completed; no known
+new behavior defect identified. No running tests after final package verification.
+
+## PC Drive folder diagnosis follow-up
+
+Owner probe: DRIVE_FOLDER_CHECK / DRIVE_HTTP_404; tasks disabled, evidence intact.
+Reported A has working GitHub archive objects and a service-account writer, B
+empty from a later authorization, C manually created. No OAuth identity inferred
+from ACL/ownership; connector inventory not exhaustive (Trash excluded).
+New separate four-path additive package: forward_drive_folder_check.py,
+tests/test_forward_drive_folder_check.py, FORWARD_DRIVE_FOLDER_SELECTION.md,
+this continuity update. Hidden local A/B/C/NONE comparison reads only folder entry;
+explicit candidate check reads only current OAuth and checks access, no writes.
+Prefer same PC credential and accessible B, else accessible A; keep GitHub untouched.
+Owner-only wrapper uses existing credential APIs to change only folder after
+successful actual-client check; no frozen code replacement or config bypass.
+No credential/private-data reads, network checks, installed-folder or hosted
+changes performed by agent. Final focused regression: 39 passed in 12.27s;
+strict mypy on two new Python files PASS, pyflakes PASS, import and offline
+preview PASS. Includes mocked execution of the owner-only folder update wrapper:
+folder check failure writes nothing, successful check writes only folder entry,
+readback failure reports uncertainty without exposing values. Self-review found
+no further actionable issue. Full suite not rerun; full clean-main PR CI required.
+
+## Owner capture incident — 8 October supervised poll
+
+New separate seven-path diagnostics package: forward_nifty_job.py modified,
+forward_drive_probe.py new, tests/test_forward_capture_diagnostics.py new,
+tests/test_forward_drive_probe.py new, FORWARD_DRIVE_RECOVERY_2026-10-08.md new,
+forward_capture_diagnostics.py new, this continuity file modified.
+Independent of thirteen pending storage groups.
+Installed capture/state/credentials/hosted resources untouched. Owner reports
+one local observation/context and no remote receipt. Original stage unknown:
+local bundle validation, Drive check/publication, receipt or cleanup possible.
+No token-expiry conclusion or credential equality asserted. Keep recurrence
+disabled pending owner same-user folder probe and supervised backup-only.
+Today's config freezes the job's transitive code hashes. Owner may install ONLY
+the standalone probe/helper beside old code today; leave old job intact for
+today's backup and future polls. Deploy changed job between sessions then fresh
+prepare; never rewrite the old config to bypass frozen identity.
+Code now records fixed sanitized stages/categories and commit/verify/write flags;
+cleanup preserves primary errors. No local-only mode, new retries or widened
+window/guards. Preview and offline tests do not access credentials/network.
+Final package focused suite: 108 passed in 39.08s, no skips, EXIT0. All five
+Python source/test files strict mypy PASS and pyflakes PASS. Three module imports
+PASS; actual probe PREVIEW returned zero reads/network/writes. No --check or
+backup/capture invoked. Full suite not rerun for this small capture package;
+owner clean-main PR full CI required. Earlier K/L full counts below do not
+certify this change. One interim run hit a frozen-source fixture mismatch while
+source edits were still occurring (106 pass/1 error); source-frozen reruns pass.
+Peer caught post-commit bundle failure falsely reported as commit=false: fixed
+with unknown/null during record_poll and actual persisted-row regression.
+Self-review caught mid-session job replacement breaking source freeze: fixed
+with additive standalone probe/helper, old-job backup today, new job next session.
+
+## Latest checkpoint — K/L ready; goal usage-limited, not complete
+
+get_goal reports status usageLimited (not complete; do not change to paused or
+blocked). No new package started after learning this. Final clean-public46892
+EXIT0:2809passed,4unchangedskips,2subtests495.81s. Local35031 EXIT0:
+3095passed,4unchangedskips,2subtests644.69s. No tests remain running. Source tidy-up
+removed one unused field-list constant in L after full collection;
+affected final-source K/L91passed2.63s (Lalone34passed2.58s), strict/lint clean.
+No assertions/cases/skips removed. Public overlay gets final source/doc copies.
+M same-transaction six-table design is recorded below, NOT implemented. Resume
+from it when usage permits; do not mistake this stop for permanent completion.
+
+## Continuation detail — K/L original terminal-intent recovery
+
+Current order A -> B -> C -> D1 -> D2 -> E -> F -> G -> H -> I -> J -> K -> L:
+THIRTEEN groups /62 unique destinations. NONE uploaded by owner. K revised final
+files export bounded canonical request identity/decoder; upload them before L.
+L new finalization_intents.py, tests/test_finalization_intents.py,
+FINALIZATION_INTENTS_PACKAGE.md preserve original local terminal intents across
+new ownership. No active sender imports, real-state initialization, live writes,
+capture/credential/holdout/settings changes. A..J fingerprint remains unchanged.
+
+K first full clean-public97034:2762passed,4unchangedskips,2subtests378.01s EXIT0;
+local58905:3048passed,4unchangedskips,2subtests559.69s EXIT0. Those results PRECEDE
+K request-decoder additions and L; not claimed as final K/L full validation.
+K/L FINAL focused181passed9.48s. All38new Python source/test strict PASS; all44
+selected Python paths lint PASS; K/L import-only probe PASS. Final read-only peer
+review finds no remaining actionable defect. K/L sequential exact-public package
+closure checks PASS/empty blockers with A..J preceding overlay. Pinned public
+baseline unchanged. Recomputed reviewed dashboard hash still
+03ad7baa68ebaad1f64b1cd3c356455e1c18cb8f23f027652de303b64b4f8478.
+FINAL K/L full public46892/local35031 passed (top record). All tests finished.
+Earlier results below remain historical.
+
+Peer found journal PK/request substitution and summary parsing gaps: fixed with
+identity-binding before ACK/pending, pre-fetch64KiB summary bound, strict shared
+UTF8/depth/node/duplicate/nonfinite decoder. Later numeric exponent overflow also
+rejected by finite parse_float callback. New retained ACK time/idempotence and
+row/byte capacity gates. Long pytest parameter name caused3 synthetic fixture
+errors; stable short IDs fixed without skipping/removing cases.
+
+L logical cap20,000intents/32MiB request bytes,4KiB/intention,50pending batch.
+All mutations require caller TX; no implicit commit/rollback. ACK never marks newer
+job finalized from older receipt. Missing proof stays missing. Old five-table
+witness DOES NOT certify the new sixth table. Full cross-file/six-table source cut,
+authenticated remote atomic writer and live sender integration remain engineering.
+
+## Previous continuation — K immutable operational receipt history
+
+Owner has uploaded NONE of A..K. A..J runtime source remains unchanged. K adds
+operational_receipt_history.py, tests/test_operational_receipt_history.py and
+OPERATIONAL_RECEIPT_HISTORY_PACKAGE.md, after J: twelve groups /59 destinations.
+No production fingerprint/import changes. Installed capture and all hosted holds
+untouched. No credential/private/holdout reads. No writer or schema activated.
+
+K verifies bounded signed artifacts before exposing indexed original checkpoint
+and terminal-run receipts, preserving old tokens after newer ownership. Missing
+receipt UNAVAILABLE (never absence); no current-row backfill, resend/ACK/restore.
+Original atomic writer provenance remains a commissioning gate, not proved by HMAC
+alone. Native PostgreSQL executables absent from PATH and Program Files; do not
+relax ownership/race proofs to make PGlite pass. No install/hosted action performed.
+
+Focused K+J+five-table recovery FINAL:134passed13.66s; two new files strict mypy/pyflakes
+PASS. New tests44 (included in134). K exact-public dependency closure PASS,
+empty blockers, prior A..J overlay included; pinned baseline unchanged.
+Full public/local frozen FINAL rehearsal running (IDs follow in next checkpoint). Earlier
+public24842 cancelled after copy paths used overlay cwd by mistake; no passing
+result claimed. Public76146/local95560 cancelled for peer-review budget fixes;
+20669/12443 cancelled for UTF16/32 preflight fix. No passing full result claimed
+from those runs. Independent read-only peer review found late allocation budgets
+and an alternate-encoding lexical bypass; both fixed with tests. Final peer review
+finds no actionable defect. Native writer/old terminal local-contract limits
+explicit and tested; no claim of complete recovery or commissioning.
+
+Next remains actual SAME-transaction immutable receipt writer + cross-file cut,
+cold-aware append/default factories/native races, universe/source-specific readers
+and retention, all-writer admission/alerts, measured steady state/full restore.
+Permanent solution NOT complete and not owner-only remaining work.
+
+Next M design reviewed read-only (NOT implemented yet): extend existing five-table
+capture with a narrowly scoped eager journal capture BEFORE source rollback/close,
+using the SAME SQLite read TX and deadline, separate bounded journal spool/witness.
+Preserve original StateWitness/TABLES/_validate and current-token equality. Do not
+copy/reimplement five-table validation or read the sixth table in a second source
+transaction. Authenticate independently supplied bundle checkpoint/contract/keys
+and COMPLETE primary.sqlite identity BEFORE opening SQLite; after capture remeasure
+that identity before exposure. Require protected standalone image/no applicable
+WAL/journal/links/replacement; digest equality alone cannot prove ABA immutability.
+Bind separate journal witness to the authenticated image/checkpoint. Old journal
+ACK remote receipts verified separately; never justify newer local finalization.
+This is one-image offline scope, not a generic multi-file freeze or whole-app proof.
+
+## Prior morning boundary — eleven reviewed local upload groups ready
+
+Order A6 -> B3 -> C6 -> D1(4) -> D2(10) -> E4 -> F3 -> G3 -> H6 -> I8 -> J3:
+56unique repository destinations. COMPLETE paths/source exceptions are in
+OVERNIGHT_STORAGE_HANDOFF_2026-10-08.md. G staged source maps to ROOT; I's three
+PUBLIC-main-only staged candidates map to ROOT. Dirty root drafts remain HELD.
+No upload, hosted/capture/credential/holdout/settings change this session.
+
+FINAL runtime-source rehearsals: public95503 EXIT0:2718passed,4unchangedskips,
+2subtests411.96s; local76507 EXIT0:3004passed,4unchangedskips,2subtests595.67s.
+Actual extracted import/OIDC/AppTest/release probes included. All34NEW Python
+source/test files strict types PASS; all40selected Python paths lint PASS. Final
+publication test annotation/monkeypatch-typing tidy-up AFTER full collection:
+16passed2.05s separately; no assertion/case/skip removed. Runtime sources unchanged
+after final collection. D1/F/I/J135passed15.20s. All eleven sequential exact-public
+package closures PASS/no blockers with preceding overlays. Pinned baseline intact.
+
+Reviewed clean-public A..J dashboard fingerprint:
+03ad7baa68ebaad1f64b1cd3c356455e1c18cb8f23f027652de303b64b4f8478.
+A..H alone unchanged public manifest. I changes fingerprint members + archive
+seeds. Do NOT update Streamlit against old held release. Owner supervised green
+exact-SHA promotion/hash handover only (HISTORICAL_REPOSITORY_PACKAGE.md).
+Default live factories/collector fingerprint unchanged; installed capture untouched.
+These working-folder edits must not be copied into its installation.
+
+Self-review fixed bounded-read error suppression/replacement, mixed-cut audits,
+unknown-as-loss projection, raw-return/excess confusion, unverified claim/origin
+flags, missing extracted fingerprint sources and new-test annotations. Native
+ownership/hardware/custody NOT claimed. Pre-existing DEFAULT hot dataset unknown
+label/excess/proof-claim semantics need dedicated repair before ANY production ML;
+not silently made safe by optional cold-mode integration.
+
+Next: immutable checkpoint/run-fence receipt history + full cross-file recovery ->
+cold-aware append/default factory/SQL race proof -> universe SQL/PIT shadow adapter
+and non-ledger cold readers/retention -> all-writer admission/independent alerts ->
+bounded workload + independent whole-app restore. Real keys/encrypted independent
+checkpoints/replicas/native SQL setup need owner steps in parallel. No ledger
+pruning, held migration, F&O activation or ML/holdout run authorised. Coherent
+reviewed boundary, NOT permanent completion or owner-only remaining work.
+
+Earlier in-progress sections below are historical, superseded. No tests remain
+running. Preserve all partial/private files and held drafts for later review.
+
+## Authoritative continuation: eleven groups, final rehearsal in progress
+
+Final intended order A6 -> B3 -> C6 -> D1(4) -> D2(10) -> E4 -> F3 -> G3 -> H6
+-> I8 -> J3:56unique destinations. Earlier nine/45 below is historical. Owner has
+uploaded NONE of these groups. Capture installation, credential files, hosted
+state, scan-only recurrence, release hold and sealed periods remain untouched.
+
+Final runtime source frozen in a NEW allowlisted clean-public overlay. Earlier
+34661/81546 rehearsals intentionally cancelled after projection self-review; no
+passing full result claimed. Public95503 and local76507 running. Final projection
+retains raw actual_forward_return, NULL excess without benchmark/net proof, unknown
+source-fixture origin, and NULL labels for mismatched source/horizon/coverage/time.
+All34new Python files strict PASS; all40selected Python files lint PASS. Strict
+sweep caught missing annotations in new publication tests: corrected, separately
+16passed2.05s, no assertion/skip removal. D1/F/I/J135passed15.20s. All eleven
+sequential package closures passed with no blockers using exact public9ce3af9 and
+preceding overlays. Pinned baseline unchanged. Reviewed clean-public fingerprint:
+03ad7baa68ebaad1f64b1cd3c356455e1c18cb8f23f027652de303b64b4f8478.
+AST review: Prod import+sevenmethods only; health RELEASE_FILES only; package
+RUNTIME only. No held code/SQL/state/private values in the overlay.
+
+Frozen PUBLIC95503 EXIT0:2718passed,4unchangedskips,2subtests411.96s. Includes
+actual extracted import/OIDC/AppTest/package probes and all final runtime source.
+Only publication TEST annotations/monkeypatch typing were tidied after collection;
+the final test file independently16passed2.05s and the all34new strict sweep PASS.
+Local76507 still running; never infer its result from the public one. Self-review
+also noted pre-existing DEFAULT hot dataset semantics (unknown->0, raw forward as
+excess, proof flags from claims), deliberately unchanged by optional cold-mode
+integration. Production ML from that path stays uncommissioned. Dedicated semantic
+repair/tests needed before ML; record as engineering follow-up, not owner-only.
+
+H FINAL public63569 EXIT0:2629passed,4unchangedskips,2subtests333.44s. It predates
+I/J and the later F/D1 hardening; do not report it as final eleven-group validation.
+I initial public36734 EXIT1:2692passed,1failed,4unchangedskips,2subtests414.45s.
+Actual extracted-artifact import caught missing fingerprinted optional libraries.
+Fixed by PUBLIC-base staged package_release.py explicit seeds, plus a closure test;
+no import/boot assertion weakened. Earlier local36991 still running, source changed
+during that initial rehearsal, so it cannot be the final frozen-source validation.
+
+I adds OPTIONAL read-only actual ProductionRepository event/audit/readiness/dataset
+APIs and explicit same-database factory. Default factories unchanged; no cold append
+or pruning. Public-main-only candidates staged_historical_repository/{production_repository,
+equity_runtime_health,package_release}.py map to ROOT. Dirty root drafts preserved.
+Projection pins dataset/audit to one cut; labels UNKNOWN/NO_TOUCH stay nullable.
+External PIT/cost/quote proofs, training and production flags remain FALSE even
+for signed complete claims. Historical signatures authenticate references, not
+external business facts. Scope/chronology/quote/quality/source/horizon faults visible.
+
+Self-review F found a source context could suppress or replace a reader/body error
+and return shorter success. Original errors/interruptions now preserved outside
+the wrapper too;10newcases. D1 adds detached unique-index retry lookup;4newcases.
+J supplies original-HMAC evidence receipts for five-table local recovery, pinning
+one complete remote cut; actual synthetic verifier recognizes remote-committed/
+local-unacknowledged events without send/ACK/writes. Checkpoint/run historical
+fence receipt adapters are STILL required, never invented absent callbacks.
+Focused final D1/F/I/J135passed14.28s; six strict typed sources/tests PASS.
+Additional I/factory strict and all selected source lint PASS. Final public34661
+running against frozen corrected A..J; record terminal result before handoff.
+
+I DOES change dashboard fingerprint members and adds explicit release seeds.
+Compute/report hash ONLY in the final clean-public overlay. Do NOT update any
+expectation while held release runs old source. Owner supervised promotion/hash
+handover later. Collector's own fingerprint covers three unchanged sources;
+default repository remains hot. No change to installed capture or its dependencies.
+
+Native independent PostgreSQL/driver race proof unavailable locally (no native
+server accessible); WASM backend0/lockPIDNULL NOT accepted as native proof. No
+new skips or production fence relaxation. No plaintext external-disk copy made.
+
+Still engineering, NOT only owner steps: cross-file app freeze/remote ACK history,
+default cold-aware append factories, protected-root SQL/race proof, universe SQL
+adapter/PIT shadow identity, non-ledger source cold readers and retention, all-writer
+admission wiring, independent alert transport and measured workload/restore.
+No permission for held SQL/pruning/F&O activation; permanent storage not solved.
+Next record final suites/hash/self-review, update exact eleven-group handoff and
+prepare owner custody/native commissioning steps. Continue other safe offline
+engineering while useful; no holdout study/ML fitting before storage gates.
+
+## Overnight 8 Oct: nine local groups; continuing capacity milestone
+
+Current authoritative order A6 -> B3 -> C6 -> D1(4) -> D2(10) -> E4 -> F3 -> G3
+-> H6:45unique repository destinations. Earlier eight/39 wording below is
+historical, superseded. Complete paths in OVERNIGHT_STORAGE_HANDOFF_2026-10-08.md.
+G source is staged_release_timeout_fix/release_verification.py -> ROOT; never
+upload that folder or the held dirty root. All other group files are root/tests/sql
+as explicitly listed. No hosted/capture/key/holdout/fingerprint-setting change.
+
+FINAL A..G clean-public rehearsal82063 EXIT0:2510passed,4unchangedskips,
+2subtests373.92s. It includes ALL uploaded source/tests/resources with held drafts
+excluded and actual public OIDC/AppTest/import/release probes. Local73361 EXIT0:
+2794passed,4unchangedskips,2subtests635.45s; it predates G's2newcases, which passed
+separately. Do not claim local2796 full from that run. Previous failed TEMP
+rehearsals are below for audit, not counted as passing or attributed to CI.
+
+Next H adds inactive same-transaction append admission and independent-watch
+evaluation, not live factory wiring. No expiring reservation can outlive its writer;
+original transaction/held-lock fences, restricted fresh measurements, 24MBfloor
+AFTER declared allocation, uncertain commit reconciliation and bounded PG17 SQL
+timeouts. Watch missing/stale readings and failed/missing/late run receipts alarm;
+flat/negative growth never proves infinite runway. Delivery/authenticated inputs/
+global enforcement remain explicitly false. Native disposable SQL exposed WASM
+backend0/lockPIDNULL; production fence remains strict, harness checks ownership
+UNVERIFIED rather than relaxing it. Explicit pg_catalog qualification added.
+Focused H112passed3.21s, strict5files/lintPASS. Full updated suites/rehearsal must
+finish and be recorded before any final H handoff. Installed capture untouched.
+
+H initial full local83222 EXIT0:2908passed,4unchangedskips,2subtests629.57s.
+Initial H public83550 EXIT0:2622passed,4unchangedskips,2subtests412.41s. Both
+predate self-review's7additional cases (caller-error suppression/replacement,
+uncertain-commit suppression, missing requests). Final H focused119passed5.98s,
+strict5files/lintPASS. Updated public63569 running with final119cases. Never call
+the earlier full runs final119-case validation. Remaining source APIs do NOT prove
+hosted race safety; PostgreSQL WASM has no actual backend lock PID.
+
+Next engineering review: public ProductionRepository still reads hot-only history
+for events, continuity, matured datasets and decision readiness. Connecting a cold
+source there must never permit append against a pruned hot predecessor, mixed-cut
+dataset/audit, unbounded payload lists or fallback on cold failure. Any public
+repository/fingerprint change needs a separately reviewed owner handover, since
+main also runs the collector while Streamlit stays on held release. Do not sneak
+it into these inactive A..H groups. Developing a separate staged candidate is
+allowed locally; current dirty root/installed capture stay untouched.
+
+Other offline integration is still buildable: all production factories and reader
+paths, source/root SQL atomicity, cross-file/local+remote ACK recovery, source
+retention adapters and real all-writer/independent-alert commissioning. No claim
+that storage is permanently solved or that remaining work is only owner steps.
+
+## Historical continuation through eight groups
+
+Current final handoff is A6 -> B3 -> C6 -> D1(4) -> D2(10) -> E4 -> F3 -> G3,
+39 destination paths. G source lives staged_release_timeout_fix/release_verification.py
+and MUST map to ROOT in the clean review clone. G folder and dirty root draft are
+not upload sources. Earlier36/seven-group wording below is historical, superseded.
+
+Additional clean-public rehearsal95993 found12failures caused by omitted TEMP
+public resources(.gitignore/example TOML/dispatcher TS/SQL lockfile), not project
+regressions:2493passed4unchangedskips2subtests327.14s. Correct public resources
+supplied; full clean-public rerun49596 running. One separate unchanged public
+Windows timeout test also reproduced pre-existing launcher-child cleanup race.
+Prepare isolated GroupG: staged_release_timeout_fix/release_verification.py maps
+to ROOT release_verification.py, tests/test_release_timeout_recovery.py and
+RELEASE_TIMEOUT_REPAIR_PACKAGE.md. Candidate based on publicmain, no held cold
+release additions. Specific probe PID/tree termination + bounded TEMP cleanup,
+timeout still hard failure. Two deterministic cleanup tests pass; lint/types clean.
+Dirty root release_verification.py retained and NOT uploaded. No public fingerprint
+member changed by this narrow candidate; no secret/setting/release/capture change.
+
+Publication self-review added unexpected transport/source error redaction while
+preserving the exact original-signature mismatch category and all existing failure
+assertions. Three new cases; focused54passed4.62s, publication strict types PASS.
+Earlier2791fullsuite predates this3-case fix andG2cases; current73361fullsuite
+running against final publication code. No failed rehearsal is counted as passing.
+
+Superseding earlier three-group stopping point: A6 -> B3 -> C6 -> D1(4) -> D2(10)
+-> E4 -> F3, 36 unique paths, in OVERNIGHT_STORAGE_HANDOFF_2026-10-08.md. All seven
+sequential package closures passed against exact public9ce3af9 plus explicit prior
+group overlays. Pinned baseline62508fd deliberately untouched. No hosted/capture/
+credential/holdout/push/expectation changes. These inactive libraries do not change
+the public fingerprint; dirty local runtime hash is NOT a release expectation.
+
+Read-contract/native-decoder extraction keeps cold reading independent of archive
+deletion code. Decoder rejects duplicate JSON fields/non-finite constants. Private
+staging exhausts originals/global identities/terminal heads/final source fence
+before exposure; streamed pairs use indexed reads, not a global external-temp sort.
+Consumers use this contract for original events, retry/verified absence, pairs and
+continuity/HMAC-coverage audits. Compatibility lists capped; unsigned/empty history
+never promoted to complete HMAC evidence. Actual production factories/callers remain
+HELD and unintegrated. Real keys/custody, full-app cut, remote ACK recovery, SQL
+activation/all-reader wiring, source retention and all-writer reservation/alerts
+still required; not claimed owner-only work or permanently solved storage.
+
+Extra held change: ledger_archive_repository.py shares read-contract/SourceCapture
+instead of duplicated code. EXCLUDED from uploads; deletion/SQL package stays held.
+Installed capture folder and all task/collector/release settings untouched.
+
+Continuation through E fullsuite48636 EXIT0:2775passed,4unchangedskips,2subtests,
+635.06s. Clean-public source overlay85focused PASS16.06s, no dirty runtime/private
+configuration copied. Corrected exact-public policy/sidecar copy fixed a TEMP-only
+newline/checksum rehearsal failure; no actual policy edit. Isolated actual public
+OIDC/Settings boot plus16consumer cases18passed16.05s. Strict13continuation files
+and earlier9files PASS; fullroot/tests pyflakes PASS. No tests/assertions removed.
+F16newcases added AFTER that fullsuite collection. Final fullsuite64129 EXIT0:
+2791passed,4unchangedskips,2subtests,555.07s. Frozen final Python code; only docs
+changed during this run. Final selected upload paths all present. Full clean-public
+source/test overlay also running(95993), with held runtime/tests/config excluded;
+TEMP rehearsal missed public.gitignore, detected by an unchanged archive test.
+Public.gitignore supplied and targeted rerun; no project guard/test was weakened.
+Must record that clean-public terminal result and any complete rerun accurately.
+
+Clean-public corrected-resource rerun49596:2504passed,1failed,4unchangedskips,
+2subtests383.79s. Only remaining failure is the unchanged Windows probe-child
+cleanup bug; GroupG addresses it, not an import/timeout gate relaxation. Corrected
+actual clean-public release/timeout/AppTest-focused31227:23passed58.46s. Root
+focused54080:25passed47.18s (root has2additional held cleanup tests). Full final
+public overlay82063 running with ONLY all explicit A..G uploads over verified
+public-main source, no held runtime/tests or real configuration. This final overlay
+includes publication's3 redaction cases andG2cases. Expected counts NOT results.
+Strict14continuation files PASS; G source check-untyped-defs clean. Public fingerprint
+member overlap for modified code(recovery_bundle/ledger_cold_store/release_verification)
+is EMPTY, verified from public AST. No expectation change requested.
+
+Read-only connected metadata check returned database440986771/cluster456260405,
+headroom43739595, query_read_only=on; reportedtimestamp2026-10-07 20:48:44UTC.
+Do NOT claim this old timestamp as a fresh admission decision. Constraints confirm
+quote/volume time-bearing PKs; scanner observation_id global PK with prediction-
+target ON DELETE RESTRICT reference; ledger global event/retry/hash uniqueness.
+No business/holdout rows or secrets read; no hosted changes. Structural runbook
+now prioritizes later quote/volume partition feasibility, NOT blanket scanner/
+ledger partition conversion. Headroom/physical limits and owner custody stillgate.
+
+Self-review fixed duplicate/native JSON parsing, private spool index plans, exact
+local-object retry fsync and caller error preservation; unsigned/empty HMAC caveats
+explicit. Owner steps/runbooks ready; read-only SQL only, no guessed destructive DDL.
+
+Owner requested continued unattended work beyond the three unuploaded groups.
+Those groups remain local and can be revised. Next: bounded cold history reading,
+original-chain verification, reader/caller inventory and offline commissioning
+tests. No hosted/capture/credential/holdout changes are authorised. Earlier 2703
+passing suite describes the first batch, not any subsequent changed code.
+
+Continuation milestone: ColdLedger.iter_events walks bounded digest metadata and
+reads oldest-first one segment at a time; exact catalog event/retry locators reject
+cross-segment reuse without an unbounded payload list. iter_merged adds original
+hot-tail verification and an independently expected terminal. New private SQLite
+history stage exhausts every original before exposure, validates global identities,
+original HMAC/heads and end fence, then streams decision/outcome joins. Held
+LedgerRuntimeReader.staged_history integrates SQL fences with this stage, no cold
+fetch under SQL. Current factories remain untouched/uncommissioned.
+
+LocalObjects is explicit read-only by default, create-only when opted in, with
+bounded digest readback/fsync/exact retry and retained partial-file failures. Full
+seal -> local immutable objects -> restarted reader -> original hashes tested with
+synthetic keys. This does not encrypt, establish independent custody or authorise
+hot deletion. Caller protected-volume/ACL provisioning remains required.
+
+Fifty new focused stream/reader/local-object cases pass; broader existing/new
+original-ledger/reader/archive disposable regression:193passed128.99s,exit0.
+Read-only structural inventory and daily-volume preview added under sql/, NOT
+automatic migrations. Exact preview tested in disposable PostgreSQL with a fixed
+fixture clock:6passed. Preserves20 NON-NULL captured dates per instrument, current/
+future/null rows; dependency/cold-reader/deletion flags all explicitly false.
+All root/tests pyflakes clean; new9source/test strict types plus preview test clean.
+Full final suite, clean-public upload closure/boot, self-review and final grouping
+still pending. Earlier82 new cases plus these56 are not a full-suite result yet.
+
+Owner authorises continued unattended LOCAL work across packages. Main read-only
+branch/tree confirmed 9ce3af9bcf1e8a64a1e04eb5ba57c40a5080d39f,392 entries,not
+truncated (PR10 merge). No hosted writes, credential reads, capture installation,
+task/cron/release/expectation changes or 2025/2026 data inspection. Owner still
+must preserve keys, investigate historical versions and rehearse encrypted disk.
+
+Completed first step: explicit recovery_bundle.admit_proposal authenticates a
+successor against an independently retained predecessor, never claims committed
+restore authority. recovery_proposal reloads complete export files after process
+death, rechecks originals and local head, blocks incomplete/lost/stale/conflicting
+generations, and uses existing commit CAS for safe exact retry. Focused113passed
+(12new+35export+66bundle); strict new bundle/proposal/codec modules PASS. An earlier
+default pytest temp-directory cleanup error was NOT counted as passing; the unique
+temporary-directory rerun exited0. No assertions removed or skips introduced.
+
+Next offline step built: exact-byte universe payload shadow normalization retains
+all supplied header/non-raw column bytes, row order and per-snapshot identities;
+shared raw payload hashes don't merge genuine snapshot identity. Missing/corrupt
+dictionary rows block rather than return partial universes. No live SQL/writer or
+PIT reader integration. storage_transition computes transient quota+physical-disk
+peaks without crediting later savings; preserves24MBcurrentfloor. Partition age,
+half-open IST/UTC intervals, dependency counts and all archive/replica/restore/
+inventory references stay separate from actual authenticated deletion authority.
+Initial focused53passed; final verification/upload groups are recorded below.
+
+Completed next step: recovery_replica_audit checks source + two separately
+extracted Drive/disk copies + source again against independently retained backup
+checkpoint/source witness and original keys. Reject links/overlap/mixed/missing/
+corrupt copies. Encryption/physical independence/checkpoint durability/full-app
+recovery/deletion authority remain explicitly false. Fifteen synthetic tests added.
+Owner encrypted-custody provisioning is not claimed or bypassed. Existing large
+ledger/factory/SQL drafts remain HELD. No automatic migration path additions.
+
+All four new test modules plus five source modules strict mypy PASS. Added typed
+capacity/retirement result contracts; fixed deliberate invalid-input fixture types
+without suppressing checks. Self-review added source-iterator redaction and hash
+collision regression (2additional tests). New behavior total82tests; combined
+focused263passed. Root/tests pyflakes PASS; new-only import check PASS; separate
+isolated synthetic OIDC/Settings AppTest2passed26.86s, no external I/O or private
+configuration. Initial fullsuite42108 exit0:2703passed,4unchangedskips,2subtests
+passed665.53s. During that run only types/test annotation/docstrings were tightened;
+FINAL fullsuite29294 completed against frozen final Python code:2703passed,
+4unchangedskips,2subtests passed615.73s (10m15s), exit0. Exactly82more than the
+2621baseline. No test/assertion removed or additional skip introduced. No test
+process is left running. Only documentation edited after this final validation.
+
+Public baseline dependency checks for all three source groups: no blockers;
+unchanged export/state/catalog/cold_catalog/evidence sources and fixture helpers
+MATCHES_MAIN. Source-only disposable overlay (17explicit .py paths, all other
+runtime drafts/config/private files excluded) passed263tests25.78s independently.
+No deletion of user data/history; temporary synthetic test files only.
+
+Upload instructions ready: groupA/2B2C6files,groupB/5A3files,groupC/6A6files.
+OVERNIGHT_STORAGE_HANDOFF_2026-10-08.md has exact complete paths/order, tests and
+owner key/encrypted-dummy/licence/read-only capacity steps. No hosted SQL is
+prepared as executable approval; old migrations remain held. New pure modules
+do not enter live imports/release fingerprint: no expectation update requested.
+Critical next work remains full-app cut+encrypted independent checkpoint/replica
+custody, original/remote recovery, ALL readers/factories, staged authenticated
+archival and normalized/partition adapters, all-writer admission and measured
+steady-state. These offline primitives do NOT permanently solve hot allocation.
+
+## Historical: 2B2A merged; 2B2B prepared
 
 Owner reports 2B2A exact7-path clean-base rehearsal, focused146 and PR merge at
 ed951e2c36ecb5dd6755cf781c72a40b7454bf0d. Agent read-only GitHub tree389entries,

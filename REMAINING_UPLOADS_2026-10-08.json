@@ -1,0 +1,463 @@
+{
+  "version": "remaining-uploads-v1",
+  "groups": {
+    "capture": [
+      {
+        "source": "forward_nifty_job.py",
+        "destination": "forward_nifty_job.py",
+        "sha256_lf": "05c20428d2a8841faa829b28d9b4a95ecf7387225654dbcea46582a4d00058c1"
+      },
+      {
+        "source": "forward_capture_diagnostics.py",
+        "destination": "forward_capture_diagnostics.py",
+        "sha256_lf": "4ddea2f4b631c581e40933c6f01fcf0f41c960a9b3612e51e8d63b36f12975f8"
+      },
+      {
+        "source": "forward_drive_probe.py",
+        "destination": "forward_drive_probe.py",
+        "sha256_lf": "38f4e3170852730e484f4653e0f1b9d0785e58f532b8c42ff49fd7d056c0187f"
+      },
+      {
+        "source": "tests/test_forward_capture_diagnostics.py",
+        "destination": "tests/test_forward_capture_diagnostics.py",
+        "sha256_lf": "650c42d55f5c938e3bee20fb54db645b3438575854d79595b5f0ccc5e3474d77"
+      },
+      {
+        "source": "tests/test_forward_drive_probe.py",
+        "destination": "tests/test_forward_drive_probe.py",
+        "sha256_lf": "4e2c319589f4332783512bcdc320ed89f4600e7fd3e8cdccf6453b0bb6915b53"
+      },
+      {
+        "source": "FORWARD_DRIVE_RECOVERY_2026-10-08.md",
+        "destination": "FORWARD_DRIVE_RECOVERY_2026-10-08.md",
+        "sha256_lf": "c3b8a4894a05110dbcc502e5a8dda48cb7135ad01e70a2af9ee805f64615927f"
+      },
+      {
+        "source": "forward_drive_folder_check.py",
+        "destination": "forward_drive_folder_check.py",
+        "sha256_lf": "904604471a63882ddbe5805c0d0e4a3c02d61d90f28b9f5f9e46aa848f3d500e"
+      },
+      {
+        "source": "tests/test_forward_drive_folder_check.py",
+        "destination": "tests/test_forward_drive_folder_check.py",
+        "sha256_lf": "c97c4fd6501ee96bf3eabde65082866c242fcc9bae9c60502f285907b32af03d"
+      },
+      {
+        "source": "FORWARD_DRIVE_FOLDER_SELECTION.md",
+        "destination": "FORWARD_DRIVE_FOLDER_SELECTION.md",
+        "sha256_lf": "4c4205b77c05e686ad5cae291db384cb0bd5fd086ce21951c79012b6645a4206"
+      },
+      {
+        "source": "AUTOMATION_PROGRESS.md",
+        "destination": "AUTOMATION_PROGRESS.md",
+        "sha256_lf": "32ab0429c1fa19049d5a404216e6553c71f7afaf3d92266b3958d0872c12fb86"
+      },
+      {
+        "source": "reviewed_upload_check.py",
+        "destination": "reviewed_upload_check.py",
+        "sha256_lf": "256c154fa9be1e7558a8dfa75e17f07505ff1584fbb5c060bbc17966f6f5f9aa"
+      },
+      {
+        "source": "tests/test_reviewed_upload_check.py",
+        "destination": "tests/test_reviewed_upload_check.py",
+        "sha256_lf": "7d1e4cf84a80c21fa4cad6f78f2cdc1b7e2e18835ff542cf8b986ce20462bf97"
+      },
+      {
+        "source": "REMAINING_UPLOADS_2026-10-08.json",
+        "destination": "REMAINING_UPLOADS_2026-10-08.json",
+        "sha256_lf": null
+      },
+      {
+        "source": "CONSOLIDATED_UPLOADS_2026-10-08.md",
+        "destination": "CONSOLIDATED_UPLOADS_2026-10-08.md",
+        "sha256_lf": "595ec8b22fd685f5f17298b905da79d1488b5ca0c03c99ac8a322d5882dea43a"
+      }
+    ],
+    "storage": [
+      {
+        "source": "storage_transition.py",
+        "destination": "storage_transition.py",
+        "sha256_lf": "8a59f960fb34741ff3e3852a70a54620efc013b6acb7fb7da8349475f7727e4f"
+      },
+      {
+        "source": "tests/test_storage_transition.py",
+        "destination": "tests/test_storage_transition.py",
+        "sha256_lf": "c1290c653e45eb52abc2fde88f22d57cddbfc6a73a0118e4f3dd5da6b133a5d7"
+      },
+      {
+        "source": "STORAGE_TRANSITION_PACKAGE.md",
+        "destination": "STORAGE_TRANSITION_PACKAGE.md",
+        "sha256_lf": "33a47217d4133a28abdba55a64cfffcb447ec3d8456c5f47d123b5f4f2fe39de"
+      },
+      {
+        "source": "OVERNIGHT_STORAGE_HANDOFF_2026-10-08.md",
+        "destination": "OVERNIGHT_STORAGE_HANDOFF_2026-10-08.md",
+        "sha256_lf": "869c7a0f769143855e525180ead2ce81facf45a6ebde8e303062c8adb721897a"
+      },
+      {
+        "source": "PERMANENT_STORAGE_PACKAGES.md",
+        "destination": "PERMANENT_STORAGE_PACKAGES.md",
+        "sha256_lf": "bb4a5d1144dabe9579efaa353ab91bc111f34a7a980a6d473bdf196452884e44"
+      },
+      {
+        "source": "AUTOMATION_PROGRESS.md",
+        "destination": "AUTOMATION_PROGRESS.md",
+        "sha256_lf": "32ab0429c1fa19049d5a404216e6553c71f7afaf3d92266b3958d0872c12fb86"
+      },
+      {
+        "source": "ledger_cold_store.py",
+        "destination": "ledger_cold_store.py",
+        "sha256_lf": "79ce962bd079d9335e03fd8c8a09caee9a19ec94e5e9d8aa27fce51ee04abeb0"
+      },
+      {
+        "source": "ledger_history_stream.py",
+        "destination": "ledger_history_stream.py",
+        "sha256_lf": "564975f27d362080d6e76a1d8cd746fa7763d44231c68ac916a0a56b01530a21"
+      },
+      {
+        "source": "tests/test_ledger_history_stream.py",
+        "destination": "tests/test_ledger_history_stream.py",
+        "sha256_lf": "0a44cbb0b159327007b1d12d12d0eb818d274a5952d720166c043ac892a9a4a6"
+      },
+      {
+        "source": "COLD_HISTORY_STREAM_PACKAGE.md",
+        "destination": "COLD_HISTORY_STREAM_PACKAGE.md",
+        "sha256_lf": "1e15806ea6f0b941c791a1321da04ad1b87b7ccda7b5f72d42f997bbb2f89fd8"
+      },
+      {
+        "source": "ledger_read_contract.py",
+        "destination": "ledger_read_contract.py",
+        "sha256_lf": "9140c838d159670cf4db9ac281d7cd2c2d48a16a8b9f4923fe2479695aa7bdc6"
+      },
+      {
+        "source": "ledger_source_capture.py",
+        "destination": "ledger_source_capture.py",
+        "sha256_lf": "93a22673cacf43ba377ce0dc2e8468930fdb5e6c7cbcf1617e23e2c185298f59"
+      },
+      {
+        "source": "ledger_runtime_reader.py",
+        "destination": "ledger_runtime_reader.py",
+        "sha256_lf": "af95e5b45f34bf35c621cb20c11591f993573510c57c886360d7f65e934bf6c7"
+      },
+      {
+        "source": "ledger_archive_publication.py",
+        "destination": "ledger_archive_publication.py",
+        "sha256_lf": "9cfab58682f8a9c02a8a7f9d1c3d14c285780be813a4c684023fe45990289e71"
+      },
+      {
+        "source": "cold_local_objects.py",
+        "destination": "cold_local_objects.py",
+        "sha256_lf": "6d03c9aadb831d00807a0e84805d17985d153ad7050bda6d76a1ae436e7bcc01"
+      },
+      {
+        "source": "tests/test_ledger_read_contract.py",
+        "destination": "tests/test_ledger_read_contract.py",
+        "sha256_lf": "e5cb9ba55e9e2e45d4090467db18297b2a8ffe45c28f1818adc1f099d29936c2"
+      },
+      {
+        "source": "tests/test_ledger_staged_reader.py",
+        "destination": "tests/test_ledger_staged_reader.py",
+        "sha256_lf": "8ab5e9ad3914187cbff32176927873d9b13a1fe34b9467699763094d4f962c03"
+      },
+      {
+        "source": "tests/test_cold_local_objects.py",
+        "destination": "tests/test_cold_local_objects.py",
+        "sha256_lf": "b792e0439636d00f863d158d4c7a42f12fd9c8e43b500149144319a813bb663a"
+      },
+      {
+        "source": "tests/test_ledger_archive_publication.py",
+        "destination": "tests/test_ledger_archive_publication.py",
+        "sha256_lf": "c836bdca6e240cf831b2e6847dccfd7bb1253b5e2dfeb01a040dd1b2cae3abda"
+      },
+      {
+        "source": "COLD_READER_AND_SEALING_PACKAGE.md",
+        "destination": "COLD_READER_AND_SEALING_PACKAGE.md",
+        "sha256_lf": "a528ce9b81fecf184dbcffac5218db92092c358ebedc4b8e0170d9af5ffdfaa8"
+      },
+      {
+        "source": "sql/storage_layout_inventory_read_only.sql",
+        "destination": "sql/storage_layout_inventory_read_only.sql",
+        "sha256_lf": "1e70162c55065b3a1f96f26bd7b815148a77693e3f3bbe3b9e95bb3652cb242a"
+      },
+      {
+        "source": "sql/daily_volume_retention_read_only.sql",
+        "destination": "sql/daily_volume_retention_read_only.sql",
+        "sha256_lf": "a0e8030c8be4a8b72c106ac63b69351bba3039d7c2ed06d846b79be242d68b82"
+      },
+      {
+        "source": "tests/test_daily_volume_retention_preview.py",
+        "destination": "tests/test_daily_volume_retention_preview.py",
+        "sha256_lf": "daa42a2483ae77c8957462912a337c6d1b6cb1837771715d8870fce029208d43"
+      },
+      {
+        "source": "STORAGE_STRUCTURAL_COMMISSIONING.md",
+        "destination": "STORAGE_STRUCTURAL_COMMISSIONING.md",
+        "sha256_lf": "549278e3a9a72cb47ca0337c8fde0c7fb8cfe92c1cdd13c3b4f633b709f6abfd"
+      },
+      {
+        "source": "ledger_history_consumers.py",
+        "destination": "ledger_history_consumers.py",
+        "sha256_lf": "6e561349888980ac6021c8701c9c83b367ed24c7234e25052ce9d849d24d0e2f"
+      },
+      {
+        "source": "tests/test_ledger_history_consumers.py",
+        "destination": "tests/test_ledger_history_consumers.py",
+        "sha256_lf": "146a26c51beaa60d9ea9ed2ae8a9614fc59da56db6e238c1e315988ac39ff42d"
+      },
+      {
+        "source": "COLD_CONSUMER_ADAPTER_PACKAGE.md",
+        "destination": "COLD_CONSUMER_ADAPTER_PACKAGE.md",
+        "sha256_lf": "83b71935e7ec60de528635334037f8be53335d4125c0364e963b172b9212f44d"
+      },
+      {
+        "source": "staged_release_timeout_fix/release_verification.py",
+        "destination": "release_verification.py",
+        "sha256_lf": "7817e96fb582cad4e3ed721980a1ea158ab08c777a991ad03f46d1d8b5171bc4"
+      },
+      {
+        "source": "tests/test_release_timeout_recovery.py",
+        "destination": "tests/test_release_timeout_recovery.py",
+        "sha256_lf": "f9ee8f86672909022921e4d77a2e2cdfb049950a0bad21bd08d72b5e0ead4baa"
+      },
+      {
+        "source": "RELEASE_TIMEOUT_REPAIR_PACKAGE.md",
+        "destination": "RELEASE_TIMEOUT_REPAIR_PACKAGE.md",
+        "sha256_lf": "e6dd0c967a4aba99a169cadb30bedc9034bee73dc6b1684824061418d4f96bd1"
+      },
+      {
+        "source": "storage_write_guard.py",
+        "destination": "storage_write_guard.py",
+        "sha256_lf": "28cebb83f4587c664cfda9c06a39b9b3dffd352fbd2ab3ef7dee7c8788c3d0e3"
+      },
+      {
+        "source": "storage_capacity_watch.py",
+        "destination": "storage_capacity_watch.py",
+        "sha256_lf": "48817e13ab145b7eabfd0f5087dd2135223bc2373ceb9d274ab9ac4e5fa0e0c1"
+      },
+      {
+        "source": "tests/test_storage_write_guard.py",
+        "destination": "tests/test_storage_write_guard.py",
+        "sha256_lf": "93000d81454d5dbec1170a6bff5a74a2acc4863d10b95fb9cbb69093c822e9f7"
+      },
+      {
+        "source": "tests/test_storage_capacity_watch.py",
+        "destination": "tests/test_storage_capacity_watch.py",
+        "sha256_lf": "03899e1f403bf71c16b3d5c19ee892e08c2cc3bb0d9b3fd3374a84f18fd08567"
+      },
+      {
+        "source": "tests/test_storage_guard_sql.py",
+        "destination": "tests/test_storage_guard_sql.py",
+        "sha256_lf": "eba2747c90ca8fcb44b46230c688450db3cd112ef1700dc7fd208ead478d4f53"
+      },
+      {
+        "source": "STORAGE_GUARD_AND_WATCH_PACKAGE.md",
+        "destination": "STORAGE_GUARD_AND_WATCH_PACKAGE.md",
+        "sha256_lf": "292207fee682fbb024cfcd809db4a854fe21743dc442777000aec8c612abb24f"
+      },
+      {
+        "source": "staged_historical_repository/production_repository.py",
+        "destination": "production_repository.py",
+        "sha256_lf": "deecdf2a4dcccc74919aad3bb8ed02db4999427e724c799d9ee4c5374e1f4a5f"
+      },
+      {
+        "source": "staged_historical_repository/equity_runtime_health.py",
+        "destination": "equity_runtime_health.py",
+        "sha256_lf": "9f92d460e26ca2801917a2f8704408c25abb5e2d321ff106a21a0be5266f821e"
+      },
+      {
+        "source": "staged_historical_repository/package_release.py",
+        "destination": "package_release.py",
+        "sha256_lf": "8c3f1575c09eabfd44b2be4e657a37ef4a01b60cc6e7f0f543a7ec4c2dd27a9a"
+      },
+      {
+        "source": "ledger_historical_views.py",
+        "destination": "ledger_historical_views.py",
+        "sha256_lf": "19bf63a8a4ebe5af05a20ee45df2525794468c9bda7d58f7f4dfaca36dd7df2c"
+      },
+      {
+        "source": "ledger_historical_repository.py",
+        "destination": "ledger_historical_repository.py",
+        "sha256_lf": "6a268b04b9889c3dab89a4a5d4237acc5669887dbc7240466eddc419be2a1d94"
+      },
+      {
+        "source": "tests/test_ledger_historical_views.py",
+        "destination": "tests/test_ledger_historical_views.py",
+        "sha256_lf": "4a0a0ef74e405ad37113b86a28eccd619d15a855d54700234aa6f1eb159a69bb"
+      },
+      {
+        "source": "tests/test_historical_repository_bridge.py",
+        "destination": "tests/test_historical_repository_bridge.py",
+        "sha256_lf": "06a6f39c685638dd221b54b712f52c4dbe4a27980e73a42bf58d730a6a284063"
+      },
+      {
+        "source": "HISTORICAL_REPOSITORY_PACKAGE.md",
+        "destination": "HISTORICAL_REPOSITORY_PACKAGE.md",
+        "sha256_lf": "759110ea9c0e26b8b2debd4f7a23d355156c9706c54dabbb12ff8896bc21d091"
+      },
+      {
+        "source": "ledger_delivery_proofs.py",
+        "destination": "ledger_delivery_proofs.py",
+        "sha256_lf": "2ab9e321300254fc3e7cf3af10ffc4839c4fc3e47f8a155bd163ee113111c7ec"
+      },
+      {
+        "source": "tests/test_ledger_delivery_proofs.py",
+        "destination": "tests/test_ledger_delivery_proofs.py",
+        "sha256_lf": "19345ed4ef05fdf58a803e7517e1608ddbb69825698c3da9390ae78097246d88"
+      },
+      {
+        "source": "LEDGER_DELIVERY_PROOFS_PACKAGE.md",
+        "destination": "LEDGER_DELIVERY_PROOFS_PACKAGE.md",
+        "sha256_lf": "2a78e3b9b96ea59e2040f96d5c5d56a65683556c7f0cf55128eea8014484f9de"
+      },
+      {
+        "source": "operational_receipt_history.py",
+        "destination": "operational_receipt_history.py",
+        "sha256_lf": "f0a27b9988ce39b9f8489ce9765f837b01efc4ac2b6cf4603fd8da9835fb5ace"
+      },
+      {
+        "source": "tests/test_operational_receipt_history.py",
+        "destination": "tests/test_operational_receipt_history.py",
+        "sha256_lf": "f5017c3fcf9754e5d8c7eafae96f15a0dace790c9f8d8e5e3630e7f1d6ec3b90"
+      },
+      {
+        "source": "OPERATIONAL_RECEIPT_HISTORY_PACKAGE.md",
+        "destination": "OPERATIONAL_RECEIPT_HISTORY_PACKAGE.md",
+        "sha256_lf": "135086869a6a2c6911e3aaa7da826226e338f7546d63db06a4c58363d8268a12"
+      },
+      {
+        "source": "finalization_intents.py",
+        "destination": "finalization_intents.py",
+        "sha256_lf": "eb4725bedba236cf622b022ec1d61536530a9340e8e290c7db2055d4b1276452"
+      },
+      {
+        "source": "tests/test_finalization_intents.py",
+        "destination": "tests/test_finalization_intents.py",
+        "sha256_lf": "dd83dc58bc161a08dd3d1f73752e1bc53c78f0a1249e312c4fd0e6ba2a6fecf6"
+      },
+      {
+        "source": "FINALIZATION_INTENTS_PACKAGE.md",
+        "destination": "FINALIZATION_INTENTS_PACKAGE.md",
+        "sha256_lf": "8581edef1db8e6f05e302a9c6d98f11bf57c47a55789b56481a80d0d05b7f9d0"
+      }
+    ]
+  },
+  "prerequisites": {
+    "storage": [
+      {
+        "source": "recovery_bundle.py",
+        "destination": "recovery_bundle.py",
+        "sha256_lf": "9641a7512352fa3f2aa7964536bd9f3f77b4a58b0d3aa050f425c57b5cff0b79"
+      },
+      {
+        "source": "recovery_proposal.py",
+        "destination": "recovery_proposal.py",
+        "sha256_lf": "416937c93a90460eaca351d4468360274b270b32886bed2d9b15f62f7dbab64a"
+      },
+      {
+        "source": "recovery_replica_audit.py",
+        "destination": "recovery_replica_audit.py",
+        "sha256_lf": "1f68308cae4f013f6b632a4b16d3aaa9bd0f5eb48551bec5ed9db99f184e0a34"
+      },
+      {
+        "source": "tests/test_recovery_proposal.py",
+        "destination": "tests/test_recovery_proposal.py",
+        "sha256_lf": "caa08ce0707c7cdeb27e83bbd29069849ebef728184fa5e8120741ce47deb87e"
+      },
+      {
+        "source": "tests/test_recovery_replica_audit.py",
+        "destination": "tests/test_recovery_replica_audit.py",
+        "sha256_lf": "9d233a0ecae5b1e232bb6f0f83526fa6bea1156f258d40383e98322b7385d8dd"
+      },
+      {
+        "source": "RECOVERY_RESTART_PACKAGE.md",
+        "destination": "RECOVERY_RESTART_PACKAGE.md",
+        "sha256_lf": "b329a8f7c1e40ce5ffa53b33e1d20db3cc886e6f0337a29c09dd2ad11c93ca47"
+      },
+      {
+        "source": "universe_payloads.py",
+        "destination": "universe_payloads.py",
+        "sha256_lf": "7ccc2ab4d4e11beb58590d294f5befc8831d550143038deef013891a1352d6d2"
+      },
+      {
+        "source": "tests/test_universe_payloads.py",
+        "destination": "tests/test_universe_payloads.py",
+        "sha256_lf": "54b8ce359bb386e0d8021208b92ec4fea0d8a7f44f3769d4125d37bd52f281d2"
+      },
+      {
+        "source": "UNIVERSE_SHADOW_PACKAGE.md",
+        "destination": "UNIVERSE_SHADOW_PACKAGE.md",
+        "sha256_lf": "b532c3479f7581112d1a52b6cc1b25874e1e45347702aa4529ad8506c0836948"
+      },
+      {
+        "source": "forward_nifty_job.py",
+        "destination": "forward_nifty_job.py",
+        "sha256_lf": "05c20428d2a8841faa829b28d9b4a95ecf7387225654dbcea46582a4d00058c1"
+      },
+      {
+        "source": "forward_capture_diagnostics.py",
+        "destination": "forward_capture_diagnostics.py",
+        "sha256_lf": "4ddea2f4b631c581e40933c6f01fcf0f41c960a9b3612e51e8d63b36f12975f8"
+      },
+      {
+        "source": "forward_drive_probe.py",
+        "destination": "forward_drive_probe.py",
+        "sha256_lf": "38f4e3170852730e484f4653e0f1b9d0785e58f532b8c42ff49fd7d056c0187f"
+      },
+      {
+        "source": "tests/test_forward_capture_diagnostics.py",
+        "destination": "tests/test_forward_capture_diagnostics.py",
+        "sha256_lf": "650c42d55f5c938e3bee20fb54db645b3438575854d79595b5f0ccc5e3474d77"
+      },
+      {
+        "source": "tests/test_forward_drive_probe.py",
+        "destination": "tests/test_forward_drive_probe.py",
+        "sha256_lf": "4e2c319589f4332783512bcdc320ed89f4600e7fd3e8cdccf6453b0bb6915b53"
+      },
+      {
+        "source": "FORWARD_DRIVE_RECOVERY_2026-10-08.md",
+        "destination": "FORWARD_DRIVE_RECOVERY_2026-10-08.md",
+        "sha256_lf": "c3b8a4894a05110dbcc502e5a8dda48cb7135ad01e70a2af9ee805f64615927f"
+      },
+      {
+        "source": "forward_drive_folder_check.py",
+        "destination": "forward_drive_folder_check.py",
+        "sha256_lf": "904604471a63882ddbe5805c0d0e4a3c02d61d90f28b9f5f9e46aa848f3d500e"
+      },
+      {
+        "source": "tests/test_forward_drive_folder_check.py",
+        "destination": "tests/test_forward_drive_folder_check.py",
+        "sha256_lf": "c97c4fd6501ee96bf3eabde65082866c242fcc9bae9c60502f285907b32af03d"
+      },
+      {
+        "source": "FORWARD_DRIVE_FOLDER_SELECTION.md",
+        "destination": "FORWARD_DRIVE_FOLDER_SELECTION.md",
+        "sha256_lf": "4c4205b77c05e686ad5cae291db384cb0bd5fd086ce21951c79012b6645a4206"
+      },
+      {
+        "source": "AUTOMATION_PROGRESS.md",
+        "destination": "AUTOMATION_PROGRESS.md",
+        "sha256_lf": "32ab0429c1fa19049d5a404216e6553c71f7afaf3d92266b3958d0872c12fb86"
+      },
+      {
+        "source": "reviewed_upload_check.py",
+        "destination": "reviewed_upload_check.py",
+        "sha256_lf": "256c154fa9be1e7558a8dfa75e17f07505ff1584fbb5c060bbc17966f6f5f9aa"
+      },
+      {
+        "source": "tests/test_reviewed_upload_check.py",
+        "destination": "tests/test_reviewed_upload_check.py",
+        "sha256_lf": "7d1e4cf84a80c21fa4cad6f78f2cdc1b7e2e18835ff542cf8b986ce20462bf97"
+      },
+      {
+        "source": "REMAINING_UPLOADS_2026-10-08.json",
+        "destination": "REMAINING_UPLOADS_2026-10-08.json",
+        "sha256_lf": null
+      },
+      {
+        "source": "CONSOLIDATED_UPLOADS_2026-10-08.md",
+        "destination": "CONSOLIDATED_UPLOADS_2026-10-08.md",
+        "sha256_lf": "595ec8b22fd685f5f17298b905da79d1488b5ca0c03c99ac8a322d5882dea43a"
+      }
+    ]
+  }
+}
