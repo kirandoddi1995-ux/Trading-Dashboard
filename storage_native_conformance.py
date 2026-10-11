@@ -19,6 +19,7 @@ import storage_write_guard as guard
 
 DATABASE = 'storage_conformance_sandbox'
 ROLE = 'storage_conformance_writer'
+FIXTURE_ROLES = frozenset({ROLE, 'quant_app_runtime', 'quant_storage_archiver'})
 MARKER = 'disposable-storage-guard-v1'
 FIXTURE_PASSWORD = 'public-disposable-fixture-only'
 BOUND = guard.AppendBound('native_conformance', 4_000_000)
@@ -80,10 +81,10 @@ def _category(error: Exception) -> str:
             'InterfaceError': 'DRIVER_INTERFACE'}.get(type(error).__name__, category)
 
 
-def validate_profile(row: object) -> int:
+def validate_profile(row: object, *, role: str = ROLE) -> int:
     """Reject emulators, privileged roles and any unmarked/wrong database."""
-    if (not isinstance(row, (tuple, list)) or len(row) != 10
-            or row[0] != DATABASE or row[1] != ROLE or row[4] != MARKER
+    if (role not in FIXTURE_ROLES or not isinstance(row, (tuple, list)) or len(row) != 10
+            or row[0] != DATABASE or row[1] != role or row[4] != MARKER
             or type(row[2]) is not int or not 170000 <= row[2] < 180000
             or type(row[3]) is not int or row[3] <= 0
             or any(value is not False for value in row[5:])):
@@ -236,8 +237,10 @@ def _run_cases(first: Any, second: Any, checks: list[str]) -> dict[str, object]:
                                category=_category(error), checks=tuple(checks)) from None
 
 
-def connect_fixture(port: int) -> Any:
+def connect_fixture(port: int, *, role: str = ROLE) -> Any:
     """Fixed explicit parameters; never fall back to a production DSN/passfile."""
+    if role not in FIXTURE_ROLES or type(port) is not int or not 1024 <= port <= 65535:
+        raise ConformanceError('NATIVE_SANDBOX_IDENTITY_UNVERIFIED', category='IDENTITY_MISMATCH')
     # An explicit empty service name triggers libpq's service-file lookup.
     # Omit it, but refuse service environment overrides before importing libpq.
     if any(name in os.environ for name in ('PGSERVICE', 'PGSERVICEFILE', 'PGSYSCONFDIR')):
@@ -245,7 +248,7 @@ def connect_fixture(port: int) -> Any:
                                category='SERVICE_ENVIRONMENT')
     import psycopg
     return psycopg.connect(host='127.0.0.1', hostaddr='127.0.0.1', port=port,
-        dbname=DATABASE, user=ROLE, password=FIXTURE_PASSWORD, passfile=os.devnull,
+        dbname=DATABASE, user=role, password=FIXTURE_PASSWORD, passfile=os.devnull,
         sslmode='disable', gssencmode='disable', connect_timeout=5,
         application_name='disposable-storage-conformance', options='', autocommit=False)
 
