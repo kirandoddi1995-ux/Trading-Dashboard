@@ -10,6 +10,8 @@ import subprocess
 from typing import Any
 
 MANIFEST = 'REMAINING_UPLOADS_2026-10-08.json'
+FOUNDATION_MANIFEST = 'STORAGE_FOUNDATION_UPLOAD_2026-10-11.json'
+NATIVE_WORKFLOW = '.github/workflows/storage-native-conformance.yml'
 
 
 def relative(value: object) -> str:
@@ -18,9 +20,10 @@ def relative(value: object) -> str:
         raise ValueError('PATH_INVALID')
     path = PurePosixPath(value)
     if (path.is_absolute() or '..' in path.parts or ':' in value or '\\' in value
-            or value != path.as_posix() or any(part.startswith('.') for part in path.parts)
-            or path.suffix not in ('.py', '.md', '.sql', '.json')
-            or (path.suffix == '.json' and value != MANIFEST)):
+            or value != path.as_posix()
+            or (any(part.startswith('.') for part in path.parts) and value != NATIVE_WORKFLOW)
+            or (path.suffix not in ('.py', '.md', '.sql', '.json') and value != NATIVE_WORKFLOW)
+            or (path.suffix == '.json' and value not in (MANIFEST, FOUNDATION_MANIFEST))):
         raise ValueError('PATH_INVALID')
     return value
 
@@ -45,7 +48,7 @@ def validate_files(root: Path, entries: list[dict[str, Any]], changed: set[str])
     for entry in entries:
         path = checked_file(root, entry['destination'])
         expected = entry['sha256_lf']
-        if entry['destination'] == MANIFEST and expected is None:
+        if entry['destination'] in (MANIFEST, FOUNDATION_MANIFEST) and expected is None:
             continue  # The reviewed control manifest cannot hash itself.
         if not isinstance(expected, str) or re.fullmatch(r'[0-9a-f]{64}', expected) is None:
             raise ValueError('MANIFEST_HASH_INVALID')
@@ -66,7 +69,8 @@ def git(root: Path, *args: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     """Capture base before copying; exact-tree rehearsal remains separate from CI."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--group', required=True, choices=('capture', 'storage'))
+    parser.add_argument('--group', required=True, choices=('capture', 'storage', 'foundation'))
+    parser.add_argument('--manifest', choices=(MANIFEST, FOUNDATION_MANIFEST), default=MANIFEST)
     parser.add_argument('--base', required=True)
     parser.add_argument('--root', type=Path, default=Path.cwd())
     args = parser.parse_args(argv)
@@ -78,8 +82,11 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError('BASE_NOT_CURRENT_HEAD')
         if Path(git(root, 'rev-parse', '--show-toplevel')).resolve() != root:
             raise ValueError('CLONE_ROOT_REQUIRED')
-        manifest = json.loads(checked_file(root, MANIFEST).read_bytes())
-        if manifest.get('version') != 'remaining-uploads-v1':
+        manifest = json.loads(checked_file(root, args.manifest).read_bytes())
+        expected_version = ('remaining-uploads-v1' if args.manifest == MANIFEST
+                            else 'storage-foundation-upload-v1')
+        if (manifest.get('version') != expected_version
+                or (args.group == 'foundation') != (args.manifest == FOUNDATION_MANIFEST)):
             raise ValueError('MANIFEST_VERSION_INVALID')
         changed = set(git(root, 'diff', '--name-only', args.base, '--').splitlines())
         changed.update(git(root, 'ls-files', '--others', '--exclude-standard').splitlines())

@@ -1,5 +1,69 @@
 # Automation foundation — continuity record
 
+## Current checkpoint — 11 October storage acceptance foundation
+
+Owner reports both consolidated Oct 8 uploads merged/green, installed capture
+matches main, all three PC tasks disabled until Monday supervised owner-file prep.
+Main SHA not supplied/independently inspected this turn. Scan-only recurrence,
+release hold and Streamlit expectations are unchanged. Owner dashboard reports
+394 MB/500 MB (~106 MB nominal headroom); this is NOT a fresh SQL cluster measurement.
+Reported exposed quant_app_runtime password remains an urgent owner rotation.
+
+Standing approval now permits source reads, requested edits and offline checks;
+no credentials/private TradingResearch/sealed 2025/2026 data read, installed-folder
+change, hosted change, workflow dispatch or GitHub write performed by agent.
+Supabase/current PG documentation used for rotation/pooling/quota/locks/partition
+design. Same-role planned interruption selected: a new role would require separate
+grants/RLS/restricted-role acceptance; generic URL validation does not require one
+exact username. No gate widening or postgres password reset proposed.
+
+ONE new 14-path consolidated package is listed in STORAGE_NEXT_UPLOAD_2026-10-11.md.
+Complete source hashes and unchanged prerequisites are in
+STORAGE_FOUNDATION_UPLOAD_2026-10-11.json. Old upload groups are not recopied.
+New terminal_intent_snapshot.py copies the sixth journal eagerly inside the existing
+five-table read TX before source close; existing witness/validator/fence semantics
+remain unchanged. Bounded schema/rows/frames/deadline, exact canonical requests,
+ACK digest/time, independent witnesses and detached-cut recheck fail closed.
+Old intent proof cannot finalize a newer job. No live init/sender/pruning/restore.
+Current authenticated bundles still encode five-table witnesses: signed custody
+must explicitly bind the sixth witness/image before future live journal deployment.
+
+New storage_native_conformance.py plus manual-only disposable workflow and restricted
+RLS fixture prepares six native guard cases. Offline preview zero reads/network/writes;
+actual native execution NOT performed (no native PG commands on PATH). Public synthetic
+fixture only, fixed loopback/sandbox, no environment/project DSN. Native result does
+not certify ledger archive races, all-writer enforcement or production allocation.
+RUNTIME_PASSWORD_ROTATION_OWNER.md prepares quiesce/hidden-prompt rotation/session
+retirement/private consumer updates/pooler-cache checks/supervised resume. Owner only.
+
+Final-source focused suite: 246 passed in 13.73s. Seven changed Python paths strict
+mypy PASS, pyflakes PASS; new module imports and native offline preview PASS.
+Known credential-free public candidate fingerprint unchanged:
+03ad7baa68ebaad1f64b1cd3c356455e1c18cb8f23f027652de303b64b4f8478.
+This is the reviewed candidate, NOT an instruction to change held live expectations.
+No decision fingerprint member is changed by this inactive package.
+
+Full final-source suite in the known credential-free public candidate PASS:
+2913 passed, 4 unchanged skips, 2 subtests passed in 332.94s. Includes synthetic
+Streamlit boot smoke; all candidate root Python/tests pyflakes PASS. Exact owner
+PR/post-merge CI still required (not a claim to inspect current main). No tests
+remain running. Final self-review complete; no known new defect found after fixes.
+Earlier scratch-directory permission errors occurred before fixture setup. A
+mislocated interim full invocation and a pre-final-source full invocation were
+stopped/superseded; neither is counted as passing. Reviewed final checks use
+explicit disposable scratch paths under approved offline-test escalation.
+Self-review fixed callback journal deletion falsely passing, oversized digest
+normalization, canonical/bounded detached rows and current ACK/atomic job mismatch.
+
+Next: signed SIX-table/full-image custody and two encrypted independent replicas;
+immutable original remote receipt writer + native append/seal/CAS/fence/crash races;
+cold-aware live factories/recovery and EVERY writer's guarded transaction adapter;
+exact universe shadow SQL/PIT reconstruction; source-specific bounded cold retention;
+fresh peak-safe physical transition and independent actual alerts. Permanent storage
+is NOT complete and remaining work is not owner-only. No retention/deletion/migration
+or F&O ingestion authorization is given. Owner key note/dummy encrypted-disk restore,
+runtime-password rotation and manual disposable native run can proceed in parallel.
+
 ## Capture recovered; consolidated remaining uploads
 
 Owner reports stored folder C corrected to B; existing PC authorized_user can
