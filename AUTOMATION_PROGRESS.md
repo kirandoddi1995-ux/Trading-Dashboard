@@ -1,5 +1,58 @@
 # Automation foundation — continuity record
 
+## Current checkpoint — 12 October overnight receipt/fence and joint backup binding
+
+Owner reports all five prior uploads merged green; disposable main 0db342b passes
+six capacity and eight ledger/archive cases. No new hosted checks were performed.
+Installed capture folder, state/tasks, Streamlit expectations, release hold and
+sealed 2025/2026 data remain untouched. No credentials read or GitHub writes.
+
+Selected coherent next chunk: disabled new operational receipt/fence namespace,
+caller-owned transaction adapter, nine native acceptance cases, and a joint
+six-table/full-image witness binding using the existing signed bundle/root.
+These do not replace live equity_operations, create legacy original receipts,
+establish independent custody or certify all-writer protection. Missing control
+fails closed. SQL verifies binding/shape, not HMAC; original historical keys and
+the existing verifier remain required. Native unknown-COMMIT test is fault
+injection, not real TCP chaos. All whole-chain flags remain false.
+
+One complete sixteen-file PR group: STORAGE_OVERNIGHT_2026-10-12.md and
+STORAGE_OVERNIGHT_UPLOAD_2026-10-12.json. No staged replacements or hosted SQL.
+Priority roadmap PROJECT_FOUNDATION_ROADMAP_2026-10-12.md covers recovery-first
+storage, one hot database/private verified cold archives, optional Pro budget,
+all-writer factories, universe shadow, source retention/alerts, dated contracts,
+cost/risk/paper evidence, frozen research/ML, restore/health/branch protection and
+current Indian regulatory/licence questions, with official sources.
+The local rotation runbook was absent from the frozen public candidate; it is
+explicitly included, not assumed to be on main. Historical package manifests
+remain unchanged; superseded shared files are validated by the new exact manifest.
+
+Next code: consistent exporter and isolated six-table/full-image restore joined
+to the authenticated binding; then factory-by-factory guard/cold wiring. Owner
+key note, historical versions and independent encrypted disk rehearsal remain
+pending. Exposed runtime password rotation is priority owner-only coordinated
+consumer cutover; do not rotate signing keys or postgres as a shortcut.
+
+Validation complete on explicit credential-free public candidate: focused 318
+passed; full suite 3044 passed, 4 unchanged skips, 2 subtests passed in 348.52s
+(previous 2971; 73 added, none removed). Separate actual app import/Streamlit
+synthetic login/settings boot: 3 passed. Recursive public-tree pyflakes passed;
+strict mypy with follow-imports=silent passed on eight changed Python files
+(not a claim that legacy dependencies are fully typed). Imports and zero-I/O
+preview passed. Sandbox-only temporary-directory probes failed initially;
+the same offline tests passed with approved access to their own synthetic temp
+stores, without credentials/hosted resources. Native PG/Docker unavailable locally;
+owner must run exact-green-main disposable workflow (6 + 8 + 9 cases).
+
+Self-review fixed missing-control SQL fail-closed behaviour, retained immutable
+historical manifest hashes while checking successor files, and included the held
+rotation runbook explicitly. No remaining actionable self-review issue identified.
+Final sixteen-file LF-hashed manifest includes twelve unchanged public dependency
+pins; actual clean-main Git-base rehearsal and merged-SHA CI remain owner steps.
+Whole-chain storage/custody/global flags still false. Public equity fingerprint
+unchanged: 03ad7baa68ebaad1f64b1cd3c356455e1c18cb8f23f027652de303b64b4f8478.
+Do not update Streamlit expectations or release settings for this inactive group.
+
 ## Current checkpoint — 11 October native ledger/archive acceptance package
 
 Owner reports Uploads 1–4 merged green and original six native capacity cases

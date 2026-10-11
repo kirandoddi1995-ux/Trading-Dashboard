@@ -56,3 +56,11 @@ jobs:
           -d storage_conformance_sandbox -f sql/storage_native_ledger_fixture_disposable_only.sql
       - name: Run native ledger archive transaction cases
         run: python storage_native_ledger_conformance.py --execute --confirm-disposable --port 55432
+      - name: Provision inactive operational journal (disposable only)
+        env:
+          PGPASSWORD: public-disposable-fixture-only
+        run: >-
+          psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 55432 -U postgres
+          -d storage_conformance_sandbox -f sql/storage_native_operational_fixture_disposable_only.sql
+      - name: Run native operational receipt and takeover cases
+        run: python storage_native_operational_conformance.py --execute --confirm-disposable --port 55432

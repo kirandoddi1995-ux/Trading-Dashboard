@@ -1,0 +1,153 @@
+{
+  "version": "storage-overnight-upload-v1",
+  "owner_reported_baseline": "0db342b",
+  "activation": "REVIEW_ONLY_NO_HOSTED_CHANGES",
+  "groups": {
+    "overnight": [
+      {
+        "source": "operational_receipt_writer.py",
+        "destination": "operational_receipt_writer.py",
+        "sha256_lf": "c26e5389c13fb7653a6c0dfc44b5aac6ca244533eda0572df2569ed4a4647885"
+      },
+      {
+        "source": "recovery_six_binding.py",
+        "destination": "recovery_six_binding.py",
+        "sha256_lf": "6175f1160f463e5d5e7ea27fb77061504b6e33e622c07da141e8f8afb509d3c7"
+      },
+      {
+        "source": "storage_native_operational_conformance.py",
+        "destination": "storage_native_operational_conformance.py",
+        "sha256_lf": "c50bece0192f76f315365bb6535a66e3701d60e50998f6ac9da091e553307f8d"
+      },
+      {
+        "source": "reviewed_upload_check.py",
+        "destination": "reviewed_upload_check.py",
+        "sha256_lf": "5df312190146468158b2c6ef7b32065338e1a7a1f177868101fcb4ba1cdc05de"
+      },
+      {
+        "source": "sql/operational_receipts_review_only.sql",
+        "destination": "sql/operational_receipts_review_only.sql",
+        "sha256_lf": "905cf3ac111a7c7baaae0c01f932cfc055ef08b29f6cbfa443cd211d6787b8ef"
+      },
+      {
+        "source": "sql/storage_native_operational_fixture_disposable_only.sql",
+        "destination": "sql/storage_native_operational_fixture_disposable_only.sql",
+        "sha256_lf": "7158ad6c32571ad6f34e51616439b4df4cc0328e1464a50e28d1d8ad2085d8f0"
+      },
+      {
+        "source": ".github/workflows/storage-native-conformance.yml",
+        "destination": ".github/workflows/storage-native-conformance.yml",
+        "sha256_lf": "85d2f4665ff1efddd33cb8515533f55dfff9d5f4caaaf216582ebc59aa1c3ecd"
+      },
+      {
+        "source": "tests/test_operational_receipt_writer.py",
+        "destination": "tests/test_operational_receipt_writer.py",
+        "sha256_lf": "3c9fb94efe8b0eb285f22d0d53882b39c1693decdbb663637aa2eead2e0535dc"
+      },
+      {
+        "source": "tests/test_recovery_six_binding.py",
+        "destination": "tests/test_recovery_six_binding.py",
+        "sha256_lf": "7e9e0307dcf2dfe32e83c72ef9cb727925e1033c14b46f14759e7c6d89fd2019"
+      },
+      {
+        "source": "tests/test_storage_overnight_upload.py",
+        "destination": "tests/test_storage_overnight_upload.py",
+        "sha256_lf": "0f0135e864fb7129c0f0c6a532b759be6a22a6c2b800fb0e78f5cebeca21a8f8"
+      },
+      {
+        "source": "tests/test_storage_native_ledger_upload.py",
+        "destination": "tests/test_storage_native_ledger_upload.py",
+        "sha256_lf": "0c01123269d01fc523c220657121b3e1e3d8d09766fb55b575907a7bc97ae359"
+      },
+      {
+        "source": "PROJECT_FOUNDATION_ROADMAP_2026-10-12.md",
+        "destination": "PROJECT_FOUNDATION_ROADMAP_2026-10-12.md",
+        "sha256_lf": "c03881bf912c046039d265a1156d2c27282aea2773535f695c033185e90abda3"
+      },
+      {
+        "source": "STORAGE_OVERNIGHT_2026-10-12.md",
+        "destination": "STORAGE_OVERNIGHT_2026-10-12.md",
+        "sha256_lf": "76198acb4df13d313984e9aaa64ca25c308de112dc2f6e1d303893eea3cb1d94"
+      },
+      {
+        "source": "STORAGE_OVERNIGHT_UPLOAD_2026-10-12.json",
+        "destination": "STORAGE_OVERNIGHT_UPLOAD_2026-10-12.json",
+        "sha256_lf": null
+      },
+      {
+        "source": "AUTOMATION_PROGRESS.md",
+        "destination": "AUTOMATION_PROGRESS.md",
+        "sha256_lf": "cb9a22321133a98185903319a816a28363a5d3c30951cda1436749a2af4ab1ce"
+      },
+      {
+        "source": "RUNTIME_PASSWORD_ROTATION_OWNER.md",
+        "destination": "RUNTIME_PASSWORD_ROTATION_OWNER.md",
+        "sha256_lf": "0208fd7f7dada72f1f46e87aa8728f7eb342cd5cf5f607ab2d221e8c3a3b0f60"
+      }
+    ]
+  },
+  "prerequisites": {
+    "overnight": [
+      {
+        "source": "operational_receipt_history.py",
+        "destination": "operational_receipt_history.py",
+        "sha256_lf": "f0a27b9988ce39b9f8489ce9765f837b01efc4ac2b6cf4603fd8da9835fb5ace"
+      },
+      {
+        "source": "recovery_bundle.py",
+        "destination": "recovery_bundle.py",
+        "sha256_lf": "9641a7512352fa3f2aa7964536bd9f3f77b4a58b0d3aa050f425c57b5cff0b79"
+      },
+      {
+        "source": "local_state_recovery.py",
+        "destination": "local_state_recovery.py",
+        "sha256_lf": "178c4e707fb132d3227852d28fcc2a4dd895163754f40f620b543779425b0efd"
+      },
+      {
+        "source": "terminal_intent_snapshot.py",
+        "destination": "terminal_intent_snapshot.py",
+        "sha256_lf": "99b65e969fb46953fb84e249f0fd62048657db257f936a7f1df79773d62713c5"
+      },
+      {
+        "source": "catalog_receipts.py",
+        "destination": "catalog_receipts.py",
+        "sha256_lf": "ff0608df2cd2efa8feec3749a045c173fc3a6ec40fe46b8d86f439f57cb0e5d2"
+      },
+      {
+        "source": "storage_native_conformance.py",
+        "destination": "storage_native_conformance.py",
+        "sha256_lf": "e1fd0b414a336a0823ba89a89e05faa1c010c3f8876f503833a977ca65a5644c"
+      },
+      {
+        "source": "storage_native_ledger_conformance.py",
+        "destination": "storage_native_ledger_conformance.py",
+        "sha256_lf": "9912d6bd3084419b62fc4f6a792766a92de9ce040c52fed7ed483587c15682dc"
+      },
+      {
+        "source": "tests/test_operational_receipt_history.py",
+        "destination": "tests/test_operational_receipt_history.py",
+        "sha256_lf": "f5017c3fcf9754e5d8c7eafae96f15a0dace790c9f8d8e5e3630e7f1d6ec3b90"
+      },
+      {
+        "source": "tests/test_terminal_intent_snapshot.py",
+        "destination": "tests/test_terminal_intent_snapshot.py",
+        "sha256_lf": "f6196962f875ad7893a07b1eaaa479aab3fd0bc1a1ce4d66fdc84f65f24a8bc2"
+      },
+      {
+        "source": "tests/test_recovery_bundle.py",
+        "destination": "tests/test_recovery_bundle.py",
+        "sha256_lf": "f08120d0b1a65c98dae2ed12ae13f3de562da9d18aa4e2e4e8f6d92128d89c2d"
+      },
+      {
+        "source": "tests/test_storage_native_conformance.py",
+        "destination": "tests/test_storage_native_conformance.py",
+        "sha256_lf": "4291f3d6d92632b4a9dde6b85b86943a767192ba75ea32045794caa0bb8f5199"
+      },
+      {
+        "source": "tests/test_storage_native_ledger_conformance.py",
+        "destination": "tests/test_storage_native_ledger_conformance.py",
+        "sha256_lf": "7abc0e34524e0fa78a386b117246aadccfb68f4d0e97ea367716b47583d931bb"
+      }
+    ]
+  }
+}
