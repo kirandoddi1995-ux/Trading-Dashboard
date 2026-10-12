@@ -14,6 +14,7 @@ FOUNDATION_MANIFEST = 'STORAGE_FOUNDATION_UPLOAD_2026-10-11.json'
 REPAIR_MANIFEST = 'STORAGE_NATIVE_REPAIR_UPLOAD_2026-10-11.json'
 LEDGER_MANIFEST = 'STORAGE_NATIVE_LEDGER_UPLOAD_2026-10-11.json'
 OVERNIGHT_MANIFEST = 'STORAGE_OVERNIGHT_UPLOAD_2026-10-12.json'
+RECOVERY_MANIFEST = 'STORAGE_SIX_EXPORT_UPLOAD_2026-10-12.json'
 NATIVE_WORKFLOW = '.github/workflows/storage-native-conformance.yml'
 
 
@@ -26,7 +27,7 @@ def relative(value: object) -> str:
             or value != path.as_posix()
             or (any(part.startswith('.') for part in path.parts) and value != NATIVE_WORKFLOW)
             or (path.suffix not in ('.py', '.md', '.sql', '.json') and value != NATIVE_WORKFLOW)
-            or (path.suffix == '.json' and value not in (MANIFEST, FOUNDATION_MANIFEST, REPAIR_MANIFEST, LEDGER_MANIFEST, OVERNIGHT_MANIFEST))):
+            or (path.suffix == '.json' and value not in (MANIFEST, FOUNDATION_MANIFEST, REPAIR_MANIFEST, LEDGER_MANIFEST, OVERNIGHT_MANIFEST, RECOVERY_MANIFEST))):
         raise ValueError('PATH_INVALID')
     return value
 
@@ -51,7 +52,7 @@ def validate_files(root: Path, entries: list[dict[str, Any]], changed: set[str])
     for entry in entries:
         path = checked_file(root, entry['destination'])
         expected = entry['sha256_lf']
-        if entry['destination'] in (MANIFEST, FOUNDATION_MANIFEST, REPAIR_MANIFEST, LEDGER_MANIFEST, OVERNIGHT_MANIFEST) and expected is None:
+        if entry['destination'] in (MANIFEST, FOUNDATION_MANIFEST, REPAIR_MANIFEST, LEDGER_MANIFEST, OVERNIGHT_MANIFEST, RECOVERY_MANIFEST) and expected is None:
             continue  # The reviewed control manifest cannot hash itself.
         if not isinstance(expected, str) or re.fullmatch(r'[0-9a-f]{64}', expected) is None:
             raise ValueError('MANIFEST_HASH_INVALID')
@@ -72,8 +73,8 @@ def git(root: Path, *args: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     """Capture base before copying; exact-tree rehearsal remains separate from CI."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--group', required=True, choices=('capture', 'storage', 'foundation', 'native_repair', 'native_ledger', 'overnight'))
-    parser.add_argument('--manifest', choices=(MANIFEST, FOUNDATION_MANIFEST, REPAIR_MANIFEST, LEDGER_MANIFEST, OVERNIGHT_MANIFEST), default=MANIFEST)
+    parser.add_argument('--group', required=True, choices=('capture', 'storage', 'foundation', 'native_repair', 'native_ledger', 'overnight', 'six_export'))
+    parser.add_argument('--manifest', choices=(MANIFEST, FOUNDATION_MANIFEST, REPAIR_MANIFEST, LEDGER_MANIFEST, OVERNIGHT_MANIFEST, RECOVERY_MANIFEST), default=MANIFEST)
     parser.add_argument('--base', required=True)
     parser.add_argument('--root', type=Path, default=Path.cwd())
     args = parser.parse_args(argv)
@@ -90,10 +91,12 @@ def main(argv: list[str] | None = None) -> int:
                             FOUNDATION_MANIFEST: 'storage-foundation-upload-v1',
                             REPAIR_MANIFEST: 'storage-native-repair-upload-v1',
                             LEDGER_MANIFEST: 'storage-native-ledger-upload-v1',
-                            OVERNIGHT_MANIFEST: 'storage-overnight-upload-v1'}[args.manifest]
+                            OVERNIGHT_MANIFEST: 'storage-overnight-upload-v1',
+                            RECOVERY_MANIFEST: 'storage-six-export-upload-v1'}[args.manifest]
         allowed_groups = {MANIFEST: ('capture', 'storage'),
                           FOUNDATION_MANIFEST: ('foundation',), REPAIR_MANIFEST: ('native_repair',),
-                          LEDGER_MANIFEST: ('native_ledger',), OVERNIGHT_MANIFEST: ('overnight',)}
+                          LEDGER_MANIFEST: ('native_ledger',), OVERNIGHT_MANIFEST: ('overnight',),
+                          RECOVERY_MANIFEST: ('six_export',)}
         if (manifest.get('version') != expected_version
                 or args.group not in allowed_groups[args.manifest]):
             raise ValueError('MANIFEST_VERSION_INVALID')

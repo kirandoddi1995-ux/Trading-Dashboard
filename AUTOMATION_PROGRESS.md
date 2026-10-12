@@ -1,5 +1,110 @@
 # Automation foundation — continuity record
 
+## Current checkpoint — detached six-table materialization continuation
+
+Added inactive recovery_materialization.py and tests/test_recovery_materialization.py.
+It authenticates before target creation, copies only three fixed generation files
+with exclusive creation/size/deadline bounds, fsyncs files, and rechecks both cuts.
+Injected remote lookups review original identities/fences without sends or ACKs;
+unknown COMMIT remains pending. Partial failures retain targets, never retry in
+place. All independent custody, encryption, application recovery and approval
+flags remain false. Caller ACL/concurrent-mutation exclusion remain required.
+No credentials, installed capture, hosted resources or sealed data accessed.
+Focused suite 49 passed; final component 22 passed. Strict typing both files PASS.
+Self-review replaced declared artifact comparisons with measured restored bytes.
+The revised single group has fifteen paths and supersedes its unuploaded
+thirteen-path version. Revised full public-tree validation PASSED: 3132 passed,
+four skipped, two subtests passed in 330.71s, including offline app/import boot
+and disposable SQL cases. Focused combined package: 221 passed in 19.06s.
+Whole public root lint, both new test lint, strict typing eight changed/new
+inputs, existing automation typing nineteen inputs, and inactive imports PASS.
+Fingerprint remains 03ad7baa68ebaad1f64b1cd3c356455e1c18cb8f23f027652de303b64b4f8478.
+Initial candidate missed the new files because a manifest insertion landed in
+prerequisites; that run was stopped, not counted as validation. Corrected group
+placement and added explicit fifteen-path/no-new-file-prerequisite assertions.
+All final Python inputs were in the successful full run. Only documentation and
+manifest hashes changed afterward; final exact-file tests are rechecked.
+The earlier full result 3110/4/2 is the prior public tree, not this revision.
+Whole objective remains unfinished; goal controller reports usageLimited at this
+handoff, not completion or an owner-requested pause. Next: authenticated real adapter/custody and actual
+all-factory guarded writer/cold reader integration, not another commissioning flag.
+
+Factory audit read the explicit historical factory and current call sites:
+app.py get_evidence_ledger/get_production_repository/get_equity_scan_repository/
+get_scan_jobs plus two derivative construction paths; scheduled_collector.py run
+and its migrate/validate health paths; evidence_progress.py, model_training_pipeline.py,
+derivative_monitor.py and recovery_drill.py. None of those call sites uses the
+explicit ledger_historical_repository.read_only_repository factory. That factory
+binds the cold reader to the SAME repository connection and deliberately refuses
+automatic activation. Root production_repository.py is an unfinished working set;
+use the reviewed public candidate/staged version as the next package's baseline,
+not a sweep of dirty root files. Inventory is not global guarded-write acceptance.
+storage_write_guard.py owns one transaction on an idle dedicated connection;
+wrapping a whole collector run with its internally committing methods would break
+ownership. Integration needs per-write transaction boundaries and original-event
+reconciliation, not a decorator around collector.run or a raised capacity floor.
+
+## Current checkpoint — complete-note intake and six-table export join
+
+All 91 public saved project notes were read in full. The local
+PROJECT_BACKLOG_REVIEW_STATE_2026-10-12.json records original hashes/coverage;
+PROJECT_COMPLETE_BACKLOG_2026-10-12.md merges the requirements, dependencies and
+superseded paid-service assumptions. Zero-cost is current authority. The whole
+goal remains active: this is not permanent-storage commissioning or completion.
+
+recovery_export.py now supports an exact same-source six-table contract, deriving
+both witnesses from one completed bounded SQLite image and signing them with the
+image. Restore authenticates the image digest before opening SQLite. Five-table
+behavior and limits remain supported. New deterministic synthetic tests cover
+copy/readback, missing sixth table, corrupt/swap/sidecar inputs, incompatible
+contracts and detached WAL source. Focused recovery suite: 100 passed in 6.23s.
+Initial sandbox temp/path errors were environment failures; elevated authorized
+offline tests ran only synthetic files. No private/installed capture was accessed.
+
+Validation of the complete successor public tree passed. The recovery-only
+candidate passed 3,061 tests / four skips / two subtests in
+319.14s. The combined candidate adds an inactive research_claim_projection.py,
+with unknown labels retained, raw forward return separate from excess, reserved
+feature collision rejection and no promotion of payload claims. This is a tested
+building block, not live-reader integration; R01 remains open. Its initial test
+failure caught categorical market_regime in the collision check; corrected the
+explicit categorical path and retained all reserved identity/proof checks.
+Combined focused suite: 199 passed in 12.82s. Strict typing six changed/new inputs,
+whole public lint and imports PASS. Final combined public candidate: 3,110 passed,
+four skipped, two subtests passed in 332.49s, including app import and offline
+Streamlit boot cases. Existing automation typing: 19 files clean. No test-count
+drop. Post-review changes after that run are documentation/manifest hashes only;
+the focused manifest/test group is rechecked after those changes.
+The new package manifest
+is STORAGE_SIX_EXPORT_UPLOAD_2026-10-12.json; historical manifests remain unchanged.
+Exactly thirteen upload paths, all source=destination, are in
+STORAGE_SIX_EXPORT_PACKAGE_2026-10-12.md. The owner's actual clean-main Git
+rehearsal remains required; the agent checked an explicit prior-public-tree overlay,
+not actual hosted main. Public candidate fingerprint unchanged:
+03ad7baa68ebaad1f64b1cd3c356455e1c18cb8f23f027652de303b64b4f8478.
+Do not change Streamlit expectations or release hold. All components are inactive.
+No hosted resources/credentials/2025–2026 datasets were accessed; no push, release,
+Streamlit expectation or task change. Native 6+8+9 is owner-reported evidence.
+
+Fresh official research found an additional calendar dependency: NSE currently
+lists F&O close at 15:40 and Upstox dates the change to 3 August 2026. Do not widen
+the installed capture or back-project this to development. Reconcile retained
+exchange circulars, cash CAS/spot bar semantics and broker square-off deadlines
+before calendar/risk commissioning. Supabase Free recovery requires measured
+offsite exports rather than assuming paid PITR; custom-role passwords and Storage
+object bytes need separate custody. See the merged backlog's primary-source links.
+
+Next offline engineering remains the ENTIRE backlog: independent replica/full
+restore, every factory/writer/cold reader, receipt-history segmentation, ledger
+sealing, source-specific retention/universe dedup/capacity alerts, causal F&O
+contracts/cost/risk/paper tracking, then frozen research and ML last. Owner-only
+key/disk/licensing/account/professional/settings operations are prepared, not run.
+The next coherent chunk is S02/S04 replica/recovery and all-factory integration;
+unknown COMMIT, old keys, cold-reference failure, stale fences and terminal-head
+rollback need acceptance. R01 has an inactive tested projection but default hot
+repository integration remains uncorrected. Native commissioning flags remain
+false. No owner task waiting is a claim that all offline engineering is complete.
+
 ## Current checkpoint — 12 October overnight receipt/fence and joint backup binding
 
 Owner reports all five prior uploads merged green; disposable main 0db342b passes

@@ -14,7 +14,11 @@ def test_exact_overnight_files_and_prerequisites() -> None:
     manifest = json.loads((root / checker.OVERNIGHT_MANIFEST).read_bytes())
     assert manifest['version'] == 'storage-overnight-upload-v1'
     entries = manifest['groups']['overnight']
-    checker.validate_files(root, entries, {entry['destination'] for entry in entries})
+    current = json.loads((root / checker.RECOVERY_MANIFEST).read_bytes())['groups']['six_export']
+    superseded = {entry['destination'] for entry in current}
+    checker.validate_files(root, [entry for entry in entries
+                                 if entry['destination'] not in superseded], set())
+    checker.validate_files(root, current, set())
     checker.validate_files(root, manifest['prerequisites']['overnight'], set())
     assert all(entry['source'] == entry['destination'] for entry in entries)
     assert not any(entry['destination'].startswith('supabase/migrations/') for entry in entries)
