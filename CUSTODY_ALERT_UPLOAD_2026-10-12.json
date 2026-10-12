@@ -1,0 +1,87 @@
+{
+  "version": "custody-alert-upload-v1",
+  "files": [
+    {
+      "source": "recovery_custody_rehearsal.py",
+      "sha256_lf": "666504f6a0cf2e9bbb65a8ad7edbf8f74fd69a2d37ff1cd85f7281d75b8a3105",
+      "destination": "recovery_custody_rehearsal.py"
+    },
+    {
+      "source": "storage_alert_delivery.py",
+      "sha256_lf": "5e138df1b1bbc3f49d872485b0c6984cceeba868e790c6b2be87f8382d8eba82",
+      "destination": "storage_alert_delivery.py"
+    },
+    {
+      "source": "custody_alert_upload_check.py",
+      "sha256_lf": "673cbc8f816fa588dc6253f0f7a5b090f2b144dab7213b1737970c1a56a93b1f",
+      "destination": "custody_alert_upload_check.py"
+    },
+    {
+      "source": "tests/test_recovery_custody_rehearsal.py",
+      "sha256_lf": "8179810135ba31f01d080e90acf1e590527553ecdde9a31410798ac136c686a8",
+      "destination": "tests/test_recovery_custody_rehearsal.py"
+    },
+    {
+      "source": "tests/test_storage_alert_delivery.py",
+      "sha256_lf": "8be78eac9b103e2e1cd1e955e8f3f6a254416daa9dc7da6b1e78aa668f48dd3b",
+      "destination": "tests/test_storage_alert_delivery.py"
+    },
+    {
+      "source": "tests/test_custody_alert_upload.py",
+      "sha256_lf": "dee7f33117a1d309c33dff1d53e31073188e68288a315e50ea0a19f593a339dc",
+      "destination": "tests/test_custody_alert_upload.py"
+    },
+    {
+      "source": "CUSTODY_ALERT_PACKAGE_2026-10-12.md",
+      "sha256_lf": "55f99f373123b6f188e3b516c666395b677a7a538b6398481dfda736dfcaac78",
+      "destination": "CUSTODY_ALERT_PACKAGE_2026-10-12.md"
+    },
+    {
+      "source": "CUSTODY_ALERT_UPLOAD_2026-10-12.json",
+      "destination": "CUSTODY_ALERT_UPLOAD_2026-10-12.json",
+      "sha256_lf": null
+    }
+  ],
+  "prerequisites": [
+    {
+      "source": "reviewed_upload_check.py",
+      "sha256_lf": "d4f1116394447ec5bb41522ce7b83e3240e2e18c6434f1dbdf3f49eab8d3592f",
+      "destination": "reviewed_upload_check.py"
+    },
+    {
+      "source": "recovery_export.py",
+      "sha256_lf": "b262472b891dba298cf1f87c9a83fbea616af5a6062c869033c371ec6a9c1f50",
+      "destination": "recovery_export.py"
+    },
+    {
+      "source": "recovery_bundle.py",
+      "sha256_lf": "9641a7512352fa3f2aa7964536bd9f3f77b4a58b0d3aa050f425c57b5cff0b79",
+      "destination": "recovery_bundle.py"
+    },
+    {
+      "source": "recovery_materialization.py",
+      "sha256_lf": "32694e22ad289871c918d26b0cd9d4dc3f5c8ad0264fadf5d00dc61e8a7b73bb",
+      "destination": "recovery_materialization.py"
+    },
+    {
+      "source": "recovery_replica_audit.py",
+      "sha256_lf": "1f68308cae4f013f6b632a4b16d3aaa9bd0f5eb48551bec5ed9db99f184e0a34",
+      "destination": "recovery_replica_audit.py"
+    },
+    {
+      "source": "catalog_receipts.py",
+      "sha256_lf": "ff0608df2cd2efa8feec3749a045c173fc3a6ec40fe46b8d86f439f57cb0e5d2",
+      "destination": "catalog_receipts.py"
+    },
+    {
+      "source": "storage_capacity_watch.py",
+      "sha256_lf": "48817e13ab145b7eabfd0f5087dd2135223bc2373ceb9d274ab9ac4e5fa0e0c1",
+      "destination": "storage_capacity_watch.py"
+    },
+    {
+      "source": "collector_storage_preflight.py",
+      "sha256_lf": "0c9849afa75e286b1f2adc3c582abec3a8d1587cb31227b835f68aa8cc022a2f",
+      "destination": "collector_storage_preflight.py"
+    }
+  ]
+}
