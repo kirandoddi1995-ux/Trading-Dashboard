@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import asdict, dataclass, field
 import datetime as dt
+import io
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,8 @@ import time
 import catalog_receipts as receipts
 import local_state_recovery as state
 import recovery_bundle as bundle
+import recovery_six_binding as six_binding
+import terminal_intent_snapshot as intents
 
 MAX_EXPORT_SECONDS = 30.0
 SQLITE_TIMEOUT = 2.0
@@ -27,6 +30,7 @@ PAGE_BATCH = 128
 MAX_CUSTODY_BYTES = 64 * 1024
 IMAGE = 'primary.sqlite'
 MANIFEST = 'bundle.json'
+SIX_WITNESS = 'six-table-witness.json'
 CUSTODY_SCHEMA = ('CREATE TABLE custody(singleton INTEGER PRIMARY KEY CHECK(singleton=1),'
                   'contract TEXT NOT NULL,generation INTEGER NOT NULL,'
                   'root TEXT NOT NULL,receipt_sha TEXT NOT NULL)')
@@ -46,9 +50,15 @@ class PreparedGeneration:
 def _contract(contract: bundle.BackupContract) -> str:
     """Only one SQLite source is supported; never imply a cross-file freeze."""
     bundle.genesis(contract)  # Public validation; not a lost-checkpoint fallback.
-    if (len(contract.bindings) != 1 or contract.bindings[0].name != 'primary_state'
-            or contract.bindings[0].format != 'sqlite-image-v1'):
+    primary = [b for b in contract.bindings if b.name == 'primary_state']
+    if (len(primary) != 1 or primary[0].format != 'sqlite-image-v1'
+            or len(contract.bindings) not in (1, 2)):
         raise ExportError('EXPORT_CROSS_FILE_ADAPTER_REQUIRED')
+    if len(contract.bindings) == 2:
+        sixth = [b for b in contract.bindings if b.name == six_binding.NAME]
+        if (len(sixth) != 1 or sixth[0].format != 'derived-state-v1'
+                or sixth[0].source_id != primary[0].source_id):
+            raise ExportError('EXPORT_CROSS_FILE_ADAPTER_REQUIRED')
     return json.dumps(asdict(contract), sort_keys=True, separators=(',', ':'))
 
 
@@ -146,13 +156,22 @@ def prepare(source: Path, directory: Path, *, contract: bundle.BackupContract,
             after.execute('PRAGMA journal_mode=DELETE')
         _sync(image)
         _integrity(image)
-        with state.capture(lambda: _readonly(image), original_keys,
-                           spool_parent=directory) as snapshot:
-            witness = snapshot.witness
         with image.open('rb') as stream:
             identity = bundle.measure('primary_state', stream)
-        signed = bundle.seal(contract, witness, (identity,), previous=previous,
-            key_id=key_id, key=key, bundle_id=bundle_id, cut_id=cut_id, at=at)
+        if len(contract.bindings) == 2:
+            with intents.capture_six(lambda: _readonly(image), original_keys,
+                                    spool_parent=directory) as six_snapshot:
+                bound = six_binding.seal(contract, six_snapshot.primary.witness,
+                    six_snapshot.intents, (identity,), previous=previous, key_id=key_id,
+                    key=key, bundle_id=bundle_id, cut_id=cut_id, at=at)
+            _write_new(directory / SIX_WITNESS, bound.witness_bytes)
+            signed = bound.signed
+        else:
+            with state.capture(lambda: _readonly(image), original_keys,
+                               spool_parent=directory) as snapshot:
+                witness = snapshot.witness
+            signed = bundle.seal(contract, witness, (identity,), previous=previous,
+                key_id=key_id, key=key, bundle_id=bundle_id, cut_id=cut_id, at=at)
         _write_new(directory / MANIFEST, signed.data)
         # Do not claim directory-entry flush or second-copy durability on Windows.
         return PreparedGeneration(directory, signed)
@@ -173,24 +192,42 @@ def verify_generation(directory: Path, *, checkpoint: bundle.BundleCheckpoint,
     try:
         _contract(contract)
         directory = _directory(directory)
-        if {p.name for p in directory.iterdir()} != {IMAGE, MANIFEST}:
+        expected_files = {IMAGE, MANIFEST}
+        if len(contract.bindings) == 2:
+            expected_files.add(SIX_WITNESS)
+        if {p.name for p in directory.iterdir()} != expected_files:
             raise ExportError('EXPORT_INCOMPLETE_GENERATION')
         image = _file(directory / IMAGE)
         manifest = _file(directory / MANIFEST)
         with manifest.open('rb') as stream:
             data = stream.read(bundle.MAX_MANIFEST_BYTES + 1)
-        bundle.verify(data, checkpoint=checkpoint, contract=contract, keyring=keys)
-        _integrity(image)
+        verified = bundle.verify(data, checkpoint=checkpoint, contract=contract, keyring=keys)
         with image.open('rb') as stream:
             identity = bundle.measure('primary_state', stream)
-        with state.capture(lambda: _readonly(image), original_keys,
-                           spool_parent=spool_parent) as snapshot:
-            witness = snapshot.witness
+        # Authenticate the complete image before handing any of it to SQLite.
+        if identity not in verified.artifacts:
+            raise ExportError('EXPORT_IMAGE_DIGEST_MISMATCH')
+        _integrity(image)
+        if len(contract.bindings) == 2:
+            with _file(directory / SIX_WITNESS).open('rb') as stream:
+                witness_bytes = stream.read(six_binding.MAX_BYTES + 1)
+            with intents.capture_six(lambda: _readonly(image), original_keys,
+                                    spool_parent=spool_parent) as six_snapshot:
+                witness_identity = bundle.measure(six_binding.NAME,
+                    io.BytesIO(witness_bytes))
+                six_binding.verify_restore(data, witness_bytes, checkpoint=checkpoint,
+                    contract=contract, keyring=keys, observed=(identity, witness_identity),
+                    restored_primary=six_snapshot.primary.witness,
+                    restored_intents=six_snapshot.intents)
+        else:
+            with state.capture(lambda: _readonly(image), original_keys,
+                               spool_parent=spool_parent) as snapshot:
+                witness = snapshot.witness
+            bundle.verify_restore(data, checkpoint=checkpoint, contract=contract,
+                keyring=keys, observed=(identity,), restored_witness=witness)
         with image.open('rb') as stream:
             if identity != bundle.measure('primary_state', stream):
                 raise ExportError('EXPORT_IMAGE_CHANGED')
-        bundle.verify_restore(data, checkpoint=checkpoint, contract=contract,
-                              keyring=keys, observed=(identity,), restored_witness=witness)
         return data
     except ExportError:
         raise

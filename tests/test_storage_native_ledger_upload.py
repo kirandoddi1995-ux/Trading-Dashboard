@@ -40,6 +40,9 @@ def test_delivered_upload_manifest_exact_sources_and_dependencies() -> None:
     # next package are checked against that package, not their old release bytes.
     successor = json.loads((root / check.OVERNIGHT_MANIFEST).read_bytes())
     current = successor['groups']['overnight']
+    newest = json.loads((root / check.RECOVERY_MANIFEST).read_bytes())['groups']['six_export']
+    replaced = {item['destination'] for item in newest}
+    current = [item for item in current if item['destination'] not in replaced] + newest
     superseded = {item['destination'] for item in current}
     check.validate_files(root, [item for item in entries
                                if item['destination'] not in superseded], set())
