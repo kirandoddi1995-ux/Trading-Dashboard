@@ -1,0 +1,82 @@
+{
+  "version": "versioned-capture-upload-v1",
+  "files": [
+    {
+      "source": "forward_versioned_producer.py",
+      "destination": "forward_versioned_producer.py",
+      "sha256_lf": "10c1bf38580b021093529146d644a03a5a7bf930196aba6233d44f527c614860"
+    },
+    {
+      "source": "forward_versioned_capture.py",
+      "destination": "forward_versioned_capture.py",
+      "sha256_lf": "af2eae58cd3b8e9f6d82a4dd1b2dbf90bea8205b6420b1b4a420e26b5f1d3fcc"
+    },
+    {
+      "source": "versioned_capture_upload_check.py",
+      "destination": "versioned_capture_upload_check.py",
+      "sha256_lf": "9f53a38a826cbe14cc91befc48228ac2d5adadcf60cd0247800ca4b44b1f8945"
+    },
+    {
+      "source": "tests/test_forward_versioned_producer.py",
+      "destination": "tests/test_forward_versioned_producer.py",
+      "sha256_lf": "bbef4bfbd148f77d97c0bce51d8ab3b1400dd0e9a1c37536ea96dc50c4163076"
+    },
+    {
+      "source": "tests/test_forward_versioned_capture.py",
+      "destination": "tests/test_forward_versioned_capture.py",
+      "sha256_lf": "5c385c75358226137e6bb8854f794b0747fc9bf823ae56604c32f6247f07fca3"
+    },
+    {
+      "source": "tests/test_versioned_capture_upload.py",
+      "destination": "tests/test_versioned_capture_upload.py",
+      "sha256_lf": "eea9a877b262fe24630bc87b1d3f66fcc297f616ea51cc798df5a0512689c0fd"
+    },
+    {
+      "source": "VERSIONED_CAPTURE_2026-10-12.md",
+      "destination": "VERSIONED_CAPTURE_2026-10-12.md",
+      "sha256_lf": "ffa26e8472eeb84df08415a3a4a58df075d4c804c51eb7e5b84d157214663327"
+    },
+    {
+      "source": "VERSIONED_CAPTURE_UPLOAD_2026-10-12.json",
+      "destination": "VERSIONED_CAPTURE_UPLOAD_2026-10-12.json",
+      "sha256_lf": null
+    }
+  ],
+  "prerequisites": [
+    {
+      "source": "reviewed_upload_check.py",
+      "destination": "reviewed_upload_check.py",
+      "sha256_lf": "d4f1116394447ec5bb41522ce7b83e3240e2e18c6434f1dbdf3f49eab8d3592f"
+    },
+    {
+      "source": "forward_revision_policy.py",
+      "destination": "forward_revision_policy.py",
+      "sha256_lf": "dda49286820fd04ab9ac6ec511ba63e52b7228d7463a0631a1e00e19a9a13eec"
+    },
+    {
+      "source": "forward_revision_evidence.py",
+      "destination": "forward_revision_evidence.py",
+      "sha256_lf": "5250ee1f4b37b4f6579abb89c20c028a60f860d0cfb26f8119d81bc4b58966a5"
+    },
+    {
+      "source": "forward_revision_quarantine.py",
+      "destination": "forward_revision_quarantine.py",
+      "sha256_lf": "b9dac8e7f98185fe2db76b25960b9197b48206ce91045789aa0143eb1c91c289"
+    },
+    {
+      "source": "forward_nifty_producer.py",
+      "destination": "forward_nifty_producer.py",
+      "sha256_lf": "378cd1f0396fca049f8f3a036508fa0745f78c6db3631209df49bd28b4793f8e"
+    },
+    {
+      "source": "forward_nifty_job.py",
+      "destination": "forward_nifty_job.py",
+      "sha256_lf": "05c20428d2a8841faa829b28d9b4a95ecf7387225654dbcea46582a4d00058c1"
+    },
+    {
+      "source": "forward_nifty_schedule.py",
+      "destination": "forward_nifty_schedule.py",
+      "sha256_lf": "f05eb59d20d50a77975efed7c47a615c5df97e9be0811b63d0ae31308c50bfd3"
+    }
+  ]
+}
