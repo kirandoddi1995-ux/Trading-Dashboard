@@ -1,0 +1,500 @@
+{
+  "version": "overnight-reviewed-upload-v1",
+  "group": "capture",
+  "files": [
+    {
+      "destination": "overnight_capture_audit.py",
+      "sha256_lf": "45d48ec4e65fa145c227a9c99394fffd7976d156ebd986464533c92098797633"
+    },
+    {
+      "destination": "overnight_capture_calendar.py",
+      "sha256_lf": "8682da0ee02ab722bb4a38fd57e642fdeadbd5572b4b9741825dd54557406666"
+    },
+    {
+      "destination": "overnight_capture_planning.py",
+      "sha256_lf": "407d80af8ec27f2c3480e7a901c8f3214d646164cbe7732c150e291c54fe64a3"
+    },
+    {
+      "destination": "tests/test_overnight_capture_audit.py",
+      "sha256_lf": "da714f3510700b3b47cb2779614cb1fcf3fc72307726ae991477059d446a151a"
+    },
+    {
+      "destination": "tests/test_overnight_capture_planning.py",
+      "sha256_lf": "848cbd6532b6774ce5804a8da795c0aa8397fa43e942ccde896939cf1d30ccf6"
+    },
+    {
+      "destination": "OVERNIGHT_CAPTURE_2026-10-13.md",
+      "sha256_lf": "31b4674ce6ddc5fa5c7b41c9f90145868c0c22453d21c39e415cf82ce194b438"
+    },
+    {
+      "destination": "overnight_capture_upload_check.py",
+      "sha256_lf": "6a8827b9b57c21fd330f86b009b01574f17e9934a17ef2a89151516d427b11a1"
+    },
+    {
+      "destination": "OVERNIGHT_CAPTURE_UPLOAD_2026-10-13.json",
+      "sha256_lf": null
+    },
+    {
+      "destination": "overnight_upload_check.py",
+      "sha256_lf": "da78b0e1958e28969ee46e5d735339967b4089936aeefbb67319addc2f04e034"
+    },
+    {
+      "destination": "tests/test_overnight_upload_check.py",
+      "sha256_lf": "73d57e14833a3cbb8a85672eb2efebf4f46c81f0859d62e2e73de64c34470eb9"
+    },
+    {
+      "destination": "OVERNIGHT_PROGRAMME_2026-10-13.md",
+      "sha256_lf": "f6253b97ca186c38364f524fe9d7af53f657da19e3f45c2527160496a3cd7546"
+    },
+    {
+      "destination": "OVERNIGHT_UPLOAD_ORDER_2026-10-13.md",
+      "sha256_lf": "4f6b80033023f64dfe8aabbfb20bc3818c10effceedf6754c4263c4ea3298ac2"
+    }
+  ],
+  "prerequisites": [
+    {
+      "destination": "app.py",
+      "sha256_lf": "4598616a27f25c7a4684df02237e29b38fcb17cb64e18e893c189aed0724a828"
+    },
+    {
+      "destination": "app_runtime.py",
+      "sha256_lf": "91d6bf53befe306175e0afd7631be8845448234ff5dd63e831bec9fb16c558aa"
+    },
+    {
+      "destination": "artifact_security.py",
+      "sha256_lf": "add6881d774ddcd5486f54710b4792067ab3d088beae5c7a3d7026105cff1143"
+    },
+    {
+      "destination": "automated_development_checks.py",
+      "sha256_lf": "54d4530d75bf61fc4e7c9a01e797a4734bd6db5a9cd740ab0b314078200d2cd7"
+    },
+    {
+      "destination": "automated_directional_replay.py",
+      "sha256_lf": "c7010ebf9d2dc474bbfac9cfc86740f468ac0ee2522cbe90c8e46e4753cfbd8f"
+    },
+    {
+      "destination": "calibration_artifacts.py",
+      "sha256_lf": "20a2de2bf62648a987d729d4d2b082704deab56cd0a50192d5f3ce2daf6df25f"
+    },
+    {
+      "destination": "catalog_receipts.py",
+      "sha256_lf": "ff0608df2cd2efa8feec3749a045c173fc3a6ec40fe46b8d86f439f57cb0e5d2"
+    },
+    {
+      "destination": "cold_catalog.py",
+      "sha256_lf": "4753cab1ca61ff551284c75b1a8004be41b5712ab8534bde9981b1272de7ff8a"
+    },
+    {
+      "destination": "constraints.txt",
+      "sha256_lf": "433d34cc1146a838c792b8b417acefed300895a3543d62a295cb00c2791a7ba3"
+    },
+    {
+      "destination": "continuous_evolution.py",
+      "sha256_lf": "faf0f49e1d8dfa6085ae051181a16daa6c338013612dd4b45ddb35dcd49be814"
+    },
+    {
+      "destination": "decision_evidence.py",
+      "sha256_lf": "71f4b50e1e0e2f49f377019924fce194922021759cd3abfe1b6c63f771a65d02"
+    },
+    {
+      "destination": "deployment_security.py",
+      "sha256_lf": "909b3631785c8ceb1fc93e9987884b52745ccbeb9cf5badf0d6f082ba3cf9ff2"
+    },
+    {
+      "destination": "derivative_commissioning.py",
+      "sha256_lf": "0217e26b38e9b5e84689e9f1eb39078e67eab0b512347ec218200e69f5a6dcc4"
+    },
+    {
+      "destination": "derivative_contracts.py",
+      "sha256_lf": "4edf319d58882147cc1876aa91ded96b83c53653835c38e3dce88e74e53336c2"
+    },
+    {
+      "destination": "derivative_corporate_actions.py",
+      "sha256_lf": "eb6139e59b63052209a3910231d590e67af8f2736e9bbe9164a0d4e5320defc3"
+    },
+    {
+      "destination": "derivative_monitor.py",
+      "sha256_lf": "e2200e6d187cad5c27c034ffbec1c0c39586328e9cb8db8cabafe74bb5a41243"
+    },
+    {
+      "destination": "derivative_preflight.py",
+      "sha256_lf": "2828c1071767e0961c7e8adf5eae06d7c09928ca946068d668d420b91adf9e18"
+    },
+    {
+      "destination": "derivative_quotes.py",
+      "sha256_lf": "a6dd736637e7324df6dd38e15585867a480c7983058b5fb2857d6ae1ceccfd5d"
+    },
+    {
+      "destination": "derivative_repository.py",
+      "sha256_lf": "32eee5df4119fddf6866a35523ae02ecf868925ada7f87535e13be8eb18c81e7"
+    },
+    {
+      "destination": "derivative_restrictions.py",
+      "sha256_lf": "d59078b19448ca9a85991f460c91b2f15362bf1a7e7a24a069410bb39cc40974"
+    },
+    {
+      "destination": "derivative_settlement.py",
+      "sha256_lf": "d0a0d5f8367f68a1750f5abfc49db8ebbaf04a0dbdcb3729f2c3866abf3b4eb6"
+    },
+    {
+      "destination": "development_cost_hurdles.py",
+      "sha256_lf": "3b605432a2cb8063b4f424498c2ddd27c2b01b91f1b19a24e0a73287f448d9a2"
+    },
+    {
+      "destination": "directional_replay_diagnostics.py",
+      "sha256_lf": "b3537900c71709c424dd0f55a1ea77fed6158193b377870cac17b3816c854963"
+    },
+    {
+      "destination": "drive_archive.py",
+      "sha256_lf": "47bae109d49a43408fbe2cd3176a974d49e997442ddf1f1f9adcb8161caea38f"
+    },
+    {
+      "destination": "equity_checkpoint_delivery.py",
+      "sha256_lf": "4268cebea10395e617caf2444b04adf93fc03db8702d2f4174a7fa02548440a0"
+    },
+    {
+      "destination": "equity_evidence_delivery.py",
+      "sha256_lf": "01b25ab2db7f2dcabe66423b8534580473ee1d8e873d54f67e90c2580ba8b6cf"
+    },
+    {
+      "destination": "equity_execution_policy.py",
+      "sha256_lf": "ec81e2e6f363f418d524afe9fa3ef6abf7ba6df86837d23cbf47e111f0216163"
+    },
+    {
+      "destination": "equity_manual_review.py",
+      "sha256_lf": "82f06eca1e39a21bc9f323467aada9663693a82cef3305bba1b5a88a45be2190"
+    },
+    {
+      "destination": "equity_observation_capture.py",
+      "sha256_lf": "2c282e96634d6a57045f61fe42b699985043416d3ca9a485074918d66bdca431"
+    },
+    {
+      "destination": "equity_order_records.py",
+      "sha256_lf": "8523954ea5ee2ce11551227f3935042ec7aa06083bcab76cb466538fc746b230"
+    },
+    {
+      "destination": "equity_positions.py",
+      "sha256_lf": "f67274837fb689385341943a21de00956e7362812c5d965037d57034011db809"
+    },
+    {
+      "destination": "equity_runtime_evidence.py",
+      "sha256_lf": "d9a26d816d1955371f42ed4b9271a1f09428c8e46da4e530e535eddb4b64d6bb"
+    },
+    {
+      "destination": "equity_runtime_health.py",
+      "sha256_lf": "9f92d460e26ca2801917a2f8704408c25abb5e2d321ff106a21a0be5266f821e"
+    },
+    {
+      "destination": "equity_scan_profiling.py",
+      "sha256_lf": "1a70165f3e18516a61c4b3f763ddd520478806a9778bf4c706adfc82599ceb13"
+    },
+    {
+      "destination": "equity_scan_repository.py",
+      "sha256_lf": "c8aee1edc3ac7a2cc39e73367d9dc976facf23d0fe4ac33526f32c68206ed19c"
+    },
+    {
+      "destination": "event_backtest.py",
+      "sha256_lf": "0440fe169a747166ed436c5e0152c6bfeee64495b90a4b03c34f6a3afb3818e8"
+    },
+    {
+      "destination": "evidence_ledger.py",
+      "sha256_lf": "6c410ee20bf664552e0ac42845fb995d652dc1e6488ddf8bfe66dadabd930669"
+    },
+    {
+      "destination": "evidence_progress.py",
+      "sha256_lf": "585dca19065b16c7c1acfcfa37d8cc7d4386796c0ce53edcd6a991c2cf0d7484"
+    },
+    {
+      "destination": "evidence_tiers.py",
+      "sha256_lf": "7a460739b0121a16f4e5651545c300d47d25e848bcd6794896b8a0d155f03c4c"
+    },
+    {
+      "destination": "feature_store.py",
+      "sha256_lf": "259a83ca1f43999f181f22af3658fa6f88e24143551a7195715d732f274944ed"
+    },
+    {
+      "destination": "forward_capture_diagnostics.py",
+      "sha256_lf": "4ddea2f4b631c581e40933c6f01fcf0f41c960a9b3612e51e8d63b36f12975f8"
+    },
+    {
+      "destination": "forward_local_diagnostic.py",
+      "sha256_lf": "2f0bd98f9047f3c9f0aa80985a11a941570f60e5d765d6e02210539276dfe793"
+    },
+    {
+      "destination": "forward_nifty_archive.py",
+      "sha256_lf": "2991bb6b83cd87dcda54901ed448a0292a26c118cbef5938e834f7f0d4415cee"
+    },
+    {
+      "destination": "forward_nifty_job.py",
+      "sha256_lf": "05c20428d2a8841faa829b28d9b4a95ecf7387225654dbcea46582a4d00058c1"
+    },
+    {
+      "destination": "forward_nifty_producer.py",
+      "sha256_lf": "378cd1f0396fca049f8f3a036508fa0745f78c6db3631209df49bd28b4793f8e"
+    },
+    {
+      "destination": "forward_nifty_schedule.py",
+      "sha256_lf": "f05eb59d20d50a77975efed7c47a615c5df97e9be0811b63d0ae31308c50bfd3"
+    },
+    {
+      "destination": "forward_revision_evidence.py",
+      "sha256_lf": "5250ee1f4b37b4f6579abb89c20c028a60f860d0cfb26f8119d81bc4b58966a5"
+    },
+    {
+      "destination": "forward_revision_policy.py",
+      "sha256_lf": "dda49286820fd04ab9ac6ec511ba63e52b7228d7463a0631a1e00e19a9a13eec"
+    },
+    {
+      "destination": "forward_revision_quarantine.py",
+      "sha256_lf": "b9dac8e7f98185fe2db76b25960b9197b48206ce91045789aa0143eb1c91c289"
+    },
+    {
+      "destination": "forward_versioned_capture.py",
+      "sha256_lf": "af2eae58cd3b8e9f6d82a4dd1b2dbf90bea8205b6420b1b4a420e26b5f1d3fcc"
+    },
+    {
+      "destination": "forward_versioned_producer.py",
+      "sha256_lf": "10c1bf38580b021093529146d644a03a5a7bf930196aba6233d44f527c614860"
+    },
+    {
+      "destination": "forward_windows_credentials.py",
+      "sha256_lf": "cc6c51e4e335d0836478747b590f6249791ac6c556804fee390243bc36bf9534"
+    },
+    {
+      "destination": "history_freshness.py",
+      "sha256_lf": "7feccce92cc8e493c4dfc499a1379eab0fad4f7b7b4703d9e4ddaedcbea2335c"
+    },
+    {
+      "destination": "intraday_directional_replay.py",
+      "sha256_lf": "b56139ab4953c23c686f9855604fcecc17c4da27611c7e9bf5c2fd08bdbe0143"
+    },
+    {
+      "destination": "intraday_fo_costs.py",
+      "sha256_lf": "a737d5708a7367995de0287417e03410be6d795b20c44406d120e2742e17fc89"
+    },
+    {
+      "destination": "iv_surface.py",
+      "sha256_lf": "af9df64bc8a10dcb53a1f1cf8b123df517168350166a7687d442f33200536cb6"
+    },
+    {
+      "destination": "ledger_cold_store.py",
+      "sha256_lf": "79ce962bd079d9335e03fd8c8a09caee9a19ec94e5e9d8aa27fce51ee04abeb0"
+    },
+    {
+      "destination": "ledger_historical_repository.py",
+      "sha256_lf": "6a268b04b9889c3dab89a4a5d4237acc5669887dbc7240466eddc419be2a1d94"
+    },
+    {
+      "destination": "ledger_historical_views.py",
+      "sha256_lf": "19bf63a8a4ebe5af05a20ee45df2525794468c9bda7d58f7f4dfaca36dd7df2c"
+    },
+    {
+      "destination": "ledger_history_consumers.py",
+      "sha256_lf": "6e561349888980ac6021c8701c9c83b367ed24c7234e25052ce9d849d24d0e2f"
+    },
+    {
+      "destination": "ledger_history_stream.py",
+      "sha256_lf": "564975f27d362080d6e76a1d8cd746fa7763d44231c68ac916a0a56b01530a21"
+    },
+    {
+      "destination": "ledger_read_contract.py",
+      "sha256_lf": "9140c838d159670cf4db9ac281d7cd2c2d48a16a8b9f4923fe2479695aa7bdc6"
+    },
+    {
+      "destination": "ledger_runtime_reader.py",
+      "sha256_lf": "af95e5b45f34bf35c621cb20c11591f993573510c57c886360d7f65e934bf6c7"
+    },
+    {
+      "destination": "ledger_segments.py",
+      "sha256_lf": "7c398d9ba268ad52a99a35ff0cdac190d66346a196e0b77798b6a5afa5311023"
+    },
+    {
+      "destination": "ledger_source_capture.py",
+      "sha256_lf": "93a22673cacf43ba377ce0dc2e8468930fdb5e6c7cbcf1617e23e2c185298f59"
+    },
+    {
+      "destination": "live_evidence.py",
+      "sha256_lf": "ccdb6a96ca424e1ef8bff9c0266031912821141d9993b43e10f7c90903af138e"
+    },
+    {
+      "destination": "live_governance.py",
+      "sha256_lf": "56a8f47e57082b21f471c26c5cfb36b55752c35dce6b271a6bcfb74796ab4a53"
+    },
+    {
+      "destination": "market_context.py",
+      "sha256_lf": "4ed52b1911abceae549179eb8c9fe6297f553df23bde7194bed30fb8ebca885f"
+    },
+    {
+      "destination": "market_context_sources.py",
+      "sha256_lf": "379215c24fc27495f846ec75c15fe31b1c2578b35307f330be59735e3ff4d471"
+    },
+    {
+      "destination": "market_context_ui.py",
+      "sha256_lf": "31866e8b08ebd3e18e8ab6683fedba95492b7986b1833980b4ca8bbfeca8b307"
+    },
+    {
+      "destination": "market_data_gateway.py",
+      "sha256_lf": "530952767364541a208dfa0849d364aa69a35ca94e2cad8553d00c4cd0d237d2"
+    },
+    {
+      "destination": "mf_archive.py",
+      "sha256_lf": "828aaa32390e5ca21b40ecd5626b0dafd2f07b0483523b821499fd3674050fb8"
+    },
+    {
+      "destination": "mf_research.py",
+      "sha256_lf": "63b30270f211660d1f49aa87ea1c21bb1ee5d955c6bfb6dd04f195a0ab901b5e"
+    },
+    {
+      "destination": "model_registry.py",
+      "sha256_lf": "d59c1b20c2a3fc45a3d4d6b667e63cf2be0958dd87c69d117e93110c8d3fc852"
+    },
+    {
+      "destination": "nifty_previous_close.py",
+      "sha256_lf": "1468ed42ed457669c7e370d6a86395295c2a435632e66ae80cf51d327898055f"
+    },
+    {
+      "destination": "nifty_session_calendar.py",
+      "sha256_lf": "b6274191ca3399d65314d238194589482ff88c7599e52bce2517c1c0212a935b"
+    },
+    {
+      "destination": "nse_owner_close.py",
+      "sha256_lf": "7abee1af67d446f8bf903a91c1a1853b1b7ae7e54d4fc3fab69230f5eb986847"
+    },
+    {
+      "destination": "observability.py",
+      "sha256_lf": "8a5b2b13f1ad5916d738d42d7d3c97b9aaf9fcf5e48a8fbcbc7fb5def7f8f078"
+    },
+    {
+      "destination": "point_in_time.py",
+      "sha256_lf": "26c2b757497cbc212f1636ee5799fc9f9e5bd8a8df115203ae8282bd582b462a"
+    },
+    {
+      "destination": "prediction_validation.py",
+      "sha256_lf": "8c61526b1157a8464a75b46d00f572fba5008f4b96f261d4d3155a80aa31f3cf"
+    },
+    {
+      "destination": "production_readiness.py",
+      "sha256_lf": "9c9e4980da3ec2462a410cb9437814240173de94442e5f7e07651a9b30133c61"
+    },
+    {
+      "destination": "production_repository.py",
+      "sha256_lf": "deecdf2a4dcccc74919aad3bb8ed02db4999427e724c799d9ee4c5374e1f4a5f"
+    },
+    {
+      "destination": "prospective_collection.py",
+      "sha256_lf": "0c22c98afc1b29e81c63880a5d8e81e53b4342c975f40f0154f0d54d55849800"
+    },
+    {
+      "destination": "provider_contracts.py",
+      "sha256_lf": "246e7feb01842b5284fa7a1f44f9afee42415d0822e40d269dd7c574350722d6"
+    },
+    {
+      "destination": "quant_foundation.py",
+      "sha256_lf": "2f710bb6c21796f50b08f64d067ce811a26c964c080515a6d6a9e69f1e643cca"
+    },
+    {
+      "destination": "quantitative_services.py",
+      "sha256_lf": "78c75ccad985a318e6d62b2475a2cd5c1d52646b43ed7a9e4a6be113dbf5feb9"
+    },
+    {
+      "destination": "release_expectations.py",
+      "sha256_lf": "ff983379181fa4d3626403adf2262eafb8dce43d761738a5b963b1fe5b77b649"
+    },
+    {
+      "destination": "release_verification.py",
+      "sha256_lf": "7817e96fb582cad4e3ed721980a1ea158ab08c777a991ad03f46d1d8b5171bc4"
+    },
+    {
+      "destination": "reliable_charts.py",
+      "sha256_lf": "d913f300c2faef613a35436368a5a68c13f97f582b2208e1fbdc7d27154e6309"
+    },
+    {
+      "destination": "requirements-automation.txt",
+      "sha256_lf": "50f1cad3a20c23b44c0ef0fef0898f63eff5e85bdd1e82c95b2535e6709073cf"
+    },
+    {
+      "destination": "requirements.txt",
+      "sha256_lf": "5761ac73215b3da83085c867d3b8b12c901058cb12f8c945c12cbd7ca4f91a0a"
+    },
+    {
+      "destination": "research_features.py",
+      "sha256_lf": "db632e8b7289a3b9755552342390e1fb63e1b4c4491b10d231bc332699323de4"
+    },
+    {
+      "destination": "research_input_archive.py",
+      "sha256_lf": "7818cb30b5d52402602a2f8254e34d59ccff5ef1b467b3aa5b63a53897ff0864"
+    },
+    {
+      "destination": "research_integrity.py",
+      "sha256_lf": "37a2c4b372bee7f989ab196efe7020d5c39585486d9ec8e3c35709e7dbead689"
+    },
+    {
+      "destination": "research_replay_comparison.py",
+      "sha256_lf": "66c0d2581d081cb7c96d7498d9528ad0e6da22556a8213f8ec66530c8578b877"
+    },
+    {
+      "destination": "resilience_control_plane.py",
+      "sha256_lf": "86b6cb852a44b4f7cd263b38e6baa39d59ec0c175833aef502a5ddd406122f43"
+    },
+    {
+      "destination": "reviewed_upload_check.py",
+      "sha256_lf": "d4f1116394447ec5bb41522ce7b83e3240e2e18c6434f1dbdf3f49eab8d3592f"
+    },
+    {
+      "destination": "risk_engine.py",
+      "sha256_lf": "1666c79032eeadbbb7339ef35ef7de1f45f60d5a1f51321201e4dbd994cd2c1f"
+    },
+    {
+      "destination": "runtime_evidence_store.py",
+      "sha256_lf": "2621aeabdb8f3a04040625ce24b90546176a905d88ded83a0fe175a5811ccf65"
+    },
+    {
+      "destination": "scan_jobs.py",
+      "sha256_lf": "17ec392f51cda892151617071f1eb10a22d4c04b907c56ba4b7c572df2652a71"
+    },
+    {
+      "destination": "scanner_funnel.py",
+      "sha256_lf": "f7c92c30d2d43264acb318ab08227af106d733a55b88dd68524f8d119e962c59"
+    },
+    {
+      "destination": "secondary_quote_provider.py",
+      "sha256_lf": "aa312a0b9dab1d12caefeb3ecd7fe289c542e55dcd7f63734df6fe2413eb6307"
+    },
+    {
+      "destination": "secure_upstox_stream.py",
+      "sha256_lf": "2555b8477640078dc0f3e7d1e037c61a5656716cdc8769f8450612a6741a99bc"
+    },
+    {
+      "destination": "smc_analysis.py",
+      "sha256_lf": "981eb28287f25e91e0076c80a4442b112f96fbdeb0e637b2d29a021fcb75c671"
+    },
+    {
+      "destination": "sql/storage_native_fixture_disposable_only.sql",
+      "sha256_lf": "34af2edf4504e80633f7b092fb5b95538455e621c9648291c8676f4ea6ed14d6"
+    },
+    {
+      "destination": "technical_indicators.py",
+      "sha256_lf": "e91816284bf431f4c33934994509e9d6f605da8f992db1ff740bf3e344749032"
+    },
+    {
+      "destination": "track_record.py",
+      "sha256_lf": "3241eeb54bdedfa4b889cd6356821cbbccc0c032ad2f653e1be1aba0071f56d7"
+    },
+    {
+      "destination": "trade_contracts.py",
+      "sha256_lf": "f0500599b095afec82cf697dc368ea36d2bcc00279a0f1477c0106295de0b8e4"
+    },
+    {
+      "destination": "volatility_models.py",
+      "sha256_lf": "b9856d5d55b177d34e7c666d59b231b019b00ebc950aae20e30c2742c7df15b4"
+    },
+    {
+      "destination": "volatility_research.py",
+      "sha256_lf": "c069693b79d8be57d3b3a77a3213be49c62e115cdd7c397662c709c5a8e720fa"
+    },
+    {
+      "destination": "volatility_research_ui.py",
+      "sha256_lf": "896147eed930432b43b32f522728a15adce06e348dc0332d4f9ae8241e375497"
+    }
+  ]
+}
