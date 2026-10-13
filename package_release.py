@@ -36,6 +36,8 @@ RUNTIME = ['app.py', 'app_runtime.py', 'scan_jobs.py', 'reliable_charts.py',
            'research_features.py', 'model_training_pipeline.py',
            'evidence_progress.py', 'event_backtest.py', 'volatility_models.py',
            'track_record.py',
+           # Explicit source references are not discovered by the import closure.
+           'research_lab_statistics.py', 'forward_versioned_capture.py',
            'resilience_policy.json', 'resilience_policy.sha256',
            'requirements.txt', 'constraints.txt']
 FILES = RUNTIME + ['release_verification.py', 'RELEASE_PACKAGING.md',
