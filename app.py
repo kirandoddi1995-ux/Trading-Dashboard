@@ -41,6 +41,7 @@ from quantitative_services import estimate_execution_cost, cross_sectional_score
 from iv_surface import normalize_iv_surface
 from volatility_research_ui import render_volatility_research
 from market_context_ui import render_market_context
+from research_lab_ui import render_research_lab
 from model_registry import ModelRegistry
 from mf_archive import MutualFundArchive
 from risk_engine import RiskEngine
@@ -2540,7 +2541,7 @@ primary_section = primary_section or "Today's Picks"
 
 _section_pages = {
     "Today's Picks": ["Options & Derivatives Chain", "Futures & Derivatives", "Equities Screener & Risk"],
-    "Research": ["Evidence Readiness", "Commodities (MCX)", "Mutual Funds", "SMC & Technical Analysis", "AI Copilot"],
+    "Research": ["Evidence Readiness", "NIFTY Research Lab", "Commodities (MCX)", "Mutual Funds", "SMC & Technical Analysis", "AI Copilot"],
 }
 if primary_section == "Settings":
     selected_tab = "Settings"
@@ -9850,6 +9851,9 @@ elif selected_tab == "Equities Screener & Risk":
 # ==========================================
 # TAB: EVIDENCE READINESS (READ-ONLY)
 # ==========================================
+elif selected_tab == "NIFTY Research Lab":
+    render_research_lab(st)
+
 elif selected_tab == "Evidence Readiness":
     st.subheader("Model Evidence Readiness")
     st.caption(
