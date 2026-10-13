@@ -1,0 +1,10 @@
+# Optional isolated synthetic runner profile; never install into capture/dashboard.
+# The inactive public CI job installs only tools, never private market data.
+-c constraints.txt
+-r requirements-automation.txt
+numpy==2.4.6
+pandas==2.3.3
+pyarrow==24.0.0
+pytest==9.1.1
+pyflakes==3.2.0
+tzdata==2026.3
