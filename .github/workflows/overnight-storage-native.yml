@@ -1,0 +1,54 @@
+name: Inactive overnight staged storage acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_disposable:
+        description: Synthetic disposable Postgres only; never Supabase
+        type: boolean
+        default: false
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: overnight-staged-storage-native
+  cancel-in-progress: false
+
+jobs:
+  synthetic:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm_disposable == true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:17.6-bookworm
+        env:
+          POSTGRES_DB: storage_conformance_sandbox
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: public-disposable-fixture-only
+        ports:
+          - 55443:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d storage_conformance_sandbox"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install pinned disposable driver
+        run: python -m pip install 'psycopg[binary]==3.3.5'
+      - name: Provision base fixture (public fixture password; no secrets)
+        env:
+          PGPASSWORD: public-disposable-fixture-only
+        run: psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 55443 -U postgres -d storage_conformance_sandbox -f sql/storage_native_fixture_disposable_only.sql
+      - name: Check native capacity transactions
+        run: python storage_native_conformance.py --execute --confirm-disposable --port 55443
+      - name: Provision staged-method fixture (never production SQL)
+        env:
+          PGPASSWORD: public-disposable-fixture-only
+        run: psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 55443 -U postgres -d storage_conformance_sandbox -f overnight_storage_native_fixture.sql
+      - name: Check actual staged repository methods and uncertain commit
+        run: python overnight_storage_native_acceptance.py --execute --confirm-disposable --port 55443

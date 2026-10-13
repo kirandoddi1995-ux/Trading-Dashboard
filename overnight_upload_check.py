@@ -12,6 +12,40 @@ from reviewed_upload_check import git
 
 GROUPS = ('capture', 'operations', 'storage', 'research')
 
+# Only fixed public rule names reach stdout; never exception text, Git stderr,
+# absolute paths, connection strings or the contents of a manifest.
+SAFE_RULES = frozenset({
+    'PATH_INVALID', 'SOURCE_LINK_REJECTED', 'SOURCE_MISSING_OR_TOO_LARGE',
+    'MANIFEST_DUPLICATE_KEY', 'MANIFEST_ENTRIES_INVALID', 'GROUP_INVALID',
+    'MANIFEST_INVALID', 'MANIFEST_JSON_INVALID', 'EXACT_UPLOAD_PATHS_REQUIRED', 'PREREQUISITE_OVERLAP',
+    'MANIFEST_HASH_INVALID', 'SOURCE_HASH_MISMATCH', 'BASE_SHA_INVALID',
+    'CLONE_ROOT_REQUIRED', 'BASE_NOT_CURRENT_HEAD',
+    'INDEX_WORKTREE_MISMATCH_STAGE_THEN_RECHECK',
+})
+
+
+class UploadCheckFailure(ValueError):
+    """Allowlisted rule and public-file metadata, never arbitrary error text."""
+
+    def __init__(self, rule: str, failures: list[dict[str, str]]) -> None:
+        if rule not in SAFE_RULES:
+            raise ValueError('MANIFEST_INVALID')
+        clean: list[dict[str, str]] = []
+        for failure in failures:
+            if set(failure) not in ({'path'}, {'path', 'kind', 'expected', 'actual'}):
+                raise ValueError('MANIFEST_INVALID')
+            item = {'path': path_name(failure['path'])}
+            if 'kind' in failure:
+                if failure['kind'] not in ('package_file', 'prerequisite') or any(
+                        re.fullmatch('[0-9a-f]{64}', failure[key]) is None
+                        for key in ('expected', 'actual')):
+                    raise ValueError('MANIFEST_INVALID')
+                item.update({key: failure[key] for key in ('kind', 'expected', 'actual')})
+            clean.append(item)
+        self.rule = rule
+        self.failures = clean
+        super().__init__(rule)
+
 
 def path_name(value: object) -> str:
     """Only explicit public code/document destinations; no credential files."""
@@ -35,9 +69,9 @@ def source(root: Path, value: object) -> Path:
     for part in PurePosixPath(name).parts:
         current /= part
         if current.is_symlink() or current.is_junction():
-            raise ValueError('SOURCE_LINK_REJECTED')
+            raise UploadCheckFailure('SOURCE_LINK_REJECTED', [{'path': name}])
     if not current.is_file() or current.stat().st_size > 4 * 1024 * 1024:
-        raise ValueError('SOURCE_MISSING_OR_TOO_LARGE')
+        raise UploadCheckFailure('SOURCE_MISSING_OR_TOO_LARGE', [{'path': name}])
     return current
 
 
@@ -87,16 +121,22 @@ def verify(root: Path, group: str, allowed: tuple[str, ...], changed: set[str]) 
     prerequisites = [] if prerequisite_value == [] else entries(prerequisite_value)
     if {item['destination'] for item in prerequisites} & set(allowed):
         raise ValueError('PREREQUISITE_OVERLAP')
+    mismatches: list[dict[str, str]] = []
     for item in files + prerequisites:
         file = source(root, item['destination'])
         expected = item['sha256_lf']
         if item['destination'] == name and expected is None:
             continue
         if not isinstance(expected, str) or re.fullmatch(r'[0-9a-f]{64}', expected) is None:
-            raise ValueError('MANIFEST_HASH_INVALID')
+            raise UploadCheckFailure('MANIFEST_HASH_INVALID',
+                                     [{'path': path_name(item['destination'])}])
         actual = hashlib.sha256(file.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
         if actual != expected:
-            raise ValueError('SOURCE_HASH_MISMATCH')
+            mismatches.append({'path': path_name(item['destination']),
+                               'kind': 'package_file' if item in files else 'prerequisite',
+                               'expected': expected, 'actual': actual})
+    if mismatches:
+        raise UploadCheckFailure('SOURCE_HASH_MISMATCH', mismatches)
 
 
 def main(group: str, allowed: tuple[str, ...], argv: list[str] | None = None) -> int:
@@ -124,7 +164,16 @@ def main(group: str, allowed: tuple[str, ...], argv: list[str] | None = None) ->
                           'group': group, 'base': args.base, 'hosted_changes': 0,
                           'approval_authority': False}))
         return 0
-    except Exception:
+    except Exception as error:
+        rule = 'UNCLASSIFIED_UPLOAD_FAILURE'
+        failures: list[dict[str, str]] = []
+        if isinstance(error, UploadCheckFailure):
+            rule, failures = error.rule, error.failures
+        elif isinstance(error, json.JSONDecodeError):
+            rule = 'MANIFEST_JSON_INVALID'
+        elif isinstance(error, ValueError) and str(error) in SAFE_RULES:
+            rule = str(error)
         print(json.dumps({'status': 'BLOCKED', 'code': 'OVERNIGHT_UPLOAD_CHECK_FAILED',
-                          'group': group, 'approval_authority': False}))
+                          'group': group, 'rule': rule, 'failures': failures,
+                          'hosted_changes': 0, 'approval_authority': False}))
         return 2
