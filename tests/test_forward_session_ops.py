@@ -4,7 +4,7 @@ import json
 import importlib
 import shutil
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
 import pytest
@@ -223,8 +223,13 @@ def test_task_inspection_script_checks_binding_without_execution(monkeypatch: py
         scripts.append(script)
         return {}
     monkeypatch.setattr(host, 'powershell', capture)
+    # This is a Windows-script fixture even on a Linux CI host. Do not mix a
+    # POSIX __file__ with Windows binding arguments: that must fail closed.
+    monkeypatch.setattr(host, 'Path', PureWindowsPath)
+    monkeypatch.setattr(PureWindowsPath, 'resolve', lambda self: self, raising=False)
+    monkeypatch.setattr(host, '__file__', 'C:/SyntheticCode/forward_ops_host.py')
     monkeypatch.setenv('SystemRoot', 'C:/Windows')
-    monkeypatch.setattr(sys, 'executable', str(Path(host.__file__).parent / '.venv/Scripts/python.exe'))
+    monkeypatch.setattr(sys, 'executable', 'C:/SyntheticCode/.venv/Scripts/python.exe')
     assert host.inspect_tasks(DAY, 'KiranTrading-Versioned-20261014-poll',
                               'KiranTrading-Versioned-20261014-audit',
                               Path('C:/SyntheticState'), Path('C:/SyntheticOps')) == {}

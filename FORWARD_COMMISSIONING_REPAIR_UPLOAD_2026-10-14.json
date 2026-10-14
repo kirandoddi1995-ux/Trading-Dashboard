@@ -9,7 +9,7 @@
     },
     {
       "destination": "tests/test_forward_session_ops.py",
-      "sha256_lf": "47610554e03b8e728e559672a0c16a17f072bb7234bfe7bc2e8e8c683f48f0af"
+      "sha256_lf": "8fb7c4af800846a1ff4b6a94a243f0a74d77d06d51f4d5cff6984164d5106073"
     },
     {
       "destination": "forward_ops_host.py",
@@ -21,7 +21,7 @@
     },
     {
       "destination": "tests/test_forward_morning_readiness.py",
-      "sha256_lf": "0ec5824bfe656fcbb4f1d24abf923957f4bcc898aa7f7998d7a6c86c66984cb6"
+      "sha256_lf": "7b5e1933da75ba60a3941fe4fbbb7dc2c0e2fe9c42167fd3d1ea6cac434f45ec"
     },
     {
       "destination": "forward_commissioning_upload_check.py",
@@ -33,11 +33,11 @@
     },
     {
       "destination": "FORWARD_COMMISSIONING_REPAIR_2026-10-14.md",
-      "sha256_lf": "ab3cdf882709808fdf76f559bbc6072edc28d77ee1df678d663a135c6aa7149c"
+      "sha256_lf": "8247d55f1638f466bc67f623923b6f1affc280fe4849cc83fe293582406c5977"
     },
     {
       "destination": "FORWARD_COMMISSIONING_REPAIR_UPLOAD_2026-10-14.md",
-      "sha256_lf": "7d69d1d0774a839c8ba043d668ade5a23805cc74e8cda91fb0f1f185efe29e86"
+      "sha256_lf": "72585e82f403534bb060b065a02e9662c637631dc158c0628e69eab165bef5c1"
     },
     {
       "destination": "FORWARD_COMMISSIONING_REPAIR_UPLOAD_2026-10-14.json",

@@ -1,5 +1,88 @@
 # Exact inactive commissioning repair upload — 14 October 2026
 
+## PR #33 portability correction — unmerged branch update
+
+Main remains `161ffe0`; failed PR head reported by owner is `ba95d1f`.
+The earlier 4,442-pass result below was **Windows only**, not Linux acceptance.
+Hosted Linux CI reported 15 failed, 4,430 passed, one skipped and 48 subtests;
+14 failures came from interpreting Windows fixture strings with PosixPath and
+one from mixing a POSIX code location with Windows task-binding arguments.
+Production guards correctly rejected those fixtures. Production sources,
+checker rules, baseline and all prerequisite pins are unchanged.
+
+The repair keeps real guards active. In-memory Windows adapters now explicitly
+use PureWindowsPath on either OS; independent native-path guard cases still run.
+No failed case is skipped, weakened, or removed. The old failure log is evidence
+of the old commit, not a reason to retry it unchanged.
+
+For the EXISTING PR branch, replace exactly these five repo-relative paths from
+the matching paths under `C:/Users/banga/Desktop/kiran_share_market/`:
+
+- `tests/test_forward_morning_readiness.py`
+- `tests/test_forward_session_ops.py`
+- `FORWARD_COMMISSIONING_REPAIR_2026-10-14.md`
+- `FORWARD_COMMISSIONING_REPAIR_UPLOAD_2026-10-14.md`
+- `FORWARD_COMMISSIONING_REPAIR_UPLOAD_2026-10-14.json`
+
+Do not create a replacement PR, force-push, rebase, change production files, or
+merge the failed head. For package rehearsal use a fresh clone at exact BASE
+161ffe082343c20cf118950fdb49e5315bb54e7f and stage ALL ten canonical files below.
+The checker deliberately requires that base HEAD; it is not a checker to run
+with `--base ba95d1f` on the already-committed PR branch. After rehearsal, the
+owner updates the five paths on the existing branch in an ordinary commit.
+Require Quality, Resilience and CodeQL success for THAT exact new SHA before
+merge. Old successful checks do not authorize a changed commit. No agent push,
+workflow dispatch, enabling, hosted write or capsule install is performed.
+
+### Linux before upload, both platforms before merge
+
+Windows and Linux results must be named separately. Python patch version,
+dependency pins, Node version, full/focused counts and source hashes belong to
+each result. A local Debian Linux container is not an exact Ubuntu hosted runner;
+hosted exact-commit CI remains authoritative. Differences in platform skips are
+reported, not treated as dropped tests.
+
+Local-only Docker recipe:
+`C:/Users/banga/Desktop/kiran_share_market/reviewed_stage/commissioning_portability/Dockerfile`.
+It is NOT an eleventh upload. Build context contains only the public baseline's
+requirements.txt, requirements-automation.txt and constraints.txt; official
+Python 3.13.9 and Node 24 bases are digest-pinned. Tests run with network disabled,
+read-only mounts of the clean PUBLIC candidate and public PGlite dependency.
+For the full suite, local-only run_linux.py exports tracked public files into a
+fresh writable container copy (ignored host caches are excluded). This permits
+the app's synthetic local SQLite cache without writing the host checkout.
+No credentials/state/capture mounts, no ports and bounded CPU/memory. Do not use
+the dirty workspace or private TradingResearch as Docker context or repo mount.
+Run the focused line below and full suite on Linux before handing off the upload;
+run Windows compatibility checks as well. A missing Linux environment means
+LINUX_NOT_VERIFIED, never an inferred pass. Repaired Linux/Python 3.13.9 focused
+run passed: 139 tests, 41 subtests, 322.52 seconds. Windows corrected reporting/
+readiness tests passed: 98 cases. Full repaired Debian Linux/Python 3.13.9 run:
+4,435 passed, 11 skipped, 48 subtests in 667.60 seconds (11m07s). Ten existing
+mocked PowerShell installer cases skip because this container has no PowerShell;
+one existing Windows DACL case is OS-specific. The corresponding Windows test
+file passed all 11 cases separately. These are explicit local coverage limits,
+NOT skips added to repair the 15 failures. Hosted Ubuntu CI must still execute
+its complete coverage (including PowerShell) on the exact final PR SHA.
+
+Image used: `sha256:bf219af81ce987b7b8ea5c4d3075425b6210d270ec3aa7368ee8ba127818ed06`;
+Python 3.13.9, Node v24.21.0, pytest 9.1.1. The previously recorded Windows full
+run is historical, before the fixture correction, not a new two-OS full claim.
+
+Local Linux full command (new container name each time; existing names/receipts
+must not be overwritten). `$publicCandidate` must be the clean staged public
+rehearsal clone and `$publicPglite` only its reviewed public test engine:
+
+```powershell
+docker run --name kiran-portable-review-NEW --network none --cpus 2 --memory 4g --mount "type=bind,source=$publicCandidate,target=/source,readonly" --mount "type=bind,source=$publicPglite,target=/pglite,readonly" --mount "type=bind,source=C:/Users/banga/Desktop/kiran_share_market/reviewed_stage/commissioning_portability/run_linux.py,target=/runner.py,readonly" --workdir /tmp kiran-commissioning-portability:20261015 python /runner.py
+if ($LASTEXITCODE -ne 0) { throw 'STOP: Linux check failed' }
+```
+
+Do not infer success from a detached container starting. Retain exit/result and
+skip reasons. The image is local-only; building dependencies needs network but
+testing must not. The Debian check is not the hosted Ubuntu check. No workflow,
+setting, requirement, checksum rule or production adapter was changed for this.
+
 Base: `161ffe082343c20cf118950fdb49e5315bb54e7f` (verified in the clean clone
 `C:/Users/banga/AppData/Local/Temp/commissioning-161ffe0`). Final pins must be
 generated after main/Dewey freeze their public source bytes; never hash held
@@ -84,8 +167,8 @@ This checker/test pair separately passed 14 focused offline tests, strict typing
 and pyflakes. Main reports full-tree pyflakes, 19 baseline strict modules and seven repaired
 source/test files passed strict typing, and 38 closure-module imports passed with
 socket/provider/subprocess access denied. Main reports the public/candidate equity
-fingerprint unchanged; no expectation update is authorized. Main's final local
-OFFLINE candidate suite completed PASS: 4,442 passed, four unchanged skipped,
+fingerprint unchanged; no expectation update is authorized. The EARLIER Windows-only
+OFFLINE candidate suite, before PR #33's fixture correction, completed PASS: 4,442 passed, four unchanged skipped,
 48 subtests passed in 1,287.99s (21m27s). The public baseline had 4,360 tests:
 this candidate adds 82 tests and 41 subtests, with no baseline drop. Main also
 reports the read-only host PowerShell script passed parser syntax validation;

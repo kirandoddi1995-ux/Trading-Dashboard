@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 import io
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import subprocess
 import sys
 from typing import Any, cast
@@ -235,44 +235,51 @@ def test_inspect_script_exact_binding_leaf_checks_and_optional_fail_closed(monke
 
 @pytest.fixture
 def prepared_adapter(monkeypatch: pytest.MonkeyPatch) -> tuple[
-        dict[Path, bytes], list[tuple[Path, int]], list[str]]:
-    """Exercise real _prepared and separate, replacing only bytes/validators/OS."""
+        dict[PureWindowsPath, bytes], list[tuple[PureWindowsPath, int]], list[str]]:
+    """Simulate Windows path semantics on every host; exercise the real guard.
+
+    PureWindowsPath never performs host filesystem IO. Its three concrete-path
+    queries are explicit fixture facts, not mocks of separate()/is_absolute().
+    Native temporary-path guard tests remain in test_forward_session_ops.py.
+    """
     import forward_revision_evidence as evidence
     import forward_nifty_producer as producer
     import forward_versioned_producer as versioned
     import forward_session_ops as operations
-    code = Path(SPEC.code_directory)
-    base = Path(SPEC.state_root) / DAY.isoformat()
+    code = PureWindowsPath(SPEC.code_directory)
+    base = PureWindowsPath(SPEC.state_root) / DAY.isoformat()
     payloads = {
         base / 'config.json': json.dumps({'session_open': '2026-10-15T09:15:00+05:30',
                                          'fixture': 'generated-config'}).encode(),
         base / 'state/versioned-v1/recipe.json': json.dumps({'fixture': 'generated-policy'}).encode(),
     }
-    reads: list[tuple[Path, int]] = []
+    reads: list[tuple[PureWindowsPath, int]] = []
     calls: list[str] = []
     monkeypatch.setattr(readiness, '__file__', str(code / 'forward_morning_readiness.py'))
     monkeypatch.setattr(operations, '__file__', str(code / 'forward_session_ops.py'))
     monkeypatch.setattr(sys, 'executable', SPEC.python_executable)
-    monkeypatch.setattr(Path, 'resolve', lambda self: self)
-    monkeypatch.setattr(Path, 'is_symlink', lambda self: False)
-    monkeypatch.setattr(Path, 'is_junction', lambda self: False)
+    monkeypatch.setattr(readiness, 'Path', PureWindowsPath)
+    monkeypatch.setattr(operations, 'Path', PureWindowsPath)
+    monkeypatch.setattr(PureWindowsPath, 'resolve', lambda self: self, raising=False)
+    monkeypatch.setattr(PureWindowsPath, 'is_symlink', lambda self: False, raising=False)
+    monkeypatch.setattr(PureWindowsPath, 'is_junction', lambda self: False, raising=False)
     def denied(*args: object, **kwargs: object) -> Any:
         raise AssertionError('actual filesystem/host access in prepared fixture')
-    monkeypatch.setattr(Path, 'open', denied)
-    monkeypatch.setattr(Path, 'read_bytes', denied)
+    monkeypatch.setattr(PureWindowsPath, 'open', denied, raising=False)
+    monkeypatch.setattr(PureWindowsPath, 'read_bytes', denied, raising=False)
     monkeypatch.setattr(subprocess, 'run', denied)
-    def private_read(path: Path, maximum: int) -> bytes:
+    def private_read(path: PureWindowsPath, maximum: int) -> bytes:
         reads.append((path, maximum))
         assert maximum == readiness.PREPARED_BYTES == 65536
         if path not in payloads:
             raise FileNotFoundError('private missing fixture')
         return payloads[path]
-    def config_validator(config: dict[str, Any], root: Path) -> str:
+    def config_validator(config: dict[str, Any], root: PureWindowsPath) -> str:
         assert root == code
         assert config == json.loads(payloads[base / 'config.json'])
         calls.append('config')
         return 'a' * 64
-    def policy_validator(config: dict[str, Any], policy: dict[str, Any], root: Path) -> str:
+    def policy_validator(config: dict[str, Any], policy: dict[str, Any], root: PureWindowsPath) -> str:
         assert root == code
         assert config == json.loads(payloads[base / 'config.json'])
         assert policy == json.loads(payloads[base / 'state/versioned-v1/recipe.json'])
@@ -285,10 +292,10 @@ def prepared_adapter(monkeypatch: pytest.MonkeyPatch) -> tuple[
 
 
 def test_real_prepared_adapter_exact_two_bounded_paths_and_both_validators(
-        prepared_adapter: tuple[dict[Path, bytes], list[tuple[Path, int]], list[str]]) -> None:
+        prepared_adapter: tuple[dict[PureWindowsPath, bytes], list[tuple[PureWindowsPath, int]], list[str]]) -> None:
     _, reads, calls = prepared_adapter
     assert readiness._prepared(SPEC) == 'VERIFIED'
-    base = Path(SPEC.state_root) / DAY.isoformat()
+    base = PureWindowsPath(SPEC.state_root) / DAY.isoformat()
     assert reads == [(base / 'config.json', 65536),
                      (base / 'state/versioned-v1/recipe.json', 65536)]
     assert calls == ['config', 'policy']
@@ -296,7 +303,7 @@ def test_real_prepared_adapter_exact_two_bounded_paths_and_both_validators(
 
 @pytest.mark.parametrize('field', ['code_directory', 'python_executable'])
 def test_real_prepared_adapter_runtime_bindings_fail_before_bytes(
-        prepared_adapter: tuple[dict[Path, bytes], list[tuple[Path, int]], list[str]], field: str) -> None:
+        prepared_adapter: tuple[dict[PureWindowsPath, bytes], list[tuple[PureWindowsPath, int]], list[str]], field: str) -> None:
     _, reads, calls = prepared_adapter
     wrong = replace(SPEC, **{field: getattr(SPEC, field) + '-other'})
     with pytest.raises(ValueError, match='READINESS_RUNTIME_BINDING_INVALID'):
@@ -306,18 +313,18 @@ def test_real_prepared_adapter_runtime_bindings_fail_before_bytes(
 
 @pytest.mark.parametrize('capsule', ['state_in_code', 'ops_in_state', 'same_roots', 'linked_state'])
 def test_real_prepared_adapter_separate_capsule_gate_before_bytes(
-        prepared_adapter: tuple[dict[Path, bytes], list[tuple[Path, int]], list[str]],
+        prepared_adapter: tuple[dict[PureWindowsPath, bytes], list[tuple[PureWindowsPath, int]], list[str]],
         monkeypatch: pytest.MonkeyPatch, capsule: str) -> None:
     _, reads, calls = prepared_adapter
     spec = SPEC
     if capsule == 'state_in_code':
-        spec = replace(SPEC, state_root=str(Path(SPEC.code_directory) / 'state'))
+        spec = replace(SPEC, state_root=str(PureWindowsPath(SPEC.code_directory) / 'state'))
     elif capsule == 'ops_in_state':
-        spec = replace(SPEC, ops_root=str(Path(SPEC.state_root) / 'ops'))
+        spec = replace(SPEC, ops_root=str(PureWindowsPath(SPEC.state_root) / 'ops'))
     elif capsule == 'same_roots':
         spec = replace(SPEC, ops_root=SPEC.state_root)
     else:
-        monkeypatch.setattr(Path, 'is_symlink', lambda self: self == Path(SPEC.state_root))
+        monkeypatch.setattr(PureWindowsPath, 'is_symlink', lambda self: self == PureWindowsPath(SPEC.state_root))
     with pytest.raises(ValueError, match='SEPARATE_PRIVATE_OPERATIONS_ROOT_REQUIRED'):
         readiness._prepared(spec)
     assert reads == [] and calls == []
@@ -326,10 +333,10 @@ def test_real_prepared_adapter_separate_capsule_gate_before_bytes(
 @pytest.mark.parametrize('target', ['config', 'policy'])
 @pytest.mark.parametrize('damage', ['missing', 'empty', 'truncated', 'duplicate'])
 def test_real_prepared_source_failures_are_redacted_in_guided_report(
-        prepared_adapter: tuple[dict[Path, bytes], list[tuple[Path, int]], list[str]],
+        prepared_adapter: tuple[dict[PureWindowsPath, bytes], list[tuple[PureWindowsPath, int]], list[str]],
         target: str, damage: str) -> None:
     payloads, reads, calls = prepared_adapter
-    base = Path(SPEC.state_root) / DAY.isoformat()
+    base = PureWindowsPath(SPEC.state_root) / DAY.isoformat()
     path = base / ('config.json' if target == 'config' else 'state/versioned-v1/recipe.json')
     if damage == 'missing':
         del payloads[path]
@@ -346,9 +353,9 @@ def test_real_prepared_source_failures_are_redacted_in_guided_report(
 
 
 def test_real_prepared_adapter_wrong_session_date_and_redaction(
-        prepared_adapter: tuple[dict[Path, bytes], list[tuple[Path, int]], list[str]]) -> None:
+        prepared_adapter: tuple[dict[PureWindowsPath, bytes], list[tuple[PureWindowsPath, int]], list[str]]) -> None:
     payloads, _, calls = prepared_adapter
-    path = Path(SPEC.state_root) / DAY.isoformat() / 'config.json'
+    path = PureWindowsPath(SPEC.state_root) / DAY.isoformat() / 'config.json'
     payloads[path] = json.dumps({'session_open': '2026-10-16T09:15:00+05:30',
                                 'fixture': 'generated-config'}).encode()
     with pytest.raises(ValueError, match='READINESS_PREPARED_DATE_INVALID'):
@@ -362,7 +369,7 @@ def test_real_prepared_adapter_wrong_session_date_and_redaction(
 @pytest.mark.parametrize('target', ['config', 'policy'])
 @pytest.mark.parametrize('error_type', [ValueError, RuntimeError])
 def test_real_prepared_validator_exception_is_redacted(
-        prepared_adapter: tuple[dict[Path, bytes], list[tuple[Path, int]], list[str]],
+        prepared_adapter: tuple[dict[PureWindowsPath, bytes], list[tuple[PureWindowsPath, int]], list[str]],
         monkeypatch: pytest.MonkeyPatch, target: str, error_type: type[Exception]) -> None:
     import forward_nifty_producer as producer
     import forward_versioned_producer as versioned

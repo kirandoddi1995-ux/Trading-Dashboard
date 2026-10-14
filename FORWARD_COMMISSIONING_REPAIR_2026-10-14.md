@@ -1,5 +1,42 @@
 # Forward commissioning assessment and owner handoff — 14 October 2026
 
+## Correction: PR #33 Linux portability gate
+
+The previous 4,442-pass local regression was Windows-only. The owner reports
+Linux PR head ba95d1f failed 15 fixtures while 4,430 other tests passed. This
+does not establish Linux acceptance or prove every Windows-only behavior on CI.
+Production code intentionally targets Windows; its rejection of relative POSIX
+interpretations of C:\\ paths was correct. The repaired tests explicitly model
+Windows paths in memory on both hosts, without replacing the actual namespace
+guard or removing failure assertions. Native path guards remain tested too.
+Runtime source, decision policy, checker rules and release hash are unchanged.
+
+Keep the PR unmerged. Rehearse the canonical ten-file tree at base 161ffe0, then
+update only the five listed correction files on the existing PR branch in an
+ordinary owner commit. See the upload manifest for exact paths. The Linux and
+Windows results must be distinct; local Linux checks supplement, not replace,
+green hosted checks on the exact new commit. Do not rerun the failed commit
+unchanged, change task/capsule state, or loosen a source pin to make checks pass.
+
+The local Docker test recipe and dependency image are development artifacts,
+not an installed capture component, public eleventh file, or commissioned job.
+Only the public candidate source and public test dependency are read-only mounted;
+tests have no network, private credentials, private state or hosted access.
+The repaired Linux/Python 3.13.9 focused run passed 139 tests and 41 subtests in
+322.52 seconds; Windows corrected reporting/readiness tests passed 98 cases.
+Full repaired local Debian Linux/Python 3.13.9 result: 4,435 passed, 11 skipped,
+48 subtests in 667.60 seconds. Ten existing mocked PowerShell tests skip because
+the image lacks PowerShell; one Windows DACL test is OS-specific. All 11 cases
+in the corresponding Windows PowerShell test file passed separately. No failed
+fixture was skipped or removed to obtain these results. Hosted Ubuntu CI must
+still pass all checks on the exact new PR SHA before merge.
+The original full-container
+attempt exposed a test-environment issue: a read-only checkout cannot create
+the app's SQLite cache. It was stopped, not reclassified as a pass or fixed by
+changing application code. The corrected runner mechanically copies only tracked
+public candidate files to a writable disposable container repository; the host
+source remains read-only and ignored host caches/private files are not copied.
+
 Reviewed public baseline: `161ffe082343c20cf118950fdb49e5315bb54e7f`.
 This package is a future commissioning repair. No installed capsule, journal,
 private state, credentials, Windows task or hosted system was inspected or
@@ -215,9 +252,9 @@ unrelated historical workspace notes are excluded from the upload; main may
 maintain its own local progress separately. Packaging/rehearsal is not merge,
 installation, task enabling, production wiring, training or trading authority.
 
-## Final verification handoff — local OFFLINE only
+## Earlier verification handoff — Windows OFFLINE only, before portability fix
 
-Main reports the frozen candidate's complete local suite PASS: 4,442 passed,
+The earlier frozen candidate's complete Windows-only suite passed: 4,442 passed,
 four unchanged skipped and 48 subtests passed in 1,287.99s (21m27s). Against the
 4,360-test public baseline, this adds 82 tests and 41 subtests with no baseline
 drop. The selected five-file candidate command passed 139 tests and 41 subtests
@@ -231,4 +268,5 @@ make a mismatch pass. Host PowerShell script parser syntax passed only; it was
 NOT EXECUTED against tasks. Owner must obtain CI for the exact final commit.
 No hosted CI, installed audit, task activation, supervised receipt acceptance,
 trigger execution or independent custody/restore was performed or established
-by these checks. No Python/code/test bytes changed during the full suite.
+by these checks. No Python/code/test bytes changed during that original full run;
+the later portability correction changes two test files and is verified above.
