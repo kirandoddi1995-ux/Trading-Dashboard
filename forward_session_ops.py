@@ -54,7 +54,7 @@ def audit(root: Path, day: date, now: datetime) -> dict[str, Any]:
     config = json.loads(private_read(config_path))
     from zoneinfo import ZoneInfo
     ist = ZoneInfo('Asia/Kolkata')
-    if now.astimezone(ist).date() != day or instant(config['session_open']).astimezone(ist).date() != day:
+    if now.astimezone(ist).date() < day or instant(config['session_open']).astimezone(ist).date() != day:
         raise ValueError('AUDIT_SESSION_DATE_MISMATCH')
     if now < instant(config['session_close']) + timedelta(minutes=10):
         raise ValueError('AUDIT_1540_OR_LATER_REQUIRED')
@@ -95,7 +95,9 @@ def poll(root: Path, day: date) -> dict[str, Any]:
         except ValueError:
             pass
     last: dict[str, Any] = next((r for r in reversed(reports) if r.get('status') in {'REMOTE_VERIFIED', 'BLOCKED'}), {})
-    allowed = {'CLOCK_UNVERIFIED', 'AUTH_REQUIRED', 'LICENSE_ACK_REQUIRED', 'OUTSIDE_COLLECTION_SESSION', 'FORWARD_CAPTURE_FAILED'}
+    allowed = {'CLOCK_UNVERIFIED', 'AUTH_REQUIRED', 'LICENSE_ACK_REQUIRED', 'OUTSIDE_COLLECTION_SESSION',
+               'FORWARD_CAPTURE_FAILED', 'MISSED_OR_OUTSIDE_POLL_SLOT', 'SESSION_NOT_PREPARED',
+               'PRIVATE_CREDENTIAL_REQUIRED', 'SCHEDULER_BLOCKED', 'FORWARD_CONFIG_MISMATCH'}
     stages = {'AUTHORIZATION', 'CLOCK_CHECK', 'LOCAL_CAPTURE_OPEN', 'DRIVE_CONFIGURATION',
               'MARKET_DATA_READ', 'LOCAL_RECORD_POLL', 'DRIVE_FOLDER_CHECK',
               'DRIVE_PUBLISH_VERIFY', 'LOCAL_RECEIPT_WRITE', 'DRIVE_CLOSE', 'LOCAL_BACKUP_BUNDLE'}
@@ -103,38 +105,84 @@ def poll(root: Path, day: date) -> dict[str, Any]:
         'TRANSPORT_TIMEOUT', 'TRANSPORT_FAILED', 'CLOSED_BAR_REVISION_REVIEW_REQUIRED',
         'DRIVE_HTTP_401', 'DRIVE_HTTP_403', 'DRIVE_HTTP_404', 'DRIVE_HTTP_429',
         'DRIVE_HTTP_500', 'DRIVE_HTTP_502', 'DRIVE_HTTP_503', 'DRIVE_HTTP_504',
-        'FORWARD_REMOTE_VERIFICATION_FAILED', 'FORWARD_MANIFEST_VERIFICATION_FAILED'}
-    return {'status': 'POLL_REMOTE_VERIFIED' if code == 0 and last.get('status') == 'REMOTE_VERIFIED' else 'BLOCKED',
+        'FORWARD_REMOTE_VERIFICATION_FAILED', 'FORWARD_MANIFEST_VERIFICATION_FAILED',
+        'VERSION_POLICY_VALIDATION_FAILED'}
+    # The reviewed job prints this terminal contract only after record_poll,
+    # publication, receipt write and Drive close have all returned successfully.
+    # It is a process report, NOT an independent custody/restore attestation.
+    recorded, missing = last.get('recorded_decisions'), last.get('missing_decisions')
+    verified = (type(code) is int and code == 0 and last.get('status') == 'REMOTE_VERIFIED'
+                and last.get('capture_status') in {'VERSIONED_OBSERVATION_RECORDED', 'VERSIONED_INPUT_BLOCKED'}
+                and type(recorded) is int and type(missing) is int
+                and 0 <= recorded <= 75 and 0 <= missing <= 75 and recorded + missing == 75
+                and last.get('approval_authority') is False
+                and all(field not in last or last[field] is True
+                        for field in ('local_poll_committed', 'remote_verified', 'receipt_written')))
+    if verified:
+        return {'status': 'POLL_REMOTE_VERIFIED', 'exit_code': 0,
+                'code': 'REMOTE_VERIFICATION_COMPLETE', 'stage': 'LOCAL_RECEIPT_CONFIRMED',
+                'category': 'NONE', 'capture_status': last['capture_status'],
+                'recorded_decisions': recorded, 'missing_decisions': missing,
+                'decision_recorded_this_poll': last['capture_status'] == 'VERSIONED_OBSERVATION_RECORDED',
+                'local_poll_committed': True, 'remote_verified': True, 'receipt_written': True,
+                'proof_basis': 'REVIEWED_PRODUCER_TERMINAL_CONTRACT', 'remote_custody_verified': False,
+                **clock, 'retries': 0, 'approval_authority': False, 'training_eligible': False}
+    window_block = last.get('code') == 'MISSED_OR_OUTSIDE_POLL_SLOT'
+    return {'status': 'BLOCKED',
             'exit_code': code, 'code': last.get('code') if last.get('code') in allowed else 'POLL_REVIEW_REQUIRED',
-            'stage': last.get('stage') if last.get('stage') in stages else 'NOT_ESTABLISHED',
-            'category': last.get('category') if last.get('category') in categories else 'REVIEW_REQUIRED',
-            'local_poll_committed': last.get('local_poll_committed') if isinstance(last.get('local_poll_committed'), bool) else None,
-            'remote_verified': True if last.get('status') == 'REMOTE_VERIFIED' else
-                last.get('remote_verified') if isinstance(last.get('remote_verified'), bool) else None,
-            'receipt_written': True if last.get('status') == 'REMOTE_VERIFIED' else
-                last.get('receipt_written') if isinstance(last.get('receipt_written'), bool) else None,
+            'stage': 'POLL_SLOT_GATE' if window_block else last.get('stage') if last.get('stage') in stages else 'NOT_ESTABLISHED',
+            'category': 'POLL_WINDOW_REVIEW_REQUIRED' if window_block else last.get('category') if last.get('category') in categories else 'REVIEW_REQUIRED',
+            'local_poll_committed': False if window_block else last.get('local_poll_committed') if isinstance(last.get('local_poll_committed'), bool) else None,
+            'remote_verified': False if window_block else last.get('remote_verified') if isinstance(last.get('remote_verified'), bool) else None,
+            'receipt_written': False if window_block else last.get('receipt_written') if isinstance(last.get('receipt_written'), bool) else None,
             **clock, 'retries': 0, 'approval_authority': False, 'training_eligible': False}
 
 
 def save(ops: Path, day: date, result: dict[str, Any], *, visible: bool) -> None:
-    """Append private reports; at most one visible alert per session and category."""
+    """Append reports; separate causes, bounded launch retries, never claim delivery."""
     ops.mkdir(parents=True, exist_ok=True)
     report = {**result, 'session_date': day.isoformat(), 'observed_at': datetime.now(timezone.utc).isoformat()}
     write_once(ops / (day.isoformat() + '-' + uuid.uuid4().hex + '.json'), report)
     if result['status'] not in {'BLOCKED', 'VERSIONED_COVERAGE_INCOMPLETE'} or not visible:
         return
-    category = ('CLOCK_REVIEW_REQUIRED' if result.get('code') == 'CLOCK_UNVERIFIED' else
+    category = ('POLL_WINDOW_REVIEW_REQUIRED' if result.get('code') == 'MISSED_OR_OUTSIDE_POLL_SLOT' else
+                'CLOCK_REVIEW_REQUIRED' if result.get('code') == 'CLOCK_UNVERIFIED' else
                 'PREOPEN_REVIEW_REQUIRED' if 'blockers' in result else
                 'COVERAGE_REVIEW_REQUIRED' if result['status'] == 'VERSIONED_COVERAGE_INCOMPLETE' else
                 'OPERATIONS_REVIEW_REQUIRED' if result.get('code') == 'OPERATIONS_REVIEW_REQUIRED' else
                 'CAPTURE_REVIEW_REQUIRED')
-    marker = ops / (day.isoformat() + '-' + category + '.alert')
-    try:
-        with marker.open('x', encoding='utf-8') as stream:
-            stream.write('LOCAL_NOTIFICATION_LAUNCH_PENDING_NOT_DELIVERY_PROOF\n')
-    except FileExistsError:
+    # New namespace does not overwrite or trust old day/category markers.
+    # Hash only bounded public tokens; no raw error, credentials or path data.
+    tokens = [result.get(k) for k in ('code', 'stage', 'category')]
+    safe = [v if isinstance(v, str) and len(v) <= 80 and all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789' for c in v)
+            else 'NOT_ESTABLISHED' for v in tokens]
+    identity = digest(json.dumps(safe).encode())[:16]
+    for attempt in range(1, 4):
+        marker = ops / f'{day.isoformat()}-v2-{category}-{identity}-{attempt}.alert'
+        completed = marker.with_suffix('.launch')
+        if any(p.is_symlink() or p.is_junction() for p in (marker, completed)):
+            raise ValueError('OPERATIONS_ALERT_PATH_INVALID')
+        if marker.exists():
+            # Unknown interrupted launch is not silently retried. A confirmed
+            # launch failure can retry at most twice on later invocations.
+            if not completed.is_file():
+                return
+            with completed.open('rb') as stream:
+                if stream.read(65) not in (b'LAUNCH_FAILED\n', b'LAUNCH_FAILED\r\n'):
+                    return
+            continue
+        try:
+            with marker.open('x', encoding='utf-8') as stream:
+                stream.write('LOCAL_NOTIFICATION_LAUNCH_PENDING_NOT_DELIVERY_PROOF\n')
+        except FileExistsError:
+            return
+        try:
+            launched = notify(category) is True
+        except Exception:
+            launched = False
+        with completed.open('x', encoding='utf-8') as stream:
+            stream.write('LAUNCHED_NOT_DELIVERY_PROOF\n' if launched else 'LAUNCH_FAILED\n')
         return
-    notify(category)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -148,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--audit-task', default='KiranTrading-Forward-audit')
     parser.add_argument('--confirm-ops', action='store_true')
     parser.add_argument('--notify-local', action='store_true')
+    parser.add_argument('--read-only-audit', action='store_true')
     args = parser.parse_args(argv)
     if not args.confirm_ops:
         print(json.dumps({'status': 'PREVIEW', 'network_calls': 0, 'credential_reads': 0, 'writes': 0}))
@@ -157,7 +206,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(timezone.utc)
-        if now.astimezone(ZoneInfo('Asia/Kolkata')).date() != args.session_date:
+        if args.read_only_audit and args.mode != 'audit':
+            raise ValueError('READ_ONLY_AUDIT_MODE_REQUIRED')
+        today = now.astimezone(ZoneInfo('Asia/Kolkata')).date()
+        if args.session_date > today or (args.mode != 'audit' and today != args.session_date):
             raise ValueError('OPERATIONS_DATE_MISMATCH')
         separate(args.root, args.ops_root)
         paths_validated = True
@@ -170,12 +222,13 @@ def main(argv: list[str] | None = None) -> int:
             result = poll(args.root, args.session_date)
         else:
             result = audit(args.root, args.session_date, now)
-        save(args.ops_root, args.session_date, result, visible=args.notify_local)
+        if not args.read_only_audit:
+            save(args.ops_root, args.session_date, result, visible=args.notify_local)
     except Exception:
         result = {'status': 'BLOCKED', 'code': 'OPERATIONS_REVIEW_REQUIRED', 'raw_error_printed': False,
                   'approval_authority': False, 'training_eligible': False}
         # Reports only, outside the capture. Deduplicate alerts even on audit failure.
-        if paths_validated:
+        if paths_validated and not args.read_only_audit:
             try:
                 save(args.ops_root, args.session_date, result, visible=args.notify_local)
             except Exception:

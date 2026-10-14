@@ -3,8 +3,9 @@ from datetime import date, datetime, timedelta, timezone
 import json
 import importlib
 import shutil
-from pathlib import Path
-from typing import Any
+import sys
+from pathlib import Path, PureWindowsPath
+from typing import Any, Callable
 
 import pytest
 
@@ -12,6 +13,14 @@ import forward_session_ops as ops
 import forward_ops_host as host
 
 DAY = date(2026, 10, 14)
+
+
+def notification(events: list[str], success: bool) -> Callable[[str], bool]:
+    """Offline launch fixture: recording an event is not notification delivery."""
+    def call(category: str) -> bool:
+        events.append(category)
+        return success
+    return call
 
 
 def test_preview_zero_io(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -52,7 +61,7 @@ def test_namespace_alias_and_overlap_fail(tmp_path: Path) -> None:
 
 def test_report_append_and_alert_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     alerts: list[str] = []
-    monkeypatch.setattr(ops, 'notify', lambda code: alerts.append(code))
+    monkeypatch.setattr(ops, 'notify', notification(alerts, True))
     for _ in range(3):
         ops.save(tmp_path, DAY, {'status': 'BLOCKED', 'code': 'CLOCK_UNVERIFIED'}, visible=True)
     assert len(list(tmp_path.glob('*.json'))) == 3
@@ -128,6 +137,9 @@ def test_audit_is_read_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     before = producer.path.read_bytes()
     result = ops.audit(tmp_path, date(2022, 1, 3), datetime.fromisoformat('2022-01-03T15:40:00+05:30'))
     assert result['missing_decisions'] == 74 and result['capture_writes'] == 0
+    assert producer.path.read_bytes() == before
+    later = ops.audit(tmp_path, date(2022, 1, 3), datetime.fromisoformat('2022-01-04T08:00:00+05:30'))
+    assert later['generation_sha256'] == result['generation_sha256']
     assert producer.path.read_bytes() == before
     with pytest.raises(ValueError, match='1540'):
         ops.audit(tmp_path, date(2022, 1, 3), datetime.fromisoformat('2022-01-03T15:39:59+05:30'))
@@ -211,7 +223,16 @@ def test_task_inspection_script_checks_binding_without_execution(monkeypatch: py
         scripts.append(script)
         return {}
     monkeypatch.setattr(host, 'powershell', capture)
-    assert host.inspect_tasks(DAY, 'SyntheticPoll', 'SyntheticAudit', Path('C:/SyntheticState'), Path('C:/SyntheticOps')) == {}
+    # This is a Windows-script fixture even on a Linux CI host. Do not mix a
+    # POSIX __file__ with Windows binding arguments: that must fail closed.
+    monkeypatch.setattr(host, 'Path', PureWindowsPath)
+    monkeypatch.setattr(PureWindowsPath, 'resolve', lambda self: self, raising=False)
+    monkeypatch.setattr(host, '__file__', 'C:/SyntheticCode/forward_ops_host.py')
+    monkeypatch.setenv('SystemRoot', 'C:/Windows')
+    monkeypatch.setattr(sys, 'executable', 'C:/SyntheticCode/.venv/Scripts/python.exe')
+    assert host.inspect_tasks(DAY, 'KiranTrading-Versioned-20261014-poll',
+                              'KiranTrading-Versioned-20261014-audit',
+                              Path('C:/SyntheticState'), Path('C:/SyntheticOps')) == {}
     text = scripts[0]
     for value in ('Get-CimInstance', 'w32time', 'OrdinalIgnoreCase', 'SyntheticState', 'SyntheticOps', '-SessionDate', '-Mode'):
         assert value in text
@@ -230,3 +251,106 @@ def test_cleanup_failure_preserves_known_receipt_without_promoting(verified: boo
     value = ops.poll(tmp_path, DAY)
     assert value['status'] == 'BLOCKED' and value['local_poll_committed'] is True
     assert value['remote_verified'] is value['receipt_written'] is verified
+
+
+@pytest.mark.parametrize('capture_status', ['VERSIONED_OBSERVATION_RECORDED', 'VERSIONED_INPUT_BLOCKED'])
+def test_success_has_no_failure_defaults(capture_status: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import forward_versioned_capture as capture
+    def run(*args: Any) -> int:
+        print(json.dumps({'status': 'REMOTE_VERIFIED', 'capture_status': capture_status,
+                          'recorded_decisions': 2, 'missing_decisions': 73, 'approval_authority': False}))
+        return 0
+    monkeypatch.setattr(capture, 'run', run)
+    report = ops.poll(tmp_path, DAY)
+    assert report['code'] == 'REMOTE_VERIFICATION_COMPLETE'
+    assert report['stage'] == 'LOCAL_RECEIPT_CONFIRMED' and report['category'] == 'NONE'
+    assert report['local_poll_committed'] is report['receipt_written'] is report['remote_verified'] is True
+    assert report['decision_recorded_this_poll'] == (capture_status == 'VERSIONED_OBSERVATION_RECORDED')
+    assert report['remote_custody_verified'] is report['training_eligible'] is False
+
+
+@pytest.mark.parametrize('override', [{'recorded_decisions': True}, {'missing_decisions': 74},
+                                    {'capture_status': 'BACKUP_ONLY'}, {'approval_authority': True},
+                                    {'local_poll_committed': False}, {'receipt_written': False}])
+def test_malformed_success_not_promoted(override: dict[str, Any], tmp_path: Path,
+                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    import forward_versioned_capture as capture
+    def run(*args: Any) -> int:
+        print(json.dumps(dict({'status': 'REMOTE_VERIFIED', 'capture_status': 'VERSIONED_OBSERVATION_RECORDED',
+                              'recorded_decisions': 2, 'missing_decisions': 73, 'approval_authority': False}, **override)))
+        return 0
+    monkeypatch.setattr(capture, 'run', run)
+    report = ops.poll(tmp_path, DAY)
+    assert report['status'] == 'BLOCKED' and report['remote_verified'] is None
+
+
+def test_early_gate_is_distinct_no_capture_commit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import forward_versioned_capture as capture
+    def run(*args: Any) -> int:
+        print(json.dumps({'status': 'BLOCKED', 'code': 'MISSED_OR_OUTSIDE_POLL_SLOT', 'stage': 'poll'}))
+        return 2
+    monkeypatch.setattr(capture, 'run', run)
+    report = ops.poll(tmp_path, DAY)
+    assert report['stage'] == 'POLL_SLOT_GATE' and report['category'] == 'POLL_WINDOW_REVIEW_REQUIRED'
+    assert report['local_poll_committed'] is report['receipt_written'] is report['remote_verified'] is False
+    alerts: list[str] = []
+    monkeypatch.setattr(ops, 'notify', notification(alerts, True))
+    ops.save(tmp_path, DAY, report, visible=True)
+    ops.save(tmp_path, DAY, {'status': 'BLOCKED', 'code': 'FORWARD_CAPTURE_FAILED'}, visible=True)
+    assert alerts == ['POLL_WINDOW_REVIEW_REQUIRED', 'CAPTURE_REVIEW_REQUIRED']
+
+
+def test_failed_notification_retries_are_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(ops, 'notify', notification(calls, False))
+    for _ in range(5):
+        ops.save(tmp_path, DAY, {'status': 'BLOCKED', 'code': 'CLOCK_UNVERIFIED'}, visible=True)
+    assert len(calls) == 3
+    assert len(list(tmp_path.glob('*.alert'))) == 3
+    assert all(path.read_text() == 'LAUNCH_FAILED\n' for path in tmp_path.glob('*.launch'))
+
+
+def test_old_marker_does_not_suppress_new_cause(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    old = tmp_path / f'{DAY}-CAPTURE_REVIEW_REQUIRED.alert'
+    old.write_text('LOCAL_NOTIFICATION_LAUNCH_PENDING_NOT_DELIVERY_PROOF\n')
+    calls: list[str] = []
+    monkeypatch.setattr(ops, 'notify', notification(calls, True))
+    ops.save(tmp_path, DAY, {'status': 'BLOCKED', 'code': 'FORWARD_CAPTURE_FAILED', 'stage': 'LOCAL_RECORD_POLL'}, visible=True)
+    ops.save(tmp_path, DAY, {'status': 'BLOCKED', 'code': 'FORWARD_CAPTURE_FAILED', 'stage': 'DRIVE_PUBLISH_VERIFY'}, visible=True)
+    assert len(calls) == 2 and old.read_text().startswith('LOCAL_NOTIFICATION_LAUNCH_PENDING')
+
+
+def test_read_only_audit_cli_never_saves_or_alerts(monkeypatch: pytest.MonkeyPatch,
+                                                capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(ops, 'separate', lambda *args: None)
+    monkeypatch.setattr(ops, 'audit', lambda *args: {'status': 'VERSIONED_COVERAGE_INCOMPLETE', 'capture_writes': 0})
+    def denied(*args: Any, **kwargs: Any) -> None:
+        pytest.fail('read-only audit attempted write or notification')
+    monkeypatch.setattr(ops, 'save', denied)
+    monkeypatch.setattr(ops, 'notify', denied)
+    assert ops.main(['--root', 'unused', '--ops-root', 'unused', '--session-date', '2022-01-03',
+                     '--mode', 'audit', '--confirm-ops', '--read-only-audit', '--notify-local']) == 1
+    assert json.loads(capsys.readouterr().out)['capture_writes'] == 0
+
+
+def test_read_only_audit_failure_redacted_without_writes(monkeypatch: pytest.MonkeyPatch,
+                                                        capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(ops, 'separate', lambda *args: None)
+    def failed(*args: Any) -> dict[str, Any]:
+        raise OSError('private source path and credential must never print')
+    monkeypatch.setattr(ops, 'audit', failed)
+    monkeypatch.setattr(ops, 'save', lambda *args, **kwargs: pytest.fail('failure wrote'))
+    assert ops.main(['--root', 'unused', '--ops-root', 'unused', '--session-date', '2022-01-03',
+                     '--mode', 'audit', '--confirm-ops', '--read-only-audit']) == 2
+    assert 'private source' not in capsys.readouterr().out
+
+
+def test_oversized_launch_file_is_not_read_unbounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ops, 'notify', lambda code: False)
+    value = {'status': 'BLOCKED', 'code': 'CLOCK_UNVERIFIED'}
+    ops.save(tmp_path, DAY, value, visible=True)
+    launch = next(tmp_path.glob('*.launch'))
+    launch.write_bytes(b'LAUNCH_FAILED\n' + b'x' * 100000)
+    monkeypatch.setattr(ops, 'notify', lambda code: pytest.fail('untrusted launch state retried'))
+    ops.save(tmp_path, DAY, value, visible=True)
+    assert len(list(tmp_path.glob('*.alert'))) == 1
