@@ -4,12 +4,12 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import subprocess
 import sys
-from typing import Any, Callable, cast
+from typing import Any, Callable, Mapping, cast
 
 from equity_runtime_health import clock_error, measure_clock
 from nifty_session_calendar import cash_session
@@ -22,6 +22,41 @@ def task_name(value: str) -> str:
     if re.fullmatch(r'[A-Za-z0-9_-]{1,160}', value) is None:
         raise ValueError('TASK_NAME_INVALID')
     return value
+
+
+def expected_task_actions(day: date, poll: str, audit: str, *, code: str, python: str,
+                          root: str, ops: str, system_root: str) -> dict[str, dict[str, str]]:
+    """Pure exact forward_ops_plan arguments; no calendar, paths or host reads."""
+    if type(day) is not date:
+        raise ValueError('TASK_BINDING_IDENTITY_INVALID')
+    namespace = 'KiranTrading-Versioned-' + day.strftime('%Y%m%d')
+    if poll != namespace + '-poll' or audit != namespace + '-audit':
+        raise ValueError('TASK_BINDING_IDENTITY_INVALID')
+    values = (code, python, root, ops, system_root)
+    if any(not PureWindowsPath(value).is_absolute() or '..' in PureWindowsPath(value).parts
+           or any(c in value for c in '\r\n"') or value.endswith(('\\', '/')) for value in values):
+        raise ValueError('TASK_BINDING_PATH_INVALID')
+    code_path, python_path, root_path, ops_path, windows = map(PureWindowsPath, values)
+    if (not python_path.is_relative_to(code_path) or root_path.is_relative_to(code_path)
+            or ops_path.is_relative_to(code_path) or root_path.is_relative_to(ops_path)
+            or ops_path.is_relative_to(root_path)):
+        raise ValueError('TASK_BINDING_PATH_INVALID')
+    result: dict[str, dict[str, str]] = {}
+    for mode, identity in (('poll', poll), ('audit', audit)):
+        arguments = ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-File',
+            str(code_path / 'forward_ops_task.ps1'), '-PythonExecutable', str(python_path),
+            '-CodeDirectory', str(code_path), '-StateRoot', str(root_path), '-OpsRoot', str(ops_path),
+            '-SessionDate', day.isoformat(), '-Mode', mode, '-PollTask', poll, '-AuditTask', audit]
+        result[identity] = {'Execute': str(windows / 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+            'WorkingDirectory': str(code_path), 'Arguments': subprocess.list2cmdline(arguments)}
+    return result
+
+
+def exact_action_matches(action: Mapping[str, object], expected: Mapping[str, str]) -> bool:
+    """Normalize separators/case only; extra/reordered arguments are not accepted."""
+    return all(type(action.get(key)) is str and str(action[key]).replace('/', '\\').casefold()
+               == value.replace('/', '\\').casefold() for key, value in expected.items()) and set(expected) == {
+                   'Execute', 'WorkingDirectory', 'Arguments'}
 
 
 def powershell(script: str) -> dict[str, Any]:
@@ -47,26 +82,34 @@ def inspect_tasks(day: date, poll: str, audit: str, root: Path | None = None,
     code = Path(__file__).resolve().parent
     wrapper = str(code / 'forward_ops_task.ps1').replace("'", "''")
     python = str(Path(sys.executable).resolve()).replace("'", "''")
-    bindings = ''.join(f"-and ($arg.IndexOf('{str(p).replace(chr(39), chr(39)*2)}', [StringComparison]::OrdinalIgnoreCase) -ge 0) "
-                       for p in (root, ops) if p is not None)
+    expected: dict[str, dict[str, str]] = {}
+    if root is not None and ops is not None:
+        try:
+            expected = expected_task_actions(day, poll, audit, code=str(code),
+                python=str(Path(sys.executable).resolve()), root=str(root), ops=str(ops),
+                system_root=os.environ['SystemRoot'])
+        except (ValueError, KeyError):
+            pass  # Missing exact bindings can never produce action_matches=True.
+    declarations = '$expected=@{};'
+    for identity, fields in expected.items():
+        declarations += "$expected['" + identity + "']=@{" + ';'.join(
+            key + "='" + value.replace("'", "''") + "'" for key, value in fields.items()) + '};'
     return powershell("$ErrorActionPreference='Stop'; $s=Get-CimInstance Win32_Service -Filter \"Name='w32time'\"; $r=@{"
         "time_service_running=($s.State -eq 'Running'); time_service_automatic=($s.StartMode -eq 'Auto')};"
-        f"foreach($n in @('{poll}','{audit}')) {{"
-        "$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue;"
+        + declarations + f"foreach($n in @('{poll}','{audit}')) {{"
+        "$t=Get-ScheduledTask -TaskPath '\\' -TaskName $n -ErrorAction SilentlyContinue;"
         "if($null -eq $t){$r[$n]=@{exists=$false};continue};"
         "$i=$t | Get-ScheduledTaskInfo; $a=@($t.Actions); $ok=$false;"
-        "if($a.Count -eq 1){ $x=$a[0]; $arg=$x.Arguments.Replace('/','\\');"
-        f"$ok=($arg.IndexOf('{wrapper}', [StringComparison]::OrdinalIgnoreCase) -ge 0) "
-        f"-and ($arg.IndexOf('{python}', [StringComparison]::OrdinalIgnoreCase) -ge 0) "
-        f"-and ($arg -match '(?:--session-date|-SessionDate)\\s+\"?{day.isoformat()}(?:\"|\\s|$)') "
-        + bindings +
+        "if($a.Count -eq 1 -and $expected.ContainsKey($n)){ $x=$a[0]; $e=$expected[$n]; $ok=$true;"
+        "foreach($field in @('Execute','WorkingDirectory','Arguments')){"
+        "$ok=$ok -and [String]::Equals(([string]$x.$field).Replace('/','\\'),"
+        "([string]$e[$field]).Replace('/','\\'),[StringComparison]::OrdinalIgnoreCase); };"
+        "$ok=$ok -and (Test-Path -LiteralPath $x.Execute -PathType Leaf) "
         f"-and (Test-Path -LiteralPath '{wrapper}' -PathType Leaf) "
-        f"-and (Test-Path -LiteralPath '{python}' -PathType Leaf) "
-        "-and (Test-Path -LiteralPath $x.Execute -PathType Leaf); };"
-        f"$mode=if($n -eq '{poll}'){{'poll'}}else{{'audit'}};"
-        "$ok=$ok -and ($a.Count -eq 1) -and ($a[0].Arguments -match ('(?:--mode|-Mode)\\s+\"?'+$mode+'(?:\"|\\s|$)'));"
+        f"-and (Test-Path -LiteralPath '{python}' -PathType Leaf); }};"
         "$r[$n]=@{exists=$true; action_matches=$ok; disabled=($t.State -eq 'Disabled');"
-        "running=($t.State -eq 'Running'); last_result=[long]$i.LastTaskResult}; };"
+        "running=($t.State -eq 'Running'); enabled=($t.Settings.Enabled -eq $true); "
+        "state=[string]$t.State; last_result=[long]$i.LastTaskResult}; };"
         "$r | ConvertTo-Json -Depth 4 -Compress")
 
 
