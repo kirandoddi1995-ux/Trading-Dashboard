@@ -2541,7 +2541,7 @@ primary_section = primary_section or "Today's Picks"
 
 _section_pages = {
     "Today's Picks": ["Options & Derivatives Chain", "Futures & Derivatives", "Equities Screener & Risk"],
-    "Research": ["Evidence Readiness", "NIFTY Research Lab", "Commodities (MCX)", "Mutual Funds", "SMC & Technical Analysis", "AI Copilot"],
+    "Research": ["Evidence Readiness", "NIFTY Research Lab", "Backtesting", "ML Models", "Automation Reports", "Evidence Assistant", "Commodities (MCX)", "Mutual Funds", "SMC & Technical Analysis", "AI Copilot"],
 }
 if primary_section == "Settings":
     selected_tab = "Settings"
@@ -9853,6 +9853,13 @@ elif selected_tab == "Equities Screener & Risk":
 # ==========================================
 elif selected_tab == "NIFTY Research Lab":
     render_research_lab(st)
+
+elif selected_tab in ("Backtesting", "ML Models", "Automation Reports", "Evidence Assistant"):
+    try:
+        from research_workbench_ui import render_workbench
+        render_workbench(st, selected_tab)
+    except Exception:
+        st.error("RESEARCH_PAGE_UNAVAILABLE — other application pages and capture are unaffected.")
 
 elif selected_tab == "Evidence Readiness":
     st.subheader("Model Evidence Readiness")

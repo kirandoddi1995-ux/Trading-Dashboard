@@ -52,9 +52,11 @@ if mode == 'login':
 else:
     app.secrets['APP_ENV'] = 'development'
     app.secrets['APP_AUTH_MODE'] = 'disabled'
-    app.session_state['primary_section'] = 'Research' if mode == 'research' else 'Settings'
-    if mode == 'research':
-        app.session_state['subpage_Research'] = 'NIFTY Research Lab'
+    pages = {'backtesting': 'Backtesting', 'models': 'ML Models',
+             'reports': 'Automation Reports', 'assistant': 'Evidence Assistant'}
+    app.session_state['primary_section'] = 'Research' if mode == 'research' or mode in pages else 'Settings'
+    if mode == 'research' or mode in pages:
+        app.session_state['subpage_Research'] = pages.get(mode, 'NIFTY Research Lab')
     app.secrets['EXPECTED_APP_BUILD'] = 'SYNTHETIC_EXPECTED_BUILD'
     app.secrets['RESILIENCE_POLICY_SHA256'] = 'a' * 64
     app.secrets['EXPECTED_EQUITY_CODE_SHA256'] = 'b' * 64
@@ -71,6 +73,10 @@ elif mode == 'research':
     reports = [json.loads(item.value) for item in app.json if 'SYNTHETIC_PLUMBING_ONLY' in item.value]
     assert len(reports) == 1 and reports[0]['ml_status'] == 'INSUFFICIENT_DATA'
     assert reports[0]['approval_authority'] is False and reports[0]['real_data_reads'] == 0
+elif mode in {'backtesting', 'models', 'reports', 'assistant'}:
+    assert any(item.value == 'NIFTY ' + pages[mode] for item in app.subheader), 'Workbench page did not render'
+    assert any('INSUFFICIENT EVIDENCE' in item.value for item in app.warning), 'Evidence gate missing'
+    assert not any('RESEARCH_PAGE_UNAVAILABLE' in item.value for item in app.error), 'Optional backend failed at boot'
 else:
     assert any(item.value == 'Quant Terminal' for item in app.title), 'Application title missing'
     assert any(item.label == 'Auto-Refresh Interval' for item in app.select_slider), 'Settings page did not render'
@@ -85,7 +91,7 @@ print('STREAMLIT_BOOT_VERIFIED')
 '''
 
 
-@pytest.mark.parametrize('mode', ['login', 'settings', 'research'])
+@pytest.mark.parametrize('mode', ['login', 'settings', 'research', 'backtesting', 'models', 'reports', 'assistant'])
 def test_actual_app_boot_offline(mode, tmp_path):
     checkout = tmp_path / 'checkout'
     checkout.mkdir()

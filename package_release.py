@@ -10,7 +10,8 @@ from release_verification import release_members, verify_archive
 
 
 ROOT = Path(__file__).resolve().parent
-RUNTIME = ['app.py', 'app_runtime.py', 'scan_jobs.py', 'reliable_charts.py',
+RUNTIME = ['research_workbench.py', 'research_workbench_ui.py', 'research_assistant.py',
+    'app.py', 'app_runtime.py', 'scan_jobs.py', 'reliable_charts.py',
            'technical_indicators.py', 'mf_research.py', 'observability.py',
            'market_data_gateway.py', 'feature_store.py', 'smc_analysis.py',
            'point_in_time.py', 'prediction_validation.py',

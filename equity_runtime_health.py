@@ -21,6 +21,7 @@ _pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="equity-clock")
 _lock = threading.Lock()
 _pending = None
 RELEASE_FILES = (
+    "research_workbench.py", "research_workbench_ui.py", "research_assistant.py",
     "research_lab.py", "research_lab_ui.py", "research_lab_grounding.py", "research_lab_statistics.py",
     # The synthetic lab verifies this literal recipe source, not only imports.
     "forward_versioned_capture.py",
