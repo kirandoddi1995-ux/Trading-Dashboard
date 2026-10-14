@@ -1,0 +1,176 @@
+{
+  "version": "daily-volume-reader-v1",
+  "group": "daily_volume_reader",
+  "files": [
+    {
+      "destination": "storage_daily_volume_reader.py",
+      "sha256_lf": "4751c488233dd83cee43252d59c187f8ec26880168b5796261c0198275577a57"
+    },
+    {
+      "destination": "tests/test_storage_daily_volume_reader.py",
+      "sha256_lf": "9edec6705b7ba03685b2ed5eb5d1e6fd2070824b25f041853d29abb16c3561c7"
+    },
+    {
+      "destination": "daily_volume_upload_check.py",
+      "sha256_lf": "40f680aeac2d87431dc6957597a715149ec4937ae33b2784c7ada05a0a458ca4"
+    },
+    {
+      "destination": "tests/test_daily_volume_upload_check.py",
+      "sha256_lf": "1f3bd0a054f82ef78a0037ba9cf8dd0b7069a0591fce25fc4380749f12dca101"
+    },
+    {
+      "destination": "DAILY_VOLUME_READER_UPLOAD_2026-10-14.md",
+      "sha256_lf": "091e6d6ab9273447bf50815261eda96dbe969a95d7207410250e484901f60b56"
+    },
+    {
+      "destination": "DAILY_VOLUME_READER_UPLOAD_2026-10-14.json",
+      "sha256_lf": null
+    }
+  ],
+  "seeds": [
+    "storage_daily_volume_reader.py",
+    "daily_volume_upload_check.py",
+    "production_repository.py"
+  ],
+  "extra_pins": [
+    "constraints.txt",
+    "requirements.txt",
+    "requirements-archive.txt",
+    "overnight_programme_upload_check.py",
+    "sql/drive_archive_draft.sql"
+  ],
+  "prerequisites": [
+    {
+      "destination": "catalog_receipts.py",
+      "sha256_lf": "ff0608df2cd2efa8feec3749a045c173fc3a6ec40fe46b8d86f439f57cb0e5d2"
+    },
+    {
+      "destination": "cold_catalog.py",
+      "sha256_lf": "4753cab1ca61ff551284c75b1a8004be41b5712ab8534bde9981b1272de7ff8a"
+    },
+    {
+      "destination": "collector_storage_preflight.py",
+      "sha256_lf": "0c9849afa75e286b1f2adc3c582abec3a8d1587cb31227b835f68aa8cc022a2f"
+    },
+    {
+      "destination": "constraints.txt",
+      "sha256_lf": "433d34cc1146a838c792b8b417acefed300895a3543d62a295cb00c2791a7ba3"
+    },
+    {
+      "destination": "deployment_security.py",
+      "sha256_lf": "909b3631785c8ceb1fc93e9987884b52745ccbeb9cf5badf0d6f082ba3cf9ff2"
+    },
+    {
+      "destination": "evidence_ledger.py",
+      "sha256_lf": "6c410ee20bf664552e0ac42845fb995d652dc1e6488ddf8bfe66dadabd930669"
+    },
+    {
+      "destination": "finalization_intents.py",
+      "sha256_lf": "eb4725bedba236cf622b022ec1d61536530a9340e8e290c7db2055d4b1276452"
+    },
+    {
+      "destination": "ledger_historical_views.py",
+      "sha256_lf": "19bf63a8a4ebe5af05a20ee45df2525794468c9bda7d58f7f4dfaca36dd7df2c"
+    },
+    {
+      "destination": "ledger_history_consumers.py",
+      "sha256_lf": "6e561349888980ac6021c8701c9c83b367ed24c7234e25052ce9d849d24d0e2f"
+    },
+    {
+      "destination": "ledger_history_stream.py",
+      "sha256_lf": "564975f27d362080d6e76a1d8cd746fa7763d44231c68ac916a0a56b01530a21"
+    },
+    {
+      "destination": "ledger_segments.py",
+      "sha256_lf": "7c398d9ba268ad52a99a35ff0cdac190d66346a196e0b77798b6a5afa5311023"
+    },
+    {
+      "destination": "local_state_recovery.py",
+      "sha256_lf": "178c4e707fb132d3227852d28fcc2a4dd895163754f40f620b543779425b0efd"
+    },
+    {
+      "destination": "observability.py",
+      "sha256_lf": "8a5b2b13f1ad5916d738d42d7d3c97b9aaf9fcf5e48a8fbcbc7fb5def7f8f078"
+    },
+    {
+      "destination": "operational_receipt_history.py",
+      "sha256_lf": "f0a27b9988ce39b9f8489ce9765f837b01efc4ac2b6cf4603fd8da9835fb5ace"
+    },
+    {
+      "destination": "overnight_programme_upload_check.py",
+      "sha256_lf": "8a11000fc62c07495323e4de4e58b727765493062d9c6d97a2fc3def0192fbe1"
+    },
+    {
+      "destination": "overnight_storage_contracts.py",
+      "sha256_lf": "d8554c7f789d1fab7fd98c1f4beb0c97759d557fbac1955886ff5738752946db"
+    },
+    {
+      "destination": "overnight_storage_sources.py",
+      "sha256_lf": "f8398dbf463db93207965ce81caa4745153a3338e104153ad5f5e60d80623647"
+    },
+    {
+      "destination": "overnight_upload_check.py",
+      "sha256_lf": "d8ec927d2c4411b6ebb18f9ea4c582a0e0fd0c1efc6f5dd7f53c82e13d735ca0"
+    },
+    {
+      "destination": "production_repository.py",
+      "sha256_lf": "deecdf2a4dcccc74919aad3bb8ed02db4999427e724c799d9ee4c5374e1f4a5f"
+    },
+    {
+      "destination": "recovery_bundle.py",
+      "sha256_lf": "9641a7512352fa3f2aa7964536bd9f3f77b4a58b0d3aa050f425c57b5cff0b79"
+    },
+    {
+      "destination": "recovery_custody_rehearsal.py",
+      "sha256_lf": "666504f6a0cf2e9bbb65a8ad7edbf8f74fd69a2d37ff1cd85f7281d75b8a3105"
+    },
+    {
+      "destination": "recovery_export.py",
+      "sha256_lf": "b262472b891dba298cf1f87c9a83fbea616af5a6062c869033c371ec6a9c1f50"
+    },
+    {
+      "destination": "recovery_materialization.py",
+      "sha256_lf": "32694e22ad289871c918d26b0cd9d4dc3f5c8ad0264fadf5d00dc61e8a7b73bb"
+    },
+    {
+      "destination": "recovery_replica_audit.py",
+      "sha256_lf": "1f68308cae4f013f6b632a4b16d3aaa9bd0f5eb48551bec5ed9db99f184e0a34"
+    },
+    {
+      "destination": "recovery_six_binding.py",
+      "sha256_lf": "6175f1160f463e5d5e7ea27fb77061504b6e33e622c07da141e8f8afb509d3c7"
+    },
+    {
+      "destination": "requirements-archive.txt",
+      "sha256_lf": "9c21fb56692035e7ce6bce156a589eff9e7135fe27884d7513356da62f564af4"
+    },
+    {
+      "destination": "requirements.txt",
+      "sha256_lf": "5761ac73215b3da83085c867d3b8b12c901058cb12f8c945c12cbd7ca4f91a0a"
+    },
+    {
+      "destination": "reviewed_upload_check.py",
+      "sha256_lf": "d4f1116394447ec5bb41522ce7b83e3240e2e18c6434f1dbdf3f49eab8d3592f"
+    },
+    {
+      "destination": "sql/drive_archive_draft.sql",
+      "sha256_lf": "f5fadb663da03df370fac5042d379c8274ed4fb916b87c711f7e31acf24d5017"
+    },
+    {
+      "destination": "storage_capacity_watch.py",
+      "sha256_lf": "48817e13ab145b7eabfd0f5087dd2135223bc2373ceb9d274ab9ac4e5fa0e0c1"
+    },
+    {
+      "destination": "storage_policy.py",
+      "sha256_lf": "b886ac411fc89d8a332cbeb26085af506c6d55bf5ce373622a218b09181f6237"
+    },
+    {
+      "destination": "storage_transition.py",
+      "sha256_lf": "8a59f960fb34741ff3e3852a70a54620efc013b6acb7fb7da8349475f7727e4f"
+    },
+    {
+      "destination": "terminal_intent_snapshot.py",
+      "sha256_lf": "99b65e969fb46953fb84e249f0fd62048657db257f936a7f1df79773d62713c5"
+    }
+  ]
+}
