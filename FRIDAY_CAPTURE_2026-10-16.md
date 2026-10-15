@@ -1,5 +1,59 @@
 # Friday 16 October — three commands, no pasted prompts
 
+## Thursday evening update — Setup diagnostics follow-up
+
+The original 33-file package is now merged as
+`d5cd80f41a52de902d23cb81d761e7bb720e710c` (owner reports exact-commit CI green).
+Do not repeat that upload. Use the seven-file follow-up manifest
+`DAILY_SETUP_REPAIR_UPLOAD_2026-10-15.md`; historical 20/33-file manifests remain
+unchanged records, not checks for this new modified tree.
+
+The owner-reported Setup block at REVIEWED_TOOLS_CHECKOUT happened BEFORE
+operational writes and before any Start marker, capsule creation or task mutation.
+That old stage also covered the Python bootstrap and private-ops permission read,
+not just Git. Direct Git checks passed in both owner-verified normal and elevated
+PS5.1 windows. Subsequent owner checks establish that `py` is unavailable, while
+the existing reviewed test interpreter reports3.13.9/exit0. That missing launcher
+is sufficient to explain the old bootstrap block. Private-ops and later Setup
+acceptance are still NOT established.
+An elevated Setup would stop at NORMAL_WINDOW_CHECK; System32 alone proves nothing.
+Do not reset a marker, change ACLs/ownership/safe.directory or relax a pin.
+
+The follow-up exposes separate Git, Python and private-ops stages and fixed public
+codes, nonempty blockers for controlled rejections, safe native exit code/category,
+and whether operational state was reached. It removes the launcher dependency:
+an explicit existing local executable must prove exactly3.13.9 with an isolated
+positive sentinel. No PATH search, launcher auto-install or version relaxation.
+It supplies controller checks and creates the capsule's own venv; scheduled tasks
+still use ONLY that capsule's interpreter. Keep the approved bootstrap/base runtime
+installed: a venv is not a standalone Python distribution. No installation is
+needed for the owner's verified existing interpreter.
+
+`CheckTools` remains public-Git-only. `CheckSetup` checks the same normal-token,
+Git, explicit interpreter and private-ops prerequisites as Setup, then exits BEFORE
+capsule writes/task mutation. Neither is morning GO: capsule/calendar/clock,
+provider, credentials, tasks and notification delivery remain unverified.
+
+After the reviewed follow-up merges with exact-final-SHA green CI, use a NEW clean
+merged tools checkout, normal PowerShell. Set the verified interpreter once:
+
+```powershell
+$bootstrapPython = 'C:\Users\banga\Desktop\kiran_share_market\.venv\Scripts\python.exe'
+.\forward_daily_owner.ps1 -SessionDate 2026-10-16 -Action CheckSetup -BootstrapPython $bootstrapPython -ConfirmRun
+```
+
+Require SETUP_PREREQUISITES_CHECK_PASSED_NOT_COMMISSIONED. Then Setup below may
+be run once under the reviewed recovery procedure. This is not retrying a market
+slot or resetting Start. If Setup blocks, stop and share only its redacted JSON;
+the new stage/code identifies the remaining prerequisite. CheckTools passing
+alone does not resolve or authorize bypassing a Python/private-ops block.
+
+Target successful Setup THURSDAY evening. An 08:00 Friday Start requires accepted
+Setup and fresh FRIDAY download/Prepare by 08:00. Hard 09:15 freeze and strictly
+before09:20:30 Start gates remain unchanged. If prerequisites cannot be cleared
+safely, Friday is NO_GO, no backfill; keep tasks disabled. No promise is made that
+a diagnostic code change itself establishes host readiness.
+
 **15 October is owner-reported NO CAPTURE, NO BACKFILL.** All six old tasks remain
 disabled as reported; this tool does not change them. The five-file 14 October
 copy under private KiranTrading storage is a same-drive selected-evidence safety
@@ -14,13 +68,9 @@ No ACL changes, automatic time repair, old task edits or installed agent roles.
 
 ## Before Friday — do the slow setup early
 
-Recommended while main remains1251530: ONE combined33-file PR containing the
-unchanged twenty continuity files plus thirteen daily-owner files. Use the NEW
-combined checker, not the old20-file CLI against33staged paths. If the twenty
-files have already merged, use the strict13-file follow-up mode instead. All
-required checks must be green on the exact final commit. Run the new
-script from the reviewed tools checkout after the combined merge (or both
-sequential merges), OUTSIDE every frozen
+The original combined33-file PR has merged; use the seven-file follow-up described
+above. All required checks must be green on its exact final commit. Run the
+script from a clean reviewed MERGED tools checkout, OUTSIDE every frozen
 capsule. Do not copy it into the 14 October capsule or modify its source pins.
 The tools checkout contains the script and adjacent pure contract; it is not a
 capture capsule and needs no credentials. The capture capsule still uses exact
@@ -29,7 +79,7 @@ public1251530731cce5b75fad8601567b9320d07b710d and its own environment.
 In a normal PowerShell, from that tools checkout, ONE command:
 
 ```powershell
-.\forward_daily_owner.ps1 -SessionDate 2026-10-16 -Action Setup -ConfirmRun
+.\forward_daily_owner.ps1 -SessionDate 2026-10-16 -Action Setup -BootstrapPython $bootstrapPython -ConfirmRun
 ```
 
 Setup can run on 15 October evening or 16 October before09:15. It verifies normal
@@ -68,12 +118,13 @@ Set only the two genuine owner inputs in this same normal window, one line each:
 ```powershell
 $closeFile = "$env:USERPROFILE\Downloads\ind_close_all_15102026.csv"
 $downloadedAt = 'REPLACE_WITH_ACTUAL_FRIDAY_COMPLETION_ISO_TIME_WITH_+05:30'
+$bootstrapPython = 'C:\Users\banga\Desktop\kiran_share_market\.venv\Scripts\python.exe'
 ```
 
 Choose the actual downloaded filename if Chrome added a suffix. Then ONE command:
 
 ```powershell
-.\forward_daily_owner.ps1 -SessionDate 2026-10-16 -Action Prepare -CloseFile $closeFile -DownloadedAt $downloadedAt -AttestNseSource -ConfirmRun
+.\forward_daily_owner.ps1 -SessionDate 2026-10-16 -Action Prepare -BootstrapPython $bootstrapPython -CloseFile $closeFile -DownloadedAt $downloadedAt -AttestNseSource -ConfirmRun
 ```
 
 Expected `MORNING_GO_SUPERVISED_START_REQUIRED`: exact disabled task bindings,
@@ -90,7 +141,7 @@ After successful Prepare and having actually seen Setup's notification, run once
 from08:00 onward and strictly BEFORE09:20:30:
 
 ```powershell
-.\forward_daily_owner.ps1 -SessionDate 2026-10-16 -Action Start -ConfirmNotificationSeen -ConfirmEnableAfterTwoPolls -ConfirmRun
+.\forward_daily_owner.ps1 -SessionDate 2026-10-16 -Action Start -BootstrapPython $bootstrapPython -ConfirmNotificationSeen -ConfirmEnableAfterTwoPolls -ConfirmRun
 ```
 
 This is explicit owner authorization for TWO future supervised invocations and
@@ -160,7 +211,7 @@ After15:40, if necessary ONE read-only audit (valid incomplete coverage is not a
 tool failure):
 
 ```powershell
-.\forward_daily_owner.ps1 -SessionDate 2026-10-16 -Action Audit -ConfirmRun
+.\forward_daily_owner.ps1 -SessionDate 2026-10-16 -Action Audit -BootstrapPython $bootstrapPython -ConfirmRun
 ```
 
 The date-pinned scheduled audit runs automatically only after Start arms it.

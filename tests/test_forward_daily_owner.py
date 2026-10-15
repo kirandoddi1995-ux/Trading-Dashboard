@@ -52,10 +52,11 @@ $tokens = $null; $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:DAILY_TEST_SOURCE,[ref]$tokens,[ref]$parseErrors)
 if ($parseErrors.Count) { throw ($parseErrors | ForEach-Object { $_.Message } | Out-String) }
 $publicCodes=@(); $publicBlockers=@()
+$controlPython=$env:DAILY_TEST_PYTHON
 foreach ($statement in $ast.EndBlock.Statements) {
     if ($statement -is [System.Management.Automation.Language.AssignmentStatementAst] -and
         $statement.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
-        $statement.Left.VariablePath.UserPath -in @('publicCodes','publicBlockers')) {
+        $statement.Left.VariablePath.UserPath -in @('publicCodes','publicBlockers','lastNativeExit')) {
         . ([scriptblock]::Create($statement.Extent.Text))
     }
 }
@@ -66,6 +67,15 @@ function Load-Function([string]$Name) {
 }
 $outer = @($ast.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.TryStatementAst] })
 if ($outer.Count -ne 1) { throw 'Expected one owner try/catch' }
+'''
+
+
+MOCK_WINDOWS_BOOTSTRAP = r'''
+# Metadata-only Windows application fixture; no synthetic executable is run.
+$BootstrapPython='C:\Synthetic Runtime\python.exe'
+$script:bootstrapApplication=Microsoft.PowerShell.Core\Get-Command -Name $env:DAILY_TEST_PYTHON -CommandType Application | Select-Object -First 1
+$script:bootstrapApplication | Add-Member -MemberType NoteProperty -Name Source -Value $BootstrapPython -Force
+function Get-Command { return $script:bootstrapApplication }
 '''
 
 
@@ -83,9 +93,272 @@ def json_rows(result: subprocess.CompletedProcess[str]) -> list[dict[str, Any]]:
     return [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
 
 
+@pytest.mark.parametrize('invocation', ['file', 'interactive'])
+def test_run_text_exit_status_from_actual_script_file_scope(
+        shell: str, tmp_path: Path, invocation: str) -> None:
+    code = r'''
+Set-StrictMode -Version Latest
+$global:LASTEXITCODE=91
+$script:LASTEXITCODE=77
+try {
+        $text=Run-Text $env:DAILY_TEST_PYTHON @('-I','-B','-c','print(12345)')
+        @{code='ACCEPTED';output_ok=($text -ceq '12345')} | ConvertTo-Json -Compress
+} catch { @{code=$_.Exception.Message;output_ok=$false} | ConvertTo-Json -Compress }
+'''
+    script = tmp_path / 'Synthetic Native Script Scope.ps1'
+    # Definitions must be literal file-owned functions, not scriptblocks created
+    # by the AST harness (which have different script-scope ownership).
+    definitions = source().split('function Stop-Daily', 1)[1].split('function Run-Json', 1)[0]
+    script.write_text("$ErrorActionPreference='Stop'\n$publicCodes=@();$publicBlockers=@()\n"
+                      + 'function Stop-Daily' + definitions + code, encoding='utf-8')
+    env = dict(os.environ, DAILY_TEST_SOURCE=str(SCRIPT), DAILY_TEST_PYTHON=sys.executable,
+               DAILY_FIXTURE_SCRIPT=str(script))
+    arguments = (['-File', str(script)] if invocation == 'file' else
+                 ['-EncodedCommand', base64.b64encode(
+                     '& $env:DAILY_FIXTURE_SCRIPT'.encode('utf-16-le')).decode('ascii')])
+    result = subprocess.run([shell, '-NoProfile', '-NonInteractive', *arguments],
+                            env=env, text=True, capture_output=True, timeout=25, check=False)
+    assert result.returncode == 0, result.stderr
+    row, = json_rows(result)
+    assert row == {'code': 'ACCEPTED', 'output_ok': True}
+
+
+@pytest.mark.parametrize('dirty', [False, True], ids=['clean', 'dirty'])
+def test_actual_tools_checkout_stage_with_real_git_and_windows_path(
+        shell: str, tmp_path: Path, dirty: bool) -> None:
+    tools = tmp_path / 'Reviewed Tools Checkout'
+    tools.mkdir()
+    initialized = subprocess.run(['git', 'init', str(tools)], capture_output=True,
+                                 text=True, check=False, timeout=20)
+    assert initialized.returncode == 0
+    if dirty:
+        (tools / 'untracked-public-fixture.txt').write_text('synthetic', encoding='utf-8')
+    result = run_ps(shell, r'''
+Set-StrictMode -Version Latest
+. ([scriptblock]::Create((Load-Function 'Stop-Daily')))
+. ([scriptblock]::Create((Load-Function 'Run-Text')))
+$helper=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Assert-ToolsCheckout'},$true))
+if ($helper.Count -eq 1) { . ([scriptblock]::Create($helper[0].Extent.Text)) }
+$PSScriptRoot=$env:DAILY_TEST_ROOT
+$statements=@($outer[0].Body.Statements)
+$begin=@($statements | Where-Object {$_.Extent.Text -ceq "$"+'phase = '+"'REVIEWED_TOOLS_CHECKOUT'"})
+$end=@($statements | Where-Object {$_.Extent.Text -match '^\$stateRoot = '})
+if ($begin.Count -ne 1 -or $end.Count -ne 1) { throw 'TEST_STAGE_BOUNDARY_INVALID' }
+$selected=@($statements | Where-Object {$_.Extent.StartOffset -ge $begin[0].Extent.StartOffset -and $_.Extent.StartOffset -lt $end[0].Extent.StartOffset})
+try {
+    # Extracted AST blocks have no file-owned PSScriptRoot. Supply only that
+    # resource identity; keep the actual Git calls/checks and Run-Text unchanged.
+    $stage=($selected.Extent.Text -join "`n").Replace('$PSScriptRoot','$env:DAILY_TEST_ROOT')
+    . ([scriptblock]::Create($stage))
+    @{code='ACCEPTED';operational_continuation_executed=$false} | ConvertTo-Json -Compress
+} catch {
+    @{code=$_.Exception.Message;operational_continuation_executed=$false} | ConvertTo-Json -Compress
+}
+''', tools)
+    assert result.returncode == 0, result.stderr
+    row, = json_rows(result)
+    assert row['code'] == ('TOOLS_CHECKOUT_NOT_CLEAN' if dirty else 'ACCEPTED')
+    assert row['operational_continuation_executed'] is False
+
+
+def test_fixed_rejections_have_redacted_public_codes() -> None:
+    text = source()
+    codes = text.split('$publicCodes = @(', 1)[1].split('\n\nfunction Stop-Daily', 1)[0]
+    fixed = set(re.findall(r"Stop-Daily '([A-Z0-9_]+)'", text))
+    assert fixed <= set(re.findall(r"'([A-Z0-9_]+)'", codes))
+
+
+def test_check_setup_stops_after_shared_prerequisites_before_any_setup_writes(shell: str) -> None:
+    text = source()
+    assert text.index("if ($Action -eq 'CheckSetup')") > text.index("$phase = 'PRIVATE_OPS_READ_ONLY_CHECK'")
+    assert text.index("if ($Action -eq 'CheckSetup')") < text.index("if ($Action -eq 'Setup')")
+    result = run_ps(shell, r'''
+$Action='CheckSetup'
+$branch=@($outer[0].Body.Statements | Where-Object {$_.Extent.Text -match '^if \(\$Action -eq ''CheckSetup''\)'})
+if ($branch.Count -ne 1) { throw 'TEST_BRANCH_MISSING' }
+function Run-Text { throw 'UNEXPECTED_NATIVE_CALL' }
+function Register-ScheduledTask { throw 'UNEXPECTED_TASK_WRITE' }
+function Write-NewOpsRecord { throw 'UNEXPECTED_RECORD_WRITE' }
+. ([scriptblock]::Create($branch[0].Extent.Text+"`nthrow 'HOST_CONTINUATION_REACHED'"))
+''')
+    assert result.returncode == 0, result.stderr
+    row, = json_rows(result)
+    assert row['status'] == 'SETUP_PREREQUISITES_CHECK_PASSED_NOT_COMMISSIONED'
+    assert row['operational_writes'] == row['capture_invocations'] == row['task_mutations'] == 0
+    assert row['capsule'] == row['calendar'] == row['clock'] == row['provider_and_drive'] == 'NOT_CHECKED'
+    assert row['start_attempt_marker_effect'] == 'NOT_REACHED'
+
+
+@pytest.mark.parametrize('case', ['success', 'python', 'ops_unknown', 'ops_controlled'])
+def test_bootstrap_and_private_ops_have_separate_prewrite_diagnostics(
+        shell: str, case: str) -> None:
+    segment = source().split("    $phase = 'PINNED_PYTHON_BOOTSTRAP_CHECK'", 1)[1]
+    segment = "$phase = 'PINNED_PYTHON_BOOTSTRAP_CHECK'" + segment.split("    if ($Action -eq 'Setup')", 1)[0]
+    encoded = base64.b64encode(segment.encode('utf-8')).decode('ascii')
+    result = run_ps(shell, r'''
+. ([scriptblock]::Create((Load-Function 'Stop-Daily')))
+. ([scriptblock]::Create((Load-Function 'Assert-BootstrapPython')))
+MOCK_BOOTSTRAP
+function Run-Text {
+    if ($env:DAILY_TEST_SCENARIO -ceq 'python') { throw 'SYNTHETIC_PRIVATE_ERROR_NOT_FOR_OUTPUT' }
+    return '3139009'
+}
+function Assert-PrivateOps {
+    if ($env:DAILY_TEST_SCENARIO -ceq 'ops_unknown') { throw 'SYNTHETIC_PRIVATE_ERROR_NOT_FOR_OUTPUT' }
+    if ($env:DAILY_TEST_SCENARIO -ceq 'ops_controlled') { Stop-Daily 'OPS_LINK_REJECTED' }
+}
+$Action='Setup'
+try {
+    $segment=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('SEGMENT'))
+    . ([scriptblock]::Create($segment))
+    $code='ACCEPTED'
+} catch { $code=$_.Exception.Message }
+@{code=$code;stage=$phase} | ConvertTo-Json -Compress
+'''.replace('SEGMENT', encoded).replace('MOCK_BOOTSTRAP', MOCK_WINDOWS_BOOTSTRAP), scenario=case)
+    assert result.returncode == 0, result.stderr
+    row, = json_rows(result)
+    expected = {'success': 'ACCEPTED', 'python': 'PINNED_PYTHON_3139_REQUIRED',
+                'ops_unknown': 'PRIVATE_OPS_READ_UNAVAILABLE', 'ops_controlled': 'OPS_LINK_REJECTED'}[case]
+    assert row['code'] == expected
+    assert row['stage'] == ('PINNED_PYTHON_BOOTSTRAP_CHECK' if case == 'python'
+                            else 'PRIVATE_OPS_READ_ONLY_CHECK')
+    assert 'SYNTHETIC_PRIVATE_ERROR' not in result.stdout
+
+
+@pytest.mark.skipif(sys.platform != 'win32' or sys.version_info[:3] != (3, 13, 9),
+                    reason='Native Windows Python 3.13.9 integration fixture; mocked contracts still run')
+def test_bootstrap_real_explicit_pinned_python_without_launcher(shell: str) -> None:
+    result = run_ps(shell, r'''
+. ([scriptblock]::Create((Load-Function 'Stop-Daily')))
+. ([scriptblock]::Create((Load-Function 'Run-Text')))
+. ([scriptblock]::Create((Load-Function 'Assert-BootstrapPython')))
+$BootstrapPython=$env:DAILY_TEST_PYTHON
+Assert-BootstrapPython
+@{status='EXPLICIT_PINNED_PYTHON_VERIFIED';same_executable=($controlPython -ieq $env:DAILY_TEST_PYTHON)} | ConvertTo-Json -Compress
+''')
+    assert result.returncode == 0, result.stderr
+    row, = json_rows(result)
+    assert row == {'status': 'EXPLICIT_PINNED_PYTHON_VERIFIED', 'same_executable': True}
+    assert 'Run-Text \'py\'' not in source() and "'-3.13'" not in source()
+
+
+@pytest.mark.skipif(sys.platform != 'win32' or sys.version_info[:3] != (3, 13, 9),
+                    reason='Native Windows Python 3.13.9 environment fixture; mocked contracts still run')
+def test_actual_capsule_venv_command_uses_explicit_bootstrap_offline(
+        shell: str, tmp_path: Path) -> None:
+    result = run_ps(shell, r'''
+. ([scriptblock]::Create((Load-Function 'Stop-Daily')))
+. ([scriptblock]::Create((Load-Function 'Run-Text')))
+. ([scriptblock]::Create((Load-Function 'Assert-BootstrapPython')))
+$BootstrapPython=$env:DAILY_TEST_PYTHON
+Assert-BootstrapPython
+$codeRoot=$env:DAILY_TEST_ROOT
+$commands=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.Extent.Text -match "^Run-Text.*'-m','venv'"},$true))
+if ($commands.Count -ne 1) { throw 'TEST_VENV_COMMAND_NOT_UNIQUE' }
+. ([scriptblock]::Create($commands[0].Extent.Text))
+$created=Join-Path $codeRoot '.venv\Scripts\python.exe'
+$proof=Run-Text $created @('-I','-B','-c','import sys; assert sys.version_info[:3] == (3,13,9); print(3139009)')
+@{status='SYNTHETIC_CAPSULE_ENVIRONMENT_VERIFIED';pinned=($proof -ceq '3139009')} | ConvertTo-Json -Compress
+''', tmp_path)
+    assert result.returncode == 0, result.stderr
+    rows = json_rows(result)
+    assert rows == [{'status': 'SYNTHETIC_CAPSULE_ENVIRONMENT_VERIFIED', 'pinned': True}]
+    assert not (tmp_path / '.venv' / 'forward_daily_contract.py').exists()
+
+
+@pytest.mark.parametrize('case', ['missing', 'relative', 'unc', 'wrong_proof', 'native_failure'])
+def test_bootstrap_rejects_missing_or_unproven_executable_without_fallback(
+        shell: str, case: str) -> None:
+    result = run_ps(shell, r'''
+. ([scriptblock]::Create((Load-Function 'Stop-Daily')))
+. ([scriptblock]::Create((Load-Function 'Assert-BootstrapPython')))
+MOCK_BOOTSTRAP
+switch ($env:DAILY_TEST_SCENARIO) {
+    'missing' { $BootstrapPython='' }
+    'relative' { $BootstrapPython='relative\python.exe' }
+    'unc' { $BootstrapPython='\\synthetic.invalid\share\python.exe' }
+}
+$script:calls=0
+function Run-Text {
+    $script:calls++
+    if ($env:DAILY_TEST_SCENARIO -eq 'native_failure') { throw 'SYNTHETIC_PRIVATE_ERROR' }
+    return 'SYNTHETIC_NOT_A_VERSION_PROOF'
+}
+try { Assert-BootstrapPython; $code='ACCEPTED' } catch { $code=$_.Exception.Message }
+@{code=$code;native_calls=$script:calls} | ConvertTo-Json -Compress
+'''.replace('MOCK_BOOTSTRAP', MOCK_WINDOWS_BOOTSTRAP), scenario=case)
+    assert result.returncode == 0, result.stderr
+    row, = json_rows(result)
+    expected = 'BOOTSTRAP_PYTHON_LOCAL_PATH_REQUIRED' if case in {'missing', 'relative', 'unc'} else 'PINNED_PYTHON_3139_REQUIRED'
+    assert row['code'] == expected
+    assert row['native_calls'] == (0 if case in {'missing', 'relative', 'unc'} else 1)
+    assert 'SYNTHETIC_PRIVATE_ERROR' not in result.stdout
+
+
+@pytest.mark.parametrize('stage', ['TOOLS_CLEAN_QUERY', 'PUBLIC_CAPSULE_SETUP'])
+@pytest.mark.parametrize('code', ['CHILD_BLOCKED_NO_RETRY', 'PUBLIC_NATIVE_TOOL_REQUIRED'])
+def test_actual_catch_never_calls_late_native_failure_prewrite(
+        shell: str, stage: str, code: str) -> None:
+    result = run_ps(shell, r'''
+. ([scriptblock]::Create((Load-Function 'Stop-Daily')))
+$phase='STAGE'; $pollEnableAttemptedByThisRun=$false; $pollEnableCommitted=$false
+$rollbackAttempted=$false; $rollback='NOT_REQUIRED'
+$handler=$outer[0].CatchClauses[0].Body.Extent.Text
+. ([scriptblock]::Create("try { Stop-Daily 'CODE' } catch " + $handler))
+'''.replace('STAGE', stage).replace('CODE', code))
+    assert result.returncode == 2, result.stderr
+    row, = json_rows(result)
+    expected = 'NOT_REACHED' if stage == 'TOOLS_CLEAN_QUERY' else 'NOT_ESTABLISHED'
+    assert row['operational_state_effect'] == row['start_attempt_marker_effect'] == expected
+    assert row['code'] == code and row['blockers'] == [code]
+    assert 'precedes operational writes' not in row['owner_step']
+    assert row['raw_error_printed'] is False
+
+
+@pytest.mark.parametrize('case', ['clean', 'dirty', 'subdirectory', 'not_repo'])
+def test_check_tools_entire_script_read_only_in_real_repository(
+        shell: str, tmp_path: Path, case: str) -> None:
+    tools = tmp_path / 'Synthetic Reviewed Tools'
+    tools.mkdir()
+    initialized = subprocess.run(['git', 'init', str(tools)], capture_output=True,
+                                 text=True, check=False, timeout=20)
+    assert initialized.returncode == 0
+    script_root = tools / 'nested' if case == 'subdirectory' else tools
+    if case == 'not_repo':
+        script_root = tmp_path / 'Synthetic Not Repository'
+    script_root.mkdir(exist_ok=True)
+    script = script_root / 'forward_daily_owner.ps1'
+    script.write_text(source(), encoding='utf-8')
+    # Keep a genuinely clean public fixture without committing or user identity.
+    # .git/info/exclude is disposable fixture metadata, not an owner permission.
+    (tools / '.git/info/exclude').write_text('forward_daily_owner.ps1\n', encoding='utf-8')
+    if case == 'dirty':
+        (tools / 'untracked-public-fixture.txt').write_text('synthetic', encoding='utf-8')
+    env = dict(os.environ, LOCALAPPDATA=str(tmp_path / 'UNTOUCHED_PRIVATE_SENTINEL'))
+    result = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-File', str(script),
+                             '-SessionDate', '2026-10-16', '-Action', 'CheckTools', '-ConfirmRun'],
+                            env=env, capture_output=True, text=True, timeout=25, check=False)
+    row, = json_rows(result)
+    if case == 'clean':
+        assert result.returncode == 0
+        assert row['status'] == 'REVIEWED_TOOLS_CHECK_PASSED'
+        assert row['operational_writes'] == row['capture_invocations'] == row['task_mutations'] == 0
+    else:
+        expected = {'dirty': 'TOOLS_CHECKOUT_NOT_CLEAN',
+                    'subdirectory': 'TOOLS_CHECKOUT_ROOT_REQUIRED',
+                    'not_repo': 'TOOLS_GIT_QUERY_FAILED'}[case]
+        assert result.returncode == 2
+        assert row['code'] == expected and row['blockers'] == [expected]
+        assert row['stage'].startswith('TOOLS_')
+        assert row['operational_state_effect'] == row['start_attempt_marker_effect'] == 'NOT_REACHED'
+        assert row['raw_error_printed'] is row['same_slot_retry_allowed'] is False
+    assert str(tmp_path) not in result.stdout
+    assert not (tmp_path / 'UNTOUCHED_PRIVATE_SENTINEL').exists()
+
+
 def test_static_public_interface_and_no_prompt_or_repairs() -> None:
     text = source()
-    assert re.search(r"ValidateSet\('Preview','Setup','Prepare','Start','Audit'\)", text)
+    assert re.search(r"ValidateSet\('Preview','CheckTools','CheckSetup','Setup','Prepare','Start','Audit'\)", text)
     assert re.search(r'\[string\]\$SessionDate', text)
     assert re.search(r'\[switch\]\$ConfirmRun', text)
     assert 'Read-Host' not in text
@@ -123,7 +396,7 @@ def test_windows_syntax_parser_and_declared_parameters(shell: str) -> None:
     assert {'SessionDate', 'Action', 'ConfirmRun'} <= set(row['parameters'])
 
 
-@pytest.mark.parametrize('action,confirmed', [(a, c) for a in ('Preview', 'Setup', 'Prepare', 'Start', 'Audit') for c in (False, True) if a == 'Preview' or not c])
+@pytest.mark.parametrize('action,confirmed', [(a, c) for a in ('Preview', 'CheckTools', 'CheckSetup', 'Setup', 'Prepare', 'Start', 'Audit') for c in (False, True) if a == 'Preview' or not c])
 def test_preview_ast_block_never_reaches_host_commands(shell: str, action: str, confirmed: bool) -> None:
     # Execute only the actual initial parameter/date/preview statements, followed
     # by a sentinel. No source function or host continuation can be reached.
