@@ -4,6 +4,7 @@ Never run the owner script against Windows identity, Desktop, LOCALAPPDATA,
 Task Scheduler, ACLs, services, credentials, capture state, or the network.
 """
 import base64
+from datetime import date
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import shutil
 import subprocess
 import sys
 from typing import Any
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -56,7 +58,8 @@ $controlPython=$env:DAILY_TEST_PYTHON
 foreach ($statement in $ast.EndBlock.Statements) {
     if ($statement -is [System.Management.Automation.Language.AssignmentStatementAst] -and
         $statement.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
-        $statement.Left.VariablePath.UserPath -in @('publicCodes','publicBlockers','lastNativeExit')) {
+        $statement.Left.VariablePath.UserPath -in @('publicCodes','publicBlockers','lastNativeExit',
+            'taskBindingFailure','taskBindingRole','taskBindingDefaults','setupTaskRolesAttempted','setupTasksDisabledVerified')) {
         . ([scriptblock]::Create($statement.Extent.Text))
     }
 }
@@ -309,7 +312,8 @@ $handler=$outer[0].CatchClauses[0].Body.Extent.Text
     assert result.returncode == 2, result.stderr
     row, = json_rows(result)
     expected = 'NOT_REACHED' if stage == 'TOOLS_CLEAN_QUERY' else 'NOT_ESTABLISHED'
-    assert row['operational_state_effect'] == row['start_attempt_marker_effect'] == expected
+    assert row['operational_state_effect'] == expected
+    assert row['start_attempt_marker_effect'] == 'NOT_REACHED'
     assert row['code'] == code and row['blockers'] == [code]
     assert 'precedes operational writes' not in row['owner_step']
     assert row['raw_error_printed'] is False
@@ -358,7 +362,7 @@ def test_check_tools_entire_script_read_only_in_real_repository(
 
 def test_static_public_interface_and_no_prompt_or_repairs() -> None:
     text = source()
-    assert re.search(r"ValidateSet\('Preview','CheckTools','CheckSetup','Setup','Prepare','Start','Audit'\)", text)
+    assert re.search(r"ValidateSet\('Preview','CheckTools','CheckSetup','CheckTasks','Setup','Prepare','Start','Audit'\)", text)
     assert re.search(r'\[string\]\$SessionDate', text)
     assert re.search(r'\[switch\]\$ConfirmRun', text)
     assert 'Read-Host' not in text
@@ -396,7 +400,7 @@ def test_windows_syntax_parser_and_declared_parameters(shell: str) -> None:
     assert {'SessionDate', 'Action', 'ConfirmRun'} <= set(row['parameters'])
 
 
-@pytest.mark.parametrize('action,confirmed', [(a, c) for a in ('Preview', 'CheckTools', 'CheckSetup', 'Setup', 'Prepare', 'Start', 'Audit') for c in (False, True) if a == 'Preview' or not c])
+@pytest.mark.parametrize('action,confirmed', [(a, c) for a in ('Preview', 'CheckTools', 'CheckSetup', 'CheckTasks', 'Setup', 'Prepare', 'Start', 'Audit') for c in (False, True) if a == 'Preview' or not c])
 def test_preview_ast_block_never_reaches_host_commands(shell: str, action: str, confirmed: bool) -> None:
     # Execute only the actual initial parameter/date/preview statements, followed
     # by a sentinel. No source function or host continuation can be reached.
@@ -851,6 +855,7 @@ def test_assert_task_actual_xml_binding_with_synthetic_cmdlets(shell: str) -> No
     result = run_ps(shell, r'''
 . ([scriptblock]::Create((Load-Function 'Stop-Daily')))
 . ([scriptblock]::Create((Load-Function 'Field')))
+. ([scriptblock]::Create((Load-Function 'Assert-TaskNativeLimited')))
 . ([scriptblock]::Create((Load-Function 'Assert-Task')))
 $pollName='synthetic-poll'
 $baseline=@'
@@ -868,7 +873,7 @@ function Get-ScheduledTask {
     $triggers=if ($script:scenario -eq 'extra_trigger') {@(1,2)} else {@(1)}
     $enabled=($script:scenario -eq 'enabled')
     $state=if ($script:scenario -eq 'ready') {'Ready'} else {'Disabled'}
-    return [pscustomobject]@{Actions=@($actions);Triggers=@($triggers);Settings=[pscustomobject]@{Enabled=$enabled};State=$state}
+    return [pscustomobject]@{Actions=@($actions);Triggers=@($triggers);Settings=[pscustomobject]@{Enabled=$enabled};State=$state;Principal=[pscustomobject]@{RunLevel='Limited'}}
 }
 function Export-ScheduledTask { param($TaskPath,$TaskName,$ErrorAction) return $script:export }
 foreach ($case in @(
@@ -979,3 +984,273 @@ try {
 ''')
     assert result.returncode == 0, result.stderr
     assert json_rows(result) == [dict(enabled=False, disable_calls=1, commit_attempted=True, witness_created=True)]
+
+
+def generated_task_plans() -> dict[str, str]:
+    """Actual reviewed generator, synthetic inputs only; never register anything."""
+    from forward_ops_plan import plans
+    return plans(date(2026, 10, 16), sid='S-1-5-21-1001',
+                 code=r'C:\Synthetic Capsule', python=r'C:\Synthetic Capsule\.venv\Scripts\python.exe',
+                 state=r'D:\Synthetic State', ops=r'E:\Synthetic Ops')
+
+
+def changed_task_xml(raw: str, path: str, mutation: str) -> str:
+    ns = {'t': 'http://schemas.microsoft.com/windows/2004/02/mit/task'}
+    root = ET.fromstring(raw)
+    node = root.find(path, ns)
+    parent = root.find(path.rsplit('/', 1)[0], ns) if '/' in path else root
+    assert node is not None and parent is not None
+    if mutation == 'remove':
+        parent.remove(node)
+    elif mutation == 'duplicate':
+        parent.append(ET.fromstring(ET.tostring(node, encoding='unicode')))
+    else:
+        node.text = mutation
+    return ET.tostring(root, encoding='unicode')
+
+
+def test_real_generator_xml_defaults_required_fields_and_redaction(shell: str, tmp_path: Path) -> None:
+    """Serialization equivalents only; absent unsafe defaults NEVER acquire plan values."""
+    plans = generated_task_plans()
+    cases: list[dict[str, Any]] = []
+    common = ['t:Actions/t:Exec/t:Command', 't:Actions/t:Exec/t:Arguments',
+              't:Actions/t:Exec/t:WorkingDirectory', 't:Principals/t:Principal/t:UserId',
+              't:Principals/t:Principal/t:LogonType', 't:Principals/t:Principal/t:RunLevel',
+              't:Triggers/t:TimeTrigger/t:Enabled', 't:Settings/t:MultipleInstancesPolicy',
+              't:Settings/t:StartWhenAvailable', 't:Settings/t:ExecutionTimeLimit',
+              't:Settings/t:WakeToRun', 't:Settings/t:DisallowStartIfOnBatteries',
+              't:Settings/t:StopIfGoingOnBatteries', 't:Triggers/t:TimeTrigger/t:StartBoundary',
+              't:Triggers/t:TimeTrigger/t:EndBoundary']
+    safe = {'t:Principals/t:Principal/t:RunLevel', 't:Triggers/t:TimeTrigger/t:Enabled', 't:Settings/t:MultipleInstancesPolicy',
+            't:Settings/t:StartWhenAvailable', 't:Settings/t:WakeToRun',
+            't:Triggers/t:TimeTrigger/t:Repetition/t:StopAtDurationEnd'}
+    unsafe_defaults = {'t:Settings/t:ExecutionTimeLimit', 't:Settings/t:DisallowStartIfOnBatteries',
+                       't:Settings/t:StopIfGoingOnBatteries'}
+    for role in ('poll', 'audit'):
+        name = 'KiranTrading-Versioned-20261016-' + role
+        raw = plans[name]
+        required = common + (['t:Triggers/t:TimeTrigger/t:Repetition/t:' + x for x in
+                              ('Interval', 'Duration', 'StopAtDurationEnd')] if role == 'poll' else [])
+        cases.append(dict(case=role+'-original', name=name, planned=raw, exported=raw, expected='PASS'))
+        for path in required:
+            for mutation in ('remove', 'duplicate'):
+                expected = 'TASK_BINDING_FIELD_MISSING_OR_DUPLICATE'
+                if mutation == 'remove' and path in safe:
+                    expected = 'PASS'
+                elif mutation == 'remove' and path in unsafe_defaults:
+                    expected = 'TASK_EXACT_BINDING_MISMATCH'
+                cases.append(dict(case=f'{role}-{path}-{mutation}', name=name, planned=raw,
+                                  exported=changed_task_xml(raw, path, mutation), expected=expected))
+            cases.append(dict(case=f'{role}-{path}-planned-missing', name=name,
+                              planned=changed_task_xml(raw, path, 'remove'), exported=raw,
+                              expected='TASK_BINDING_FIELD_MISSING_OR_DUPLICATE'))
+        for parent in ('t:Actions', 't:Principals', 't:Settings', 't:Triggers'):
+            for mutation in ('remove', 'duplicate'):
+                cases.append(dict(case=f'{role}-{parent}-{mutation}', name=name, planned=raw,
+                                  exported=changed_task_xml(raw, parent, mutation),
+                                  expected='TASK_BINDING_FIELD_MISSING_OR_DUPLICATE'))
+        for path, value in (('t:Actions/t:Exec/t:Command', 'PRIVATE_RAW_TASK_SECRET'),
+                            ('t:Settings/t:StartWhenAvailable', 'true'),
+                            ('t:Settings/t:WakeToRun', 'true'),
+                            ('t:Settings/t:DisallowStartIfOnBatteries', 'true'),
+                            ('t:Settings/t:StopIfGoingOnBatteries', 'true'),
+                            ('t:Settings/t:ExecutionTimeLimit', 'PT72H')):
+            cases.append(dict(case=f'{role}-{path}-wrong', name=name, planned=raw,
+                              exported=changed_task_xml(raw, path, value),
+                              expected='TASK_EXACT_BINDING_MISMATCH'))
+        combined = raw
+        for path in sorted(safe.intersection(required)):
+            combined = changed_task_xml(combined, path, 'remove')
+        cases.append(dict(case=role+'-all-safe-defaults-omitted', name=name, planned=raw,
+                          exported=combined, expected='PASS'))
+        cases.append(dict(case=role+'-invalid-date-redacted', name=name, planned=raw,
+                          exported=changed_task_xml(raw, 't:Triggers/t:TimeTrigger/t:StartBoundary', 'PRIVATE_RAW_TASK_SECRET'),
+                          expected='TASK_TRIGGER_DATE_MISMATCH'))
+        if role == 'poll':
+            for field, value in (('Interval', 'PT1M'), ('Duration', 'PT12H'), ('StopAtDurationEnd', 'true')):
+                cases.append(dict(case=role+'-repeat-'+field, name=name, planned=raw,
+                                  exported=changed_task_xml(raw, 't:Triggers/t:TimeTrigger/t:Repetition/t:'+field, value),
+                                  expected='TASK_REPETITION_MISMATCH'))
+        else:
+            root = ET.fromstring(raw)
+            ns = 'http://schemas.microsoft.com/windows/2004/02/mit/task'
+            trigger = root.find('t:Triggers/t:TimeTrigger', {'t': ns})
+            assert trigger is not None
+            repeat = ET.SubElement(trigger, '{'+ns+'}Repetition')
+            ET.SubElement(repeat, '{'+ns+'}Interval').text = 'PT5M'
+            ET.SubElement(repeat, '{'+ns+'}Duration').text = 'PT1H'
+            repeating = ET.tostring(root, encoding='unicode')
+            cases.append(dict(case='audit-exported-repetition', name=name, planned=raw,
+                              exported=repeating, expected='TASK_EXTRA_ACTION_OR_RETRY_REJECTED'))
+            cases.append(dict(case='audit-planned-repetition', name=name, planned=repeating,
+                              exported=raw, expected='TASK_EXTRA_ACTION_OR_RETRY_REJECTED'))
+    (tmp_path / 'synthetic-task-cases.json').write_text(json.dumps(cases), encoding='utf-8')
+    result = run_ps(shell, r'''
+. ([scriptblock]::Create((Load-Function 'Stop-Daily')))
+. ([scriptblock]::Create((Load-Function 'Field')))
+. ([scriptblock]::Create((Load-Function 'Assert-TaskNativeLimited')))
+. ([scriptblock]::Create((Load-Function 'Assert-Task')))
+$pollName='KiranTrading-Versioned-20261016-poll'
+Add-Type 'public enum SyntheticBindingLevel { Limited=0, Highest=1 }'
+function Get-ScheduledTask { return [pscustomobject]@{Actions=@(1);Triggers=@(1);Settings=[pscustomobject]@{Enabled=$false};State='Disabled';Principal=[pscustomobject]@{RunLevel=[SyntheticBindingLevel]::Limited}} }
+function Export-ScheduledTask { return $script:export }
+$cases=[IO.File]::ReadAllText((Join-Path $env:DAILY_TEST_ROOT 'synthetic-task-cases.json')) | ConvertFrom-Json
+foreach ($case in $cases) {
+    $script:taskBindingFailure=$null; $script:taskBindingDefaults=@()
+    $taskPlans=[pscustomobject]@{plans=[pscustomobject]@{}}
+    $taskPlans.plans | Add-Member -NotePropertyName $case.name -NotePropertyValue $case.planned
+    $script:export=$case.exported
+    try { Assert-Task $case.name $false; $code='PASS' } catch { $code=$_.Exception.Message }
+    @{case=$case.case;code=$code;expected=$case.expected;failure=$script:taskBindingFailure;defaults=@($script:taskBindingDefaults).Count} | ConvertTo-Json -Depth 5 -Compress
+}
+''', tmp_path)
+    assert result.returncode == 0, result.stderr
+    rows = json_rows(result)
+    assert len(rows) == len(cases)
+    assert all(row['code'] == row['expected'] for row in rows), [r for r in rows if r['code'] != r['expected']]
+    assert 'PRIVATE_RAW_TASK_SECRET' not in result.stdout + result.stderr
+    assert any(row['defaults'] and row['code'] == 'PASS' for row in rows)
+    assert all(row['failure']['source'] == 'PLANNED' for row in rows if row['case'].endswith('planned-missing'))
+    assert all(row['failure']['field'] == 'StartBoundary' for row in rows if row['case'].endswith('invalid-date-redacted'))
+    assert all(row['failure']['reason'] == 'REPETITION_VALUE_MISMATCH' for row in rows if '-repeat-' in row['case'])
+
+
+def test_native_principal_limited_is_positive_typed_proof_not_a_default(shell: str) -> None:
+    result = run_ps(shell, r'''
+. ([scriptblock]::Create((Load-Function 'Stop-Daily')))
+. ([scriptblock]::Create((Load-Function 'Assert-TaskNativeLimited')))
+Add-Type 'public enum SyntheticNativeLevel { Limited=0, Highest=1, Unknown=2 } public enum SyntheticBadNativeLevel { Limited=1 }'
+foreach ($case in @(
+    @('enum_limited',[SyntheticNativeLevel]::Limited,$true),
+    @('enum_highest',[SyntheticNativeLevel]::Highest,$false),
+    @('enum_unknown',[SyntheticNativeLevel]::Unknown,$false),
+    @('enum_wrong_numeric',[SyntheticBadNativeLevel]::Limited,$false),
+    @('uint_limited',[uint32]0,$true), @('uint_highest',[uint32]1,$false),
+    @('int_limited',[int]0,$true), @('int_highest',[int]1,$false),
+    @('string_limited','Limited',$true), @('string_highest','Highest',$false),
+    @('string_zero','0',$false), @('boolean_false',$false,$false),
+    @('missing',$null,$false), @('private','PRIVATE_RAW_TASK_SECRET',$false)
+)) {
+    $script:taskBindingFailure=$null
+    $task=[pscustomobject]@{Principal=[pscustomobject]@{RunLevel=$case[1]}}
+    try {$proof=Assert-TaskNativeLimited $task; $accepted=($proof -is [bool] -and $proof)} catch {$accepted=$false}
+    @{case=$case[0];accepted=$accepted;expected=$case[2];failure=$script:taskBindingFailure} | ConvertTo-Json -Depth 4 -Compress
+}
+''')
+    assert result.returncode == 0, result.stderr
+    rows = json_rows(result)
+    assert len(rows) == 14
+    assert all(row['accepted'] is row['expected'] for row in rows), rows
+    assert all(row['failure']['reason'] == 'LIMITED_NOT_PROVEN' for row in rows if not row['accepted'])
+    assert 'PRIVATE_RAW_TASK_SECRET' not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize('existing', ['none', 'poll', 'both'])
+def test_checktasks_existing_only_never_registers_or_enables(shell: str, existing: str) -> None:
+    text = source()
+    assert text.index("if ($Action -eq 'CheckTasks')") < text.index("$phase = 'DISABLED_TASK_SETUP'")
+    result = run_ps(shell, r'''
+$Action='CheckTasks'; $pollName='synthetic-poll'; $auditName='synthetic-audit'
+function Get-ScheduledTask {
+    param($TaskPath,$TaskName,$ErrorAction,$ErrorVariable)
+    if ($env:DAILY_TEST_SCENARIO -eq 'both' -or ($env:DAILY_TEST_SCENARIO -eq 'poll' -and $TaskName -eq $pollName)) {
+        return [pscustomobject]@{Settings=[pscustomobject]@{Enabled=$false};State='Disabled'}
+    }
+    return $null
+}
+function Assert-Task { param($Name,$Enabled) if ($Enabled) {throw 'Unexpected enable'} }
+function Register-ScheduledTask { throw 'Forbidden real or mock registration' }
+function Enable-ScheduledTask { throw 'Forbidden real or mock enable' }
+function Run-Text { throw 'No child process within read-only branch' }
+function Write-NewOpsRecord { throw 'No state write within read-only branch' }
+$branch=@($outer[0].Body.Statements | Where-Object {$_.Extent.Text -match '^if \(\$Action -eq ''CheckTasks''\)'})
+if ($branch.Count -ne 1) { throw 'Read-only branch missing' }
+$body=($branch[0].Clauses[0].Item2.Statements | ForEach-Object {$_.Extent.Text}) -join "`n"
+. ([scriptblock]::Create($body))
+''', scenario=existing)
+    assert result.returncode == 0, result.stderr
+    row = json_rows(result)[0]
+    assert row['status'] == 'EXISTING_TASK_BINDINGS_CHECKED_NOT_SETUP_ACCEPTANCE'
+    assert row['task_mutations'] == row['operational_writes'] == row['capture_invocations'] == 0
+    assert row['setup_complete'] is False
+    expected = [] if existing == 'none' else ['poll'] if existing == 'poll' else ['poll', 'audit']
+    assert row['existing_disabled_verified'] == expected
+    assert row['absent_roles'] == [role for role in ('poll', 'audit') if role not in expected]
+
+
+@pytest.mark.parametrize('scenario,attempted,verified,phase', [
+    ('new_poll_bad', ['poll'], [], 'DISABLED_TASK_READBACK'),
+    ('existing_poll_bad', [], [], 'DISABLED_TASK_READBACK'),
+    ('new_audit_bad', ['poll', 'audit'], ['poll'], 'DISABLED_TASK_READBACK'),
+    ('registration_unknown', ['poll'], [], 'DISABLED_TASK_REGISTRATION'),
+    ('query_unavailable', [], [], 'DISABLED_TASK_SETUP'),
+    ('audit_query_unavailable', ['poll'], ['poll'], 'DISABLED_TASK_SETUP'),
+    ('existing_valid', [], ['poll', 'audit'], 'LOOP_COMPLETED'),
+    ('new_valid', ['poll', 'audit'], ['poll', 'audit'], 'LOOP_COMPLETED'),
+])
+def test_disabled_setup_partial_registration_proofs(shell: str, scenario: str,
+        attempted: list[str], verified: list[str], phase: str) -> None:
+    result = run_ps(shell, r'''
+. ([scriptblock]::Create((Load-Function 'Stop-Daily')))
+$pollName='synthetic-poll'; $auditName='synthetic-audit'
+$phase='DISABLED_TASK_SETUP'; $pollEnableAttemptedByThisRun=$false; $pollEnableCommitted=$false
+$rollbackAttempted=$false; $rollback='NOT_REQUIRED'
+$script:registered=@{}
+if ($env:DAILY_TEST_SCENARIO -like 'existing*') {
+    $script:registered[$pollName]=$true
+    if ($env:DAILY_TEST_SCENARIO -eq 'existing_valid') {$script:registered[$auditName]=$true}
+}
+$taskPlans=[pscustomobject]@{plans=[pscustomobject]@{'synthetic-poll'='SYNTHETIC_DISABLED_XML';'synthetic-audit'='SYNTHETIC_DISABLED_XML'}}
+function Get-ScheduledTask {
+    [CmdletBinding()]param($TaskPath,$TaskName)
+    if ($env:DAILY_TEST_SCENARIO -eq 'query_unavailable' -or
+        ($env:DAILY_TEST_SCENARIO -eq 'audit_query_unavailable' -and $TaskName -eq $auditName)) {
+        Write-Error 'PRIVATE_RAW_TASK_SECRET' -Category PermissionDenied
+        return $null
+    }
+    if ($script:registered.ContainsKey($TaskName)) {return [pscustomobject]@{State='Disabled'}}
+    return $null
+}
+function Register-ScheduledTask {
+    param($TaskPath,$TaskName,$Xml,$ErrorAction)
+    if ($Xml -cne 'SYNTHETIC_DISABLED_XML') {throw 'Not a fixture'}
+    $script:registered[$TaskName]=$true
+    if ($env:DAILY_TEST_SCENARIO -eq 'registration_unknown') {throw 'PRIVATE_RAW_TASK_SECRET'}
+}
+function Assert-Task {
+    param($Name,$Enabled)
+    if ($Enabled) {throw 'Enable forbidden'}
+    $script:taskBindingRole=if ($Name -eq $pollName) {'poll'} else {'audit'}
+    if (($Name -eq $pollName -and $env:DAILY_TEST_SCENARIO -in @('new_poll_bad','existing_poll_bad')) -or
+        ($Name -eq $auditName -and $env:DAILY_TEST_SCENARIO -eq 'new_audit_bad')) {
+        $script:taskBindingFailure=@{field='WorkingDirectory';source='EXPORTED';node_count=0;reason='MISSING';raw_values_printed=$false}
+        Stop-Daily 'TASK_BINDING_FIELD_MISSING_OR_DUPLICATE'
+    }
+}
+function Enable-ScheduledTask {throw 'Enable forbidden'}
+function Disable-ScheduledTask {throw 'No task mutation in error cleanup'}
+function Write-NewOpsRecord {throw 'No marker in Setup loop'}
+$branch=@($outer[0].Body.Statements | Where-Object {$_.Extent.Text -match '^if \(\$Action -eq ''Setup''\)' -and $_.Extent.Text.Contains("'DISABLED_TASK_SETUP'")})
+if ($branch.Count -ne 1) {throw 'Setup registration branch missing'}
+$loop=@($branch[0].Clauses[0].Item2.Statements | Where-Object {$_ -is [Management.Automation.Language.ForEachStatementAst] -and $_.Variable.VariablePath.UserPath -eq 'name'})
+if ($loop.Count -ne 1) {throw 'Setup registration loop missing'}
+try {
+    . ([scriptblock]::Create($loop[0].Extent.Text))
+    @{status='LOOP_COMPLETED';registered_roles_attempted=$setupTaskRolesAttempted;disabled_roles_verified=$setupTasksDisabledVerified} | ConvertTo-Json -Compress
+} catch {
+    $body=($outer[0].CatchClauses[0].Body.Statements | ForEach-Object {$_.Extent.Text}) -join "`n"
+    . ([scriptblock]::Create($body))
+}
+''', scenario=scenario)
+    assert result.returncode == (0 if phase == 'LOOP_COMPLETED' else 2), result.stderr
+    row = json_rows(result)[-1]
+    assert row['registered_roles_attempted'] == attempted
+    assert row['disabled_roles_verified'] == verified
+    if phase != 'LOOP_COMPLETED':
+        assert row['stage'] == phase
+        assert row['rollback'] == 'NOT_REQUIRED'
+        assert row['start_attempt_marker_effect'] == 'NOT_REACHED'
+        assert row['catchup_allowed'] is row['same_slot_retry_allowed'] is False
+        expected_role = 'audit' if scenario in ('new_audit_bad', 'audit_query_unavailable') else 'poll'
+        assert row['task_binding_role'] == expected_role
+    assert 'PRIVATE_RAW_TASK_SECRET' not in result.stdout + result.stderr

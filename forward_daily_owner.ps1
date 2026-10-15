@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory=$true)][string]$SessionDate,
-    [ValidateSet('Preview','CheckTools','CheckSetup','Setup','Prepare','Start','Audit')][string]$Action = 'Preview',
+    [ValidateSet('Preview','CheckTools','CheckSetup','CheckTasks','Setup','Prepare','Start','Audit')][string]$Action = 'Preview',
     [string]$BootstrapPython = '',
     [string]$CloseFile = '',
     [string]$DownloadedAt = '',
@@ -21,6 +21,11 @@ $rollback = 'NOT_REQUIRED'
 $base = '1251530731cce5b75fad8601567b9320d07b710d'
 $publicBlockers = @()
 $lastNativeExit = $null
+$taskBindingFailure = $null
+$taskBindingRole = 'NOT_ESTABLISHED'
+$taskBindingDefaults = @()
+$setupTaskRolesAttempted = @()
+$setupTasksDisabledVerified = @()
 $publicCodes = @('CLOCK_UNVERIFIED','CLOCK_MEASUREMENT_UNAVAILABLE','CLOCK_MEASUREMENT_STALE',
     'CLOCK_MEASUREMENT_INVALID','CLOCK_OFFSET_OR_UNCERTAINTY_EXCESSIVE',
     'WINDOWS_TIME_SERVICE_NOT_RUNNING','WINDOWS_TIME_SERVICE_NOT_AUTOMATIC',
@@ -43,7 +48,7 @@ $publicCodes = @('CLOCK_UNVERIFIED','CLOCK_MEASUREMENT_UNAVAILABLE','CLOCK_MEASU
     'OPS_LINK_REJECTED','OPS_RECORD_IDENTITY_INVALID','SESSION_DATE_INVALID','SETUP_DEADLINE_MISSED',
     'CHILD_REPORT_MISSING','CHILD_REPORT_TOO_LARGE','CHILD_STATUS_NOT_ACCEPTED',
     'TASK_BINDING_FIELD_MISSING_OR_DUPLICATE','TASK_EXTRA_ACTION_OR_RETRY_REJECTED',
-    'TASK_XML_REQUIRES_REVIEW','FUTURE_POLL_DISABLE_NOT_PROVEN',
+    'TASK_XML_REQUIRES_REVIEW','TASK_QUERY_UNAVAILABLE','FUTURE_POLL_DISABLE_NOT_PROVEN',
     'ACTUAL_OWNER_FILE_AND_ATTESTATION_REQUIRED','PREPARATION_REPORT_NOT_ACCEPTED',
     'OWNER_VISIBLE_NOTIFICATION_AND_CONDITIONAL_ENABLE_CONFIRMATION_REQUIRED')
 
@@ -120,7 +125,7 @@ function Assert-BootstrapPython {
 function Assert-Capsule {
     if (-not (Test-Path -LiteralPath $codeRoot -PathType Container)) { Stop-Daily 'SETUP_REQUIRED' }
     if ((Run-Text 'git' @('-C',$codeRoot,'rev-parse','HEAD')).Trim() -cne $base) { Stop-Daily 'CAPSULE_COMMIT_MISMATCH' }
-    if ((Run-Text 'git' @('-C',$codeRoot,'status','--porcelain')).Trim()) { Stop-Daily 'CAPSULE_SOURCE_NOT_CLEAN' }
+    if ((Run-Text 'git' @('--no-optional-locks','-C',$codeRoot,'status','--porcelain')).Trim()) { Stop-Daily 'CAPSULE_SOURCE_NOT_CLEAN' }
     $policy = Join-Path $codeRoot 'resilience_policy.json'
     $approved = [IO.File]::ReadAllText((Join-Path $codeRoot 'resilience_policy.sha256')).Trim()
     $hasher = [Security.Cryptography.SHA256]::Create()
@@ -156,19 +161,91 @@ function Assert-PrivateOps {
         }
     }
 }
-function Field([xml]$Xml, [string]$Path) {
+function Assert-TaskNativeLimited($Task) {
+    # MSFT_TaskPrincipal.RunLevel is an independent typed readback, not an XSD
+    # default. Never infer privilege from an omitted RunLevel element.
+    try { $level = $Task.Principal.RunLevel } catch { $level = $null }
+    $limitedEnum = $false
+    if ($level -is [Enum]) {
+        try { $limitedEnum = [string]$level -ceq 'Limited' -and [Convert]::ToInt64($level) -eq 0 } catch { $limitedEnum = $false }
+    }
+    $limited = ($level -is [string] -and [string]$level -ceq 'Limited') -or $limitedEnum -or
+        (($level -is [uint32] -or $level -is [int]) -and $level -eq 0)
+    if (-not $limited) {
+        $script:taskBindingFailure = @{field='RunLevel';source='NATIVE_PRINCIPAL';reason='LIMITED_NOT_PROVEN';raw_values_printed=$false}
+        Stop-Daily 'TASK_EXACT_BINDING_MISMATCH'
+    }
+    return $true
+}
+function Field([xml]$Xml, [string]$Path, [string]$Source = 'UNSPECIFIED', [bool]$NativeLimited = $false) {
     $ns = [Xml.XmlNamespaceManager]::new($Xml.NameTable)
     $ns.AddNamespace('t','http://schemas.microsoft.com/windows/2004/02/mit/task')
     $nodes = $Xml.SelectNodes($Path,$ns)
-    if ($nodes.Count -ne 1) { Stop-Daily 'TASK_BINDING_FIELD_MISSING_OR_DUPLICATE' }
+    # Schema defaults apply ONLY to exported XML, never to an incomplete plan.
+    # Missing batteries/time-limit still resolve to UNSAFE values and fail the
+    # unchanged planned-value comparison. Required actions/dates have no default.
+    # Microsoft Task Scheduler XSD, triggerBaseType/repetitionType/settingsType:
+    # https://learn.microsoft.com/en-us/windows/win32/taskschd/task-scheduler-schema
+    $defaults = @{
+        '/t:Task/t:Triggers/t:TimeTrigger/t:Enabled'='true'
+        '/t:Task/t:Settings/t:MultipleInstancesPolicy'='IgnoreNew'
+        '/t:Task/t:Settings/t:StartWhenAvailable'='false'
+        '/t:Task/t:Settings/t:WakeToRun'='false'
+        '/t:Task/t:Settings/t:DisallowStartIfOnBatteries'='true'
+        '/t:Task/t:Settings/t:StopIfGoingOnBatteries'='true'
+        '/t:Task/t:Settings/t:ExecutionTimeLimit'='PT72H'
+        '/t:Task/t:Triggers/t:TimeTrigger/t:Repetition/t:StopAtDurationEnd'='false'
+    }
+    $leaf = ($Path -split '/')[-1] -replace '^t:',''
+    $fieldId = if ($leaf -cin @('Command','Arguments','WorkingDirectory','UserId','LogonType','RunLevel',
+        'Enabled','MultipleInstancesPolicy','StartWhenAvailable','ExecutionTimeLimit','WakeToRun',
+        'DisallowStartIfOnBatteries','StopIfGoingOnBatteries','StartBoundary','EndBoundary',
+        'Interval','Duration','StopAtDurationEnd','Task','Actions','Exec','Principals','Principal',
+        'Settings','Triggers','TimeTrigger','Repetition')) {$leaf} else {'UNCLASSIFIED'}
+    $sourceId = if ($Source -cin @('EXPORTED','PLANNED')) {$Source} else {'UNSPECIFIED'}
+    $parentPath = $Path.Substring(0,$Path.LastIndexOf('/'))
+    for ($ancestorPath = $parentPath; $ancestorPath; $ancestorPath = $ancestorPath.Substring(0,$ancestorPath.LastIndexOf('/'))) {
+        $ancestorCount = $Xml.SelectNodes($ancestorPath,$ns).Count
+        if ($ancestorCount -ne 1) {
+            $ancestorLeaf = ($ancestorPath -split '/')[-1] -replace '^t:',''
+            $ancestorId = if ($ancestorLeaf -cin @('Task','Actions','Exec','Principals','Principal','Settings','Triggers','TimeTrigger','Repetition')) {$ancestorLeaf} else {'UNCLASSIFIED'}
+            $script:taskBindingFailure = @{field=$ancestorId;source=$sourceId;node_count=$ancestorCount;
+                reason=$(if ($ancestorCount -eq 0) {'MISSING_PARENT'} else {'DUPLICATE_PARENT'});raw_values_printed=$false}
+            Stop-Daily 'TASK_BINDING_FIELD_MISSING_OR_DUPLICATE'
+        }
+    }
+    if ($nodes.Count -eq 0 -and $sourceId -ceq 'EXPORTED' -and
+        $Path -ceq '/t:Task/t:Principals/t:Principal/t:RunLevel' -and $NativeLimited) {
+        $script:taskBindingDefaults += @{field='RunLevel';source='EXPORTED_AND_NATIVE_PRINCIPAL';node_count=0;proof='NATIVE_LIMITED_READBACK_NOT_AN_ASSUMED_DEFAULT'}
+        return 'LeastPrivilege'
+    }
+    if ($nodes.Count -eq 0 -and $sourceId -ceq 'EXPORTED' -and $defaults.ContainsKey($Path) -and
+        $Xml.SelectNodes($parentPath,$ns).Count -eq 1) {
+        $script:taskBindingDefaults += @{field=$fieldId;source='EXPORTED';node_count=0;proof='DOCUMENTED_SCHEMA_DEFAULT_NOT_A_VALUE_OVERRIDE'}
+        return $defaults[$Path]
+    }
+    if ($nodes.Count -ne 1) {
+        $script:taskBindingFailure = @{field=$fieldId;source=$sourceId;node_count=$nodes.Count;
+            reason=$(if ($nodes.Count -eq 0) {'MISSING'} else {'DUPLICATE'});raw_values_printed=$false}
+        Stop-Daily 'TASK_BINDING_FIELD_MISSING_OR_DUPLICATE'
+    }
     return $nodes[0].InnerText
 }
 function Assert-Task([string]$Name, [bool]$Enabled) {
+    $script:taskBindingFailure = $null
+    $script:taskBindingRole = if ($Name -ceq $pollName) {'poll'} else {'audit'}
     $task = Get-ScheduledTask -TaskPath '\' -TaskName $Name -ErrorAction Stop
     $export = [string](Export-ScheduledTask -TaskPath '\' -TaskName $Name -ErrorAction Stop)
     if ($export.Length -gt 65536 -or $export -match '<!') { Stop-Daily 'TASK_XML_REQUIRES_REVIEW' }
     $xml = [xml]::new(); $xml.XmlResolver = $null; $xml.LoadXml($export)
     $expected = [xml]$taskPlans.plans.$Name
+    $nativeLimited = Assert-TaskNativeLimited $task
+    foreach ($path in @('/t:Task','/t:Task/t:Actions','/t:Task/t:Actions/t:Exec',
+        '/t:Task/t:Principals','/t:Task/t:Principals/t:Principal','/t:Task/t:Settings',
+        '/t:Task/t:Triggers','/t:Task/t:Triggers/t:TimeTrigger')) {
+        $null = Field $xml $path 'EXPORTED'
+        $null = Field $expected $path 'PLANNED'
+    }
     foreach ($path in @('/t:Task/t:Actions/t:Exec/t:Command','/t:Task/t:Actions/t:Exec/t:Arguments',
         '/t:Task/t:Actions/t:Exec/t:WorkingDirectory','/t:Task/t:Principals/t:Principal/t:UserId',
         '/t:Task/t:Principals/t:Principal/t:LogonType','/t:Task/t:Principals/t:Principal/t:RunLevel',
@@ -176,7 +253,10 @@ function Assert-Task([string]$Name, [bool]$Enabled) {
         '/t:Task/t:Settings/t:MultipleInstancesPolicy','/t:Task/t:Settings/t:StartWhenAvailable',
         '/t:Task/t:Settings/t:ExecutionTimeLimit','/t:Task/t:Settings/t:WakeToRun',
         '/t:Task/t:Settings/t:DisallowStartIfOnBatteries','/t:Task/t:Settings/t:StopIfGoingOnBatteries')) {
-        if ((Field $xml $path) -cne (Field $expected $path)) { Stop-Daily 'TASK_EXACT_BINDING_MISMATCH' }
+        if ((Field $xml $path 'EXPORTED' $nativeLimited) -cne (Field $expected $path 'PLANNED')) {
+            $script:taskBindingFailure = @{field=($path -split '/')[-1].Substring(2);source='EXPORTED_VS_PLANNED';reason='VALUE_MISMATCH';raw_values_printed=$false}
+            Stop-Daily 'TASK_EXACT_BINDING_MISMATCH'
+        }
     }
     # These plan-omitted schema defaults are false. Windows may export explicit
     # false elements, but true/unknown/duplicate conditions must not delay a slot.
@@ -190,16 +270,31 @@ function Assert-Task([string]$Name, [bool]$Enabled) {
     if ($delayNodes.Count -gt 1 -or ($delayNodes.Count -eq 1 -and $delayNodes[0].InnerText -cne 'PT0S')) { Stop-Daily 'TASK_EXACT_BINDING_MISMATCH' }
     foreach ($field in @('StartBoundary','EndBoundary')) {
         $path = '/t:Task/t:Triggers/t:TimeTrigger/t:' + $field
-        if ([DateTimeOffset]::Parse((Field $xml $path)) -ne [DateTimeOffset]::Parse((Field $expected $path))) { Stop-Daily 'TASK_TRIGGER_DATE_MISMATCH' }
+        $actualDate = Field $xml $path 'EXPORTED'; $plannedDate = Field $expected $path 'PLANNED'
+        try { $dateMatches = [DateTimeOffset]::Parse($actualDate) -eq [DateTimeOffset]::Parse($plannedDate) }
+        catch { $dateMatches = $false }
+        if (-not $dateMatches) {
+            $script:taskBindingFailure = @{field=$field;source='EXPORTED_VS_PLANNED';reason='DATE_VALUE_MISMATCH_OR_INVALID';raw_values_printed=$false}
+            Stop-Daily 'TASK_TRIGGER_DATE_MISMATCH'
+        }
     }
     if ($Name -eq $pollName) {
         foreach ($field in @('Interval','Duration','StopAtDurationEnd')) {
             $path = '/t:Task/t:Triggers/t:TimeTrigger/t:Repetition/t:' + $field
-            if ((Field $xml $path) -cne (Field $expected $path)) { Stop-Daily 'TASK_REPETITION_MISMATCH' }
+            if ((Field $xml $path 'EXPORTED') -cne (Field $expected $path 'PLANNED')) {
+                $script:taskBindingFailure = @{field=$field;source='EXPORTED_VS_PLANNED';reason='REPETITION_VALUE_MISMATCH';raw_values_printed=$false}
+                Stop-Daily 'TASK_REPETITION_MISMATCH'
+            }
+        }
+    } else {
+        $repeatPath = '/t:Task/t:Triggers/t:TimeTrigger/t:Repetition'
+        if ($xml.SelectNodes($repeatPath,$ns).Count -ne 0 -or $expected.SelectNodes($repeatPath,$ns).Count -ne 0) {
+            $script:taskBindingFailure = @{field='Repetition';source='EXPORTED_OR_PLANNED';reason='AUDIT_MUST_NOT_REPEAT';raw_values_printed=$false}
+            Stop-Daily 'TASK_EXTRA_ACTION_OR_RETRY_REJECTED'
         }
     }
     if ($task.Actions.Count -ne 1 -or $task.Triggers.Count -ne 1 -or $export -match '<RestartOnFailure') { Stop-Daily 'TASK_EXTRA_ACTION_OR_RETRY_REJECTED' }
-    if ([bool]$task.Settings.Enabled -ne $Enabled -or [string]$task.State -cne $(if ($Enabled) {'Ready'} else {'Disabled'})) { Stop-Daily 'TASK_STATE_NOT_EXPECTED' }
+    if ($task.Settings.Enabled -isnot [bool] -or [bool]$task.Settings.Enabled -ne $Enabled -or [string]$task.State -cne $(if ($Enabled) {'Ready'} else {'Disabled'})) { Stop-Daily 'TASK_STATE_NOT_EXPECTED' }
 }
 function Wait-Slot([string]$time) {
     $target = [DateTime]::ParseExact("$SessionDate $time",'yyyy-MM-dd HH:mm:ss',[Globalization.CultureInfo]::InvariantCulture)
@@ -302,9 +397,28 @@ try {
     $calendarCode = "import json,sys; from datetime import date; sys.path.insert(0,sys.argv[1]); from nifty_session_calendar import cash_session; from nifty_previous_close import previous_session; d=date.fromisoformat(sys.argv[2]); p=previous_session(d); print(json.dumps(dict(kind=cash_session(d)['kind'],previous=p.isoformat(),filename='ind_close_all_'+p.strftime('%d%m%Y')+'.csv')))"
     $calendar = (Run-Text $codePython @('-I','-B','-c',$calendarCode,$codeRoot,$SessionDate)) | ConvertFrom-Json
     $phase = 'DATE_AND_OWNER_CONTEXT'
-    Gate $Action
+    # CheckTasks uses the unchanged Setup DATE gate, but cannot register tasks.
+    Gate $(if ($Action -eq 'CheckTasks') {'Setup'} else {$Action})
     $taskPlans = Invoke-Capsule 'forward_ops_plan.py' @('--session-date',$SessionDate,'--owner-sid',$ownerSid,'--code-directory',$codeRoot,'--python-executable',$codePython,'--state-root',$stateRoot,'--ops-root',$opsRoot) @('REVIEW_ONLY_DISABLED')
     $common = @('--root',$stateRoot,'--ops-root',$opsRoot,'--session-date',$SessionDate,'--poll-task',$pollName,'--audit-task',$auditName)
+    if ($Action -eq 'CheckTasks') {
+        $phase = 'DISABLED_TASK_READ_ONLY_CHECK'
+        $missing = @()
+        foreach ($name in @($pollName,$auditName)) {
+            $role = if ($name -ceq $pollName) {'poll'} else {'audit'}
+            $taskBindingRole = $role
+            $taskBindingFailure = $null
+            $lookupErrors = @()
+            $existing = Get-ScheduledTask -TaskPath '\' -TaskName $name -ErrorAction SilentlyContinue -ErrorVariable lookupErrors
+            if (@($lookupErrors | Where-Object { $_.CategoryInfo.Category -ne [Management.Automation.ErrorCategory]::ObjectNotFound }).Count) { Stop-Daily 'TASK_QUERY_UNAVAILABLE' }
+            if ($existing) { Assert-Task $name $false; $setupTasksDisabledVerified += $role }
+            else { $missing += $role }
+        }
+        @{status='EXISTING_TASK_BINDINGS_CHECKED_NOT_SETUP_ACCEPTANCE';existing_disabled_verified=$setupTasksDisabledVerified;absent_roles=$missing;
+            serialization_proofs=$taskBindingDefaults;operational_writes=0;task_mutations=0;capture_invocations=0;credential_reads=0;
+            start_attempt_marker_effect='NOT_REACHED';notification_delivery='NOT_CHECKED';setup_complete=$false;approval_authority=$false} | ConvertTo-Json -Depth 6 -Compress
+        exit 0
+    }
     if ($Action -eq 'Setup') {
         $phase = 'DISABLED_TASK_SETUP'
         foreach ($old in (Get-ScheduledTask -TaskPath '\' | Where-Object { $_.TaskName -like 'KiranTrading-*' })) {
@@ -313,14 +427,25 @@ try {
         $null = Invoke-Capsule 'future_ops_diagnostics.py' @('--mode','package','--allow-read-only') @('CHECKED')
         $null = Invoke-Capsule 'future_ops_diagnostics.py' @('--mode','dependencies','--allow-read-only') @('CHECKED')
         foreach ($name in @($pollName,$auditName)) {
-            if (-not (Get-ScheduledTask -TaskPath '\' -TaskName $name -ErrorAction SilentlyContinue)) {
+            $role = if ($name -ceq $pollName) {'poll'} else {'audit'}
+            $taskBindingRole = $role
+            $taskBindingFailure = $null
+            $phase = 'DISABLED_TASK_SETUP'
+            $setupLookupErrors = @()
+            $existing = Get-ScheduledTask -TaskPath '\' -TaskName $name -ErrorAction SilentlyContinue -ErrorVariable setupLookupErrors
+            if (@($setupLookupErrors | Where-Object { $_.CategoryInfo.Category -ne [Management.Automation.ErrorCategory]::ObjectNotFound }).Count) { Stop-Daily 'TASK_QUERY_UNAVAILABLE' }
+            if (-not $existing) {
+                $phase = 'DISABLED_TASK_REGISTRATION'
+                $setupTaskRolesAttempted += $role
                 Register-ScheduledTask -TaskPath '\' -TaskName $name -Xml ([string]$taskPlans.plans.$name) -ErrorAction Stop | Out-Null
             }
+            $phase = 'DISABLED_TASK_READBACK'
             Assert-Task $name $false
+            $setupTasksDisabledVerified += $role
         }
         Add-Type -AssemblyName System.Windows.Forms
         [void][System.Windows.Forms.MessageBox]::Show('REHEARSAL ONLY. No capture ran. Both new tasks remain disabled.','NIFTY notification rehearsal')
-        @{status='SETUP_VERIFIED_TASKS_DISABLED';session_date=$SessionDate;previous_close_date=$calendar.previous;nse_filename=$calendar.filename;producer_clock_verified=$false;notification_delivery='OWNER_MUST_CONFIRM_SEEN';custody_verified=$false;approval_authority=$false} | ConvertTo-Json -Compress
+        @{status='SETUP_VERIFIED_TASKS_DISABLED';session_date=$SessionDate;previous_close_date=$calendar.previous;nse_filename=$calendar.filename;producer_clock_verified=$false;notification_delivery='OWNER_MUST_CONFIRM_SEEN';custody_verified=$false;registered_roles_attempted=$setupTaskRolesAttempted;disabled_roles_verified=$setupTasksDisabledVerified;serialization_proofs=$taskBindingDefaults;start_attempt_marker_effect='NOT_REACHED';approval_authority=$false} | ConvertTo-Json -Depth 6 -Compress
         exit 0
     }
     if ($Action -eq 'Audit') {
@@ -403,6 +528,9 @@ try {
     $beforeOps = $phase -in @('INPUT','NORMAL_WINDOW_CHECK','REVIEWED_TOOLS_CHECKOUT',
         'TOOLS_ROOT_QUERY','TOOLS_ROOT_COMPARE','TOOLS_CLEAN_QUERY',
         'OWNER_PATH_CONTEXT','PINNED_PYTHON_BOOTSTRAP_CHECK','PRIVATE_OPS_READ_ONLY_CHECK')
+    $beforeStartMarker = $beforeOps -or $phase -in @('PUBLIC_CAPSULE_SETUP','REVIEWED_CALENDAR','DATE_AND_OWNER_CONTEXT',
+        'DISABLED_TASK_SETUP','DISABLED_TASK_REGISTRATION','DISABLED_TASK_READBACK','DISABLED_TASK_READ_ONLY_CHECK',
+        'READ_ONLY_POSTSESSION_AUDIT','PREOPEN_HEALTH','OWNER_FILE_PREPARATION','POLICY_FREEZE')
     $exceptionClass = if ($_.Exception -is [InvalidOperationException]) {'CONTROLLED_REJECTION'} elseif ($_.Exception -is [Management.Automation.CommandNotFoundException]) {'NATIVE_TOOL_UNAVAILABLE'} else {'UNCLASSIFIED_FAILURE'}
     $fix = switch -Regex ($code) {
         '^NORMAL_NON_ADMIN' { 'Close the elevated shell. Open NORMAL PowerShell; do not change permissions.'; break }
@@ -411,13 +539,14 @@ try {
         'DISK|PERMISSIONS' { 'Keep capture off. Review storage/permissions privately; this tool does not repair ACLs or delete data.'; break }
         '^TOOLS_|^PUBLIC_NATIVE_TOOL|^CHILD_BLOCKED' { 'Keep tasks disabled or inspect rollback status. Review this stage and native-tool code; use the effect fields, not an assumption about writes. Do not reset markers or change pins.'; break }
         '^PINNED_PYTHON|^BOOTSTRAP_PYTHON' { 'Keep tasks disabled. Supply the reviewed existing local Python executable with -BootstrapPython; it must prove exactly 3.13.9. No launcher/install or pin relaxation.'; break }
+        '^TASK_' { 'Keep tasks disabled. Inspect the fixed field/source/count diagnostic; a partial disabled task may exist. Do not overwrite tasks, relax XML checks, reset markers or rerun Setup blindly.'; break }
         'DEADLINE|CATCHUP' { 'Keep future polling disabled. Preserve any partial evidence; no catch-up or same-slot retry.'; break }
         default { 'Keep tasks disabled or check rollback status. Inspect this stage and redacted operations reports; do not reset a marker, recipe or journal.' }
     }
     if ($rollback -eq 'FUTURE_POLL_DISABLE_UNCONFIRMED_OWNER_CHECK_REQUIRED') {
         $fix = 'Task state is UNKNOWN: inspect actual polling state as owner. Do not assume disabled, retry Start, remove markers or catch up.'
     }
-    @{status='BLOCKED';code=$code;blockers=$publicBlockers;stage=$phase;exception_category=$exceptionClass;native_exit_code=$lastNativeExit;operational_state_effect=$(if ($beforeOps) {'NOT_REACHED'} else {'NOT_ESTABLISHED'});start_attempt_marker_effect=$(if ($beforeOps) {'NOT_REACHED'} else {'NOT_ESTABLISHED'});owner_step=$fix;rollback=$rollback;raw_error_printed=$false;catchup_allowed=$false;same_slot_retry_allowed=$false;approval_authority=$false} | ConvertTo-Json -Compress
+    @{status='BLOCKED';code=$code;blockers=$publicBlockers;stage=$phase;exception_category=$exceptionClass;native_exit_code=$lastNativeExit;operational_state_effect=$(if ($beforeOps -or $phase -eq 'DISABLED_TASK_READ_ONLY_CHECK') {'NOT_REACHED'} else {'NOT_ESTABLISHED'});start_attempt_marker_effect=$(if ($beforeStartMarker) {'NOT_REACHED'} else {'NOT_ESTABLISHED'});task_binding_role=$taskBindingRole;task_binding_failure=$taskBindingFailure;serialization_proofs=$taskBindingDefaults;registered_roles_attempted=$setupTaskRolesAttempted;disabled_roles_verified=$setupTasksDisabledVerified;owner_step=$fix;rollback=$rollback;raw_error_printed=$false;catchup_allowed=$false;same_slot_retry_allowed=$false;approval_authority=$false} | ConvertTo-Json -Depth 6 -Compress
     exit 2
 } finally {
     # Pipeline cancellation bypasses catch. This also covers cooperative Ctrl+C;

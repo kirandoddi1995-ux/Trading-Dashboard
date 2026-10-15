@@ -1,0 +1,80 @@
+{
+  "version": "task-binding-repair-v1",
+  "base": "4764146106f6e80f0613b564d5bf27e84dee4ff5",
+  "files": [
+    {
+      "path": "forward_daily_owner.ps1",
+      "sha256_lf": "4ee910bc266fe87b7dd768f4037c4a126896ff1f3d3b5ea7fdab0214b51ce8db"
+    },
+    {
+      "path": "tests/test_forward_daily_owner.py",
+      "sha256_lf": "ab68979725d435e2d5cc978ca76767ccf92b4912a7ac9d013b8f743f9a5c6462"
+    },
+    {
+      "path": "FRIDAY_CAPTURE_2026-10-16.md",
+      "sha256_lf": "fd0db2f75b647aa2ee2c5c59a6c4925d4def9f0bafda7f588903ea03c1fac835"
+    },
+    {
+      "path": "forward_task_binding_diagnostic.ps1",
+      "sha256_lf": "65bca9135c13d36ff6e171602bc227b1bde77f0a4ef483a731512028e258d92b"
+    },
+    {
+      "path": "tests/test_forward_task_binding_diagnostic.py",
+      "sha256_lf": "aad2c15846195be0e331731813cdeab08358760f6af6b32e0c16c0f183cb2ea6"
+    },
+    {
+      "path": "task_binding_repair_upload_check.py",
+      "sha256_lf": "2e2f66082123486b1ab059817f06e9147d6d5f380708512e4d338e054bccdcda"
+    },
+    {
+      "path": "tests/test_task_binding_repair_upload_check.py",
+      "sha256_lf": "66c364e325380f863771e39c9e0f1909b97117fb9d887efbfb6d89e3de4aeeed"
+    },
+    {
+      "path": "TASK_BINDING_REPAIR_UPLOAD_2026-10-16.md",
+      "sha256_lf": "e1248ce698341fc274ffac4c33609713653307a2b1f94a1ff6e5559005d6abb2"
+    },
+    {
+      "path": "TASK_BINDING_REPAIR_UPLOAD_2026-10-16.json",
+      "sha256_lf": null
+    }
+  ],
+  "prerequisites": [
+    {
+      "path": "daily_owner_upload_check.py",
+      "sha256_lf": "716edda5ae97ca2a6e3abf0eea7282c54aa375fb5881dabc29bab178b8a5e270"
+    },
+    {
+      "path": "forward_daily_contract.py",
+      "sha256_lf": "9f72b8e0431fc1d484d0bbdfb4bfe0a8a30a5f64fc17ca4ae6b60b47cafa4a0c"
+    },
+    {
+      "path": "resilience_policy.json",
+      "sha256_lf": "034f87b769d6b000cfcb5ec8d309ef8b487dc3b4aeab1be623eaa16e9b578466"
+    },
+    {
+      "path": "resilience_policy.sha256",
+      "sha256_lf": "209d7234a6687e362388779077357e4fcda9e944e4b930c3b2460c92ce131b63"
+    },
+    {
+      "path": "CONTINUITY_UPLOAD_2026-10-15.json",
+      "sha256_lf": "55fed46b145464466b383afcc886e8fb68b58b91d9f33f6f27cdce79157e2e3b"
+    },
+    {
+      "path": "DAILY_OWNER_UPLOAD_2026-10-15.json",
+      "sha256_lf": "0ba9caed33cb4b739d5b81ad08e285b250febd5b2a301723c82589fe5287922b"
+    },
+    {
+      "path": "forward_ops_plan.py",
+      "sha256_lf": "390eb1c32540abd5fcf25701da84f482cf63959c753f5afd6364dcac7e3f1369"
+    },
+    {
+      "path": "daily_setup_repair_upload_check.py",
+      "sha256_lf": "a7ba9b4ff92b0b2c6195883d1e333b5c07eb85f75fb32e304603700def772e3f"
+    },
+    {
+      "path": "DAILY_SETUP_REPAIR_UPLOAD_2026-10-15.json",
+      "sha256_lf": "597771520141811c86d53a79df270082bc7f1417b2479e18afe386075aa390a8"
+    }
+  ]
+}
