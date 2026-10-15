@@ -1,11 +1,102 @@
 # Friday 16 October — three commands, no pasted prompts
 
+## Friday 01:35 incident — disabled-task readback, NOT permission to retry
+
+OWNER-REPORTED: PR35 finalba3b151 and merged4764146106f6e80f0613b564d5bf27e84dee4ff5
+are green. CheckSetup passed normal-token, exact3.13.9 and private-ops checks.
+Setup then blocked at DISABLED_TASK_SETUP with
+TASK_BINDING_FIELD_MISSING_OR_DUPLICATE, native_exit_code0 and rollbackNOT_REQUIRED.
+Do NOT repeat the old seven-file upload or the blocked Setup command.
+
+SOURCE-VERIFIED: this rejection means a required task XML query returned zero or
+multiple nodes. The old report does not identify which field or task. By this
+stage the pinned public capsule/environment/calendar were accepted; they could
+have been created or reused. A disabled poll task, and possibly an audit task,
+may already have been registered. RollbackNOT_REQUIRED means no polling-enable
+attempt occurred; it does NOT mean no writes occurred or no task exists. The
+Start-marker creation is later, in Start only: this Setup did not reach it. That
+is an invocation control-flow fact, NOT an inventory of private markers.
+Native_exit_code0 describes an earlier successful child, not task-binding proof.
+
+OWNER READ-ONLY RESULTS, subsequently received: dated poll exists, Disabled,
+one action/one trigger; audit NOT_FOUND. RunLevel, triggerEnabled,
+StartWhenAvailable, WakeToRun and repeatStop are omitted from exported XML.
+All other required leaf queries returned exactly one node. A separate native
+principal observation reports ENUM/LIMITED and task_enabledfalse. RunLevel is
+the FIRST missing field in the old validator's evaluation order. This establishes
+the serialization mismatch, not a dangerous privilege setting. Creation time or
+origin of the poll task is still unknown and need not be guessed. Do NOT repeat
+the completed diagnostic steps below merely to reset or retry anything.
+
+Keep all tasks disabled. No delete/overwrite, marker reset, ACL or pin changes.
+The first diagnostic step (ALREADY COMPLETED) was the standalone read-only helper OUTSIDE the clean
+tools checkout. Use normal PowerShell; run one line, inspect its output, then
+the next. Preview must report zero queries/writes.
+
+```powershell
+& 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -NoProfile -File 'C:\Users\banga\Desktop\kiran_share_market\forward_task_binding_diagnostic.ps1' -SessionDate 2026-10-16
+```
+
+```powershell
+& 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -NoProfile -File 'C:\Users\banga\Desktop\kiran_share_market\forward_task_binding_diagnostic.ps1' -SessionDate 2026-10-16 -ConfirmReadOnly
+```
+
+Share only its JSON: fixed field names/counts, task existence and enabled/state.
+No XML, paths, identities or argument values are printed; no task is executed or
+mutated and no capture/config/journal/credential is read. This is structural
+diagnosis, NOT binding acceptance. A missing audit task after partial setup is
+not permission to create it manually. If any task is enabled/running or a query
+is unavailable, stop for review; do not infer disabled from an incomplete report.
+
+The candidate follow-up is TASK_BINDING_REPAIR_UPLOAD_2026-10-16.md/json on exact
+4764146. It is inactive until a new reviewed PR is green on its FINAL commit,
+merged, and a NEW clean merged tools checkout is verified. It distinguishes
+documented exported defaults from missing required fields, keeps planned fields
+explicit, rejects duplicates and unsafe defaults, and names failed fields
+without values. This is a fix for a reproduced serialization-contract class;
+the owner's first failing field is now identified as omitted RunLevel. The
+repair requires positive typed native RunLevelLIMITED proof (enum value0), not
+an assumed XSD default. Explicit unsafe, unknown, missing-native, duplicate or
+wrong planned values remain blocked. The other omitted fields use only their
+documented XSD defaults. No task XML is rewritten to manufacture a match.
+No frozen producer, plan generator, rule, slot, clock or source pin changes.
+
+After that follow-up merges, in the new clean tools checkout/normal window,
+set the already verified BootstrapPython. Run CheckSetup as below, THEN this
+read-only existing-task check, one command at a time:
+
+```powershell
+.\forward_daily_owner.ps1 -SessionDate 2026-10-16 -Action CheckTasks -BootstrapPython $bootstrapPython -ConfirmRun
+```
+
+Require EXISTING_TASK_BINDINGS_CHECKED_NOT_SETUP_ACCEPTANCE. Every existing task
+must be verified disabled with exact effective bindings; absent roles are listed,
+not created. This report is not Setup, notification, clock or source acceptance.
+The reported omitted-RunLevel failure is reconciled by the observations above.
+Only after both reviewed read-only checks pass and no
+unexpected task state exists, ONE reviewed Setup attempt may complete missing
+tasks and verify existing disabled tasks without replacement. This is explicit
+reviewed recovery from an incomplete Setup, not a poll/Start retry. Require
+SETUP_VERIFIED_TASKS_DISABLED and personally see the notification. Given the
+reported starting state, expected registered_roles_attempted is audit only and
+disabled_roles_verified is poll plus audit. Existing poll is validated/reused,
+NEVER overwritten; no new Start marker is written by Setup. Any further
+block: STOP/share fixed JSON; no blind rerun or task/XML edits.
+
+Target accepted Setup and genuine FRIDAY download/Prepare by08:00 for08:00Start.
+Hard09:15freeze and Start strictly before09:20:30 remain. If not safely accepted:
+NO_GO, no backfill and tasks disabled. Historical investigations and storage/
+research commissioning remain open; offline tests do not prove host readiness.
+
+## Historical Thursday repair context — superseded upload order
+
 ## Thursday evening update — Setup diagnostics follow-up
 
 The original 33-file package is now merged as
 `d5cd80f41a52de902d23cb81d761e7bb720e710c` (owner reports exact-commit CI green).
-Do not repeat that upload. Use the seven-file follow-up manifest
-`DAILY_SETUP_REPAIR_UPLOAD_2026-10-15.md`; historical 20/33-file manifests remain
+Do not repeat that upload. The seven-file follow-up described in
+`DAILY_SETUP_REPAIR_UPLOAD_2026-10-15.md` has ALSO merged as PR35. Use the CURRENT
+nine-file task-binding follow-up at the top; historical manifests remain
 unchanged records, not checks for this new modified tree.
 
 The owner-reported Setup block at REVIEWED_TOOLS_CHECKOUT happened BEFORE
@@ -34,7 +125,7 @@ Git, explicit interpreter and private-ops prerequisites as Setup, then exits BEF
 capsule writes/task mutation. Neither is morning GO: capsule/calendar/clock,
 provider, credentials, tasks and notification delivery remain unverified.
 
-After the reviewed follow-up merges with exact-final-SHA green CI, use a NEW clean
+After the CURRENT task-binding follow-up merges with exact-final-SHA green CI, use a NEW clean
 merged tools checkout, normal PowerShell. Set the verified interpreter once:
 
 ```powershell
@@ -68,8 +159,8 @@ No ACL changes, automatic time repair, old task edits or installed agent roles.
 
 ## Before Friday — do the slow setup early
 
-The original combined33-file PR has merged; use the seven-file follow-up described
-above. All required checks must be green on its exact final commit. Run the
+The original combined33 and seven-file PRs have merged; use the CURRENT nine-file
+task-binding follow-up described above. All required checks must be green on its exact final commit. Run the
 script from a clean reviewed MERGED tools checkout, OUTSIDE every frozen
 capsule. Do not copy it into the 14 October capsule or modify its source pins.
 The tools checkout contains the script and adjacent pure contract; it is not a
