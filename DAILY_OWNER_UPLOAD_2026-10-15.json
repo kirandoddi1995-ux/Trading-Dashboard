@@ -1,0 +1,140 @@
+{
+  "anchor": "1251530731cce5b75fad8601567b9320d07b710d",
+  "prerequisites": [
+    {
+      "sha256_lf": "9dac8702808c5ae0ae9e376374d704343854f885397a274c83a4ac9913555beb",
+      "path": "forward_morning_route.py"
+    },
+    {
+      "sha256_lf": "17fa94b8a81bf5752d801a4b4ca2289200673dbb0f03e53b86014d67e9a7ff3c",
+      "path": "tests/test_forward_morning_route.py"
+    },
+    {
+      "sha256_lf": "668e705c2083770a1976ae4ed2cddf3bb7f12357e28c6dd5445a22f0a6dbb609",
+      "path": "forward_evidence_preserve.py"
+    },
+    {
+      "sha256_lf": "39cda3bcea09fd1641c526c9a2d76af67bedc70bd9d3125738c53863d093d38d",
+      "path": "tests/test_forward_evidence_preserve.py"
+    },
+    {
+      "sha256_lf": "5b808a5214b014806b229bbd9c59fb066796010efead512b1b0b7e07c2c8d6b2",
+      "path": "storage_consistent_cut_export.py"
+    },
+    {
+      "sha256_lf": "dd24e62a50f58931a14a018b7f2fc071c19819cda0d69397bef92c3ad041b090",
+      "path": "tests/test_storage_consistent_cut_export.py"
+    },
+    {
+      "sha256_lf": "cea9d8f8fc4ac70eae3c615f620cde3169704132516b75193efeb00b63b841c4",
+      "path": "storage_cut_native_check.py"
+    },
+    {
+      "sha256_lf": "9406f83367527439a798c7476acba1e6b898cb3c8f69d8342e9444120d769970",
+      "path": "tests/test_storage_cut_native_check.py"
+    },
+    {
+      "sha256_lf": "bf6b9a94199b34866aac0a93e3bdb0d58e0df1eaf1194a441108bf9a394116ea",
+      "path": "research_forward_cohort.py"
+    },
+    {
+      "sha256_lf": "01ba197e61eda39a20049868d449d2d7f608c5d069791f76cd675684f76cc13c",
+      "path": "tests/test_research_forward_cohort.py"
+    },
+    {
+      "sha256_lf": "b66d5ba6f366f2edfda299bbdb7340a2c8ce6a53a8e797d80c86aca7ca227e5a",
+      "path": "programme_agent_team.py"
+    },
+    {
+      "sha256_lf": "33d4cc53c75376f2acb4a691db58ba36e80185e717e77ef31cdd228933fe7223",
+      "path": "tests/test_programme_agent_team.py"
+    },
+    {
+      "sha256_lf": "5740442b2531cb602116e0caaa216eba46529386e143d4d34f9ec0da2201dd66",
+      "path": "MORNING_2026-10-15.md"
+    },
+    {
+      "sha256_lf": "6543aeb29d539fa8b1cdc13b57fa79ee6daa4bb5fe7fd55a3cadc2ac21586ed8",
+      "path": "OWNER_CAPTURE_2026-10-15.md"
+    },
+    {
+      "sha256_lf": "6d53a93b61fb257fbf576985a3b90404bd36983ad0d7417a988c6c6737f73516",
+      "path": "OVERNIGHT_CONTINUITY_2026-10-15.md"
+    },
+    {
+      "sha256_lf": "4a24949f03b882e17ab26f35e290f9bcbfddc975c7e3c7cfa7af3b25180ae761",
+      "path": "AGENT_TEAM_2026-10-15.md"
+    },
+    {
+      "sha256_lf": "28ddc83f5d6dbc79b78debd77c285a443df74b49d66a7d0b38d920f4d7bef121",
+      "path": "continuity_upload_check.py"
+    },
+    {
+      "sha256_lf": "61459488de80df521d0bb32834273051dd215f1f6ab5bc9284797ec2eda47c93",
+      "path": "tests/test_continuity_upload_check.py"
+    },
+    {
+      "sha256_lf": "2e9bbf2a2de883df72228a52bb5c9a72693f9716e87447444546048fc14d12aa",
+      "path": "CONTINUITY_UPLOAD_2026-10-15.md"
+    },
+    {
+      "sha256_lf": "55fed46b145464466b383afcc886e8fb68b58b91d9f33f6f27cdce79157e2e3b",
+      "path": "CONTINUITY_UPLOAD_2026-10-15.json"
+    }
+  ],
+  "version": "daily-owner-v1",
+  "files": [
+    {
+      "sha256_lf": "9f72b8e0431fc1d484d0bbdfb4bfe0a8a30a5f64fc17ca4ae6b60b47cafa4a0c",
+      "path": "forward_daily_contract.py"
+    },
+    {
+      "sha256_lf": "f6e998363ad34058577466e63b47bf9da4564025415b423cb98ca5625d026f7c",
+      "path": "forward_daily_owner.ps1"
+    },
+    {
+      "sha256_lf": "58ca6b32bea820458b02781a1ae7681ebe962a2f620a2e7a2428774845d7d4c9",
+      "path": "tests/test_forward_daily_contract.py"
+    },
+    {
+      "sha256_lf": "93d60060614b57e740934851f96c089aa4755573363d876c7fd93cf33c3df05f",
+      "path": "tests/test_forward_daily_owner.py"
+    },
+    {
+      "sha256_lf": "f318b5ca3c14d00f34c3780c2384fcc45f243e3c1fcede54515e6227c9a858bb",
+      "path": "project_conductor.py"
+    },
+    {
+      "sha256_lf": "620d59bb807069fb013c497b2a84cc58828f8b00c586122ec091f4356ebae07b",
+      "path": "tests/test_project_conductor.py"
+    },
+    {
+      "sha256_lf": "f51806dea2a506c9ddbbba280ac30b05e0a31d44025972e5f4fbabd8dd99c476",
+      "path": "PROJECT_WORKING_AGREEMENT.md"
+    },
+    {
+      "sha256_lf": "9bda5946b0fe2890719b3ba224c4dc4e186fad9768cb26a140bb6aa0cbab51db",
+      "path": "TECHNOLOGY_RADAR_2026-10-15.md"
+    },
+    {
+      "sha256_lf": "5417f89af05e6b158c988145ea3e4756b968d1bdae12bf7b6d397f88e891dd13",
+      "path": "FRIDAY_CAPTURE_2026-10-16.md"
+    },
+    {
+      "sha256_lf": "716edda5ae97ca2a6e3abf0eea7282c54aa375fb5881dabc29bab178b8a5e270",
+      "path": "daily_owner_upload_check.py"
+    },
+    {
+      "sha256_lf": "c7d4793e192bbc9919c0b00a5e7217f2700f65a62449858bdb44f00b3cfed109",
+      "path": "tests/test_daily_owner_upload_check.py"
+    },
+    {
+      "sha256_lf": "b9b9d08508937ec72276febe10db25ad1b9da91a116d952ca6870a46f1170188",
+      "path": "DAILY_OWNER_UPLOAD_2026-10-15.md"
+    },
+    {
+      "sha256_lf": null,
+      "path": "DAILY_OWNER_UPLOAD_2026-10-15.json"
+    }
+  ]
+}
