@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$SessionDate,
-    [ValidateSet('Preview','Setup','Prepare','Start','Audit')][string]$Action = 'Preview',
+    [ValidateSet('Preview','CheckTools','CheckSetup','Setup','Prepare','Start','Audit')][string]$Action = 'Preview',
+    [string]$BootstrapPython = '',
     [string]$CloseFile = '',
     [string]$DownloadedAt = '',
     [switch]$AttestNseSource,
@@ -19,6 +20,7 @@ $rollbackAttempted = $false
 $rollback = 'NOT_REQUIRED'
 $base = '1251530731cce5b75fad8601567b9320d07b710d'
 $publicBlockers = @()
+$lastNativeExit = $null
 $publicCodes = @('CLOCK_UNVERIFIED','CLOCK_MEASUREMENT_UNAVAILABLE','CLOCK_MEASUREMENT_STALE',
     'CLOCK_MEASUREMENT_INVALID','CLOCK_OFFSET_OR_UNCERTAINTY_EXCESSIVE',
     'WINDOWS_TIME_SERVICE_NOT_RUNNING','WINDOWS_TIME_SERVICE_NOT_AUTOMATIC',
@@ -33,7 +35,17 @@ $publicCodes = @('CLOCK_UNVERIFIED','CLOCK_MEASUREMENT_UNAVAILABLE','CLOCK_MEASU
     'TASK_EXACT_BINDING_MISMATCH','TASK_TRIGGER_DATE_MISMATCH','TASK_REPETITION_MISMATCH',
     'TASK_STATE_NOT_EXPECTED','OTHER_CAPTURE_TASK_NOT_DISABLED','ENABLE_DEADLINE_MISSED',
     'TARGET_PASSED_OR_WAIT_TOO_LONG_NO_CATCHUP','WAIT_CLOCK_CHANGED','INTERRUPTED_WAIT_NO_CATCHUP',
-    'NEXT_TRIGGER_NOT_PROVEN_BEFORE_DEADLINE','ADMISSION_HEALTH_NOT_VERIFIED')
+    'NEXT_TRIGGER_NOT_PROVEN_BEFORE_DEADLINE','ADMISSION_HEALTH_NOT_VERIFIED',
+    'TOOLS_CHECKOUT_ROOT_REQUIRED','TOOLS_CHECKOUT_NOT_CLEAN','TOOLS_GIT_QUERY_FAILED',
+    'PINNED_PYTHON_3139_REQUIRED','BOOTSTRAP_PYTHON_LOCAL_PATH_REQUIRED','PRIVATE_OPS_READ_UNAVAILABLE',
+    'CHILD_BLOCKED_NO_RETRY','PUBLIC_NATIVE_TOOL_REQUIRED','WINDOWS_OWNER_RUN_ONLY',
+    'CAPSULE_COMMIT_MISMATCH','CAPSULE_SOURCE_NOT_CLEAN','EXISTING_PRIVATE_OPS_ROOT_REQUIRED',
+    'OPS_LINK_REJECTED','OPS_RECORD_IDENTITY_INVALID','SESSION_DATE_INVALID','SETUP_DEADLINE_MISSED',
+    'CHILD_REPORT_MISSING','CHILD_REPORT_TOO_LARGE','CHILD_STATUS_NOT_ACCEPTED',
+    'TASK_BINDING_FIELD_MISSING_OR_DUPLICATE','TASK_EXTRA_ACTION_OR_RETRY_REJECTED',
+    'TASK_XML_REQUIRES_REVIEW','FUTURE_POLL_DISABLE_NOT_PROVEN',
+    'ACTUAL_OWNER_FILE_AND_ATTESTATION_REQUIRED','PREPARATION_REPORT_NOT_ACCEPTED',
+    'OWNER_VISIBLE_NOTIFICATION_AND_CONDITIONAL_ENABLE_CONFIRMATION_REQUIRED')
 
 function Stop-Daily([string]$code) { throw [InvalidOperationException]::new($code) }
 function Now-Ist { [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, [TimeZoneInfo]::FindSystemTimeZoneById('India Standard Time')) }
@@ -42,6 +54,7 @@ function Run-Text([string]$exe, [string[]]$Arguments, [int[]]$Allowed = @(0)) {
     # without treating stderr as failure; use the actual exit code instead.
     # Resolve an actual executable, never a profile function/alias/wrapper that
     # could leave a stale LASTEXITCODE behind after a nonterminating failure.
+    $script:lastNativeExit = $null
     $native = Get-Command -Name $exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
     if ($native -isnot [Management.Automation.ApplicationInfo]) { Stop-Daily 'PUBLIC_NATIVE_TOOL_REQUIRED' }
     $savedPreference = $ErrorActionPreference
@@ -50,6 +63,7 @@ function Run-Text([string]$exe, [string[]]$Arguments, [int[]]$Allowed = @(0)) {
         $global:LASTEXITCODE = $null
         $output = & $native.Source @Arguments 2>&1
         $exitValue = $global:LASTEXITCODE
+        if ($exitValue -is [int]) { $script:lastNativeExit = $exitValue }
     } finally { $ErrorActionPreference = $savedPreference }
     $text = (($output | ForEach-Object { [string]$_ }) -join "`n")
     if ($exitValue -isnot [int] -or $exitValue -notin $Allowed) {
@@ -78,6 +92,31 @@ function Run-Json([string]$exe, [string[]]$Arguments, [string[]]$Statuses) {
     if ($value.status -notin $Statuses) { Stop-Daily 'CHILD_STATUS_NOT_ACCEPTED' }
     return $value
 }
+function Assert-ToolsCheckout([string]$Root) {
+    $script:phase = 'TOOLS_ROOT_QUERY'
+    try { $reported = [string](Run-Text 'git' @('-C',$Root,'rev-parse','--show-toplevel')) }
+    catch { Stop-Daily 'TOOLS_GIT_QUERY_FAILED' }
+    $script:phase = 'TOOLS_ROOT_COMPARE'
+    if (-not $reported.Trim() -or $reported.Trim().Replace('\','/').TrimEnd('/') -ine $Root.Replace('\','/').TrimEnd('/')) { Stop-Daily 'TOOLS_CHECKOUT_ROOT_REQUIRED' }
+    $script:phase = 'TOOLS_CLEAN_QUERY'
+    try { $status = [string](Run-Text 'git' @('--no-optional-locks','-C',$Root,'status','--porcelain')) }
+    catch { Stop-Daily 'TOOLS_GIT_QUERY_FAILED' }
+    if ($status.Trim()) { Stop-Daily 'TOOLS_CHECKOUT_NOT_CLEAN' }
+}
+function Assert-BootstrapPython {
+    # Explicit reviewed executable, never a launcher, PATH search or auto-install.
+    if ($BootstrapPython -cnotmatch '^[A-Za-z]:[\\/]' -or [IO.Path]::GetExtension($BootstrapPython) -ine '.exe') { Stop-Daily 'BOOTSTRAP_PYTHON_LOCAL_PATH_REQUIRED' }
+    try {
+        $application = Get-Command -Name $BootstrapPython -CommandType Application -ErrorAction Stop | Select-Object -First 1
+        if ($application -isnot [Management.Automation.ApplicationInfo] -or [IO.Path]::GetFullPath($application.Source) -ine [IO.Path]::GetFullPath($BootstrapPython)) { Stop-Daily 'BOOTSTRAP_PYTHON_LOCAL_PATH_REQUIRED' }
+        $script:controlPython = $application.Source
+        $proof = [string](Run-Text $controlPython @('-I','-B','-c','import sys; print(3139009) if sys.version_info[:3] == (3,13,9) else sys.exit(2)'))
+        if ($proof.Trim() -cne '3139009') { Stop-Daily 'PINNED_PYTHON_3139_REQUIRED' }
+    } catch {
+        if ($_.Exception.Message -cin $publicCodes) { throw }
+        Stop-Daily 'PINNED_PYTHON_3139_REQUIRED'
+    }
+}
 function Assert-Capsule {
     if (-not (Test-Path -LiteralPath $codeRoot -PathType Container)) { Stop-Daily 'SETUP_REQUIRED' }
     if ((Run-Text 'git' @('-C',$codeRoot,'rev-parse','HEAD')).Trim() -cne $base) { Stop-Daily 'CAPSULE_COMMIT_MISMATCH' }
@@ -96,11 +135,11 @@ function Invoke-Capsule([string]$File, [string[]]$Arguments, [string[]]$Statuses
     finally { Pop-Location }
 }
 function Gate([string]$mode) {
-    $argsCore = @('-3.13','-I','-B',(Join-Path $PSScriptRoot 'forward_daily_contract.py'),
+    $argsCore = @('-I','-B',(Join-Path $PSScriptRoot 'forward_daily_contract.py'),
         '--session-date',$SessionDate,'--evaluate',$mode,'--at',((Now-Ist).ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff")+'+05:30'),
         '--calendar-kind',[string]$calendar.kind)
     if ($mode -eq 'Prepare') { $argsCore += @('--download-at',$DownloadedAt) }
-    $null = Run-Json 'py' $argsCore @('PURE_INPUT_GATE_PASSED_NOT_HOST_ACCEPTANCE')
+    $null = Run-Json $controlPython $argsCore @('PURE_INPUT_GATE_PASSED_NOT_HOST_ACCEPTANCE')
 }
 function Assert-PrivateOps {
     # Read-only allow-list, never Set-Acl or inheritance repair. Owner/SYSTEM/Admins.
@@ -179,7 +218,7 @@ function Accept-Poll($Report, [int]$Expected) {
     # Pure contract runs in an isolated interpreter, not a second producer.
     $check = "import base64,json,runpy,sys; m=runpy.run_path(sys.argv[1]); assert m['accepted_poll'](json.loads(base64.b64decode(sys.argv[2],validate=True)),int(sys.argv[3]))"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($Report | ConvertTo-Json -Compress)))
-    $null = Run-Text 'py' @('-3.13','-I','-B','-c',$check,(Join-Path $PSScriptRoot 'forward_daily_contract.py'),$encoded,[string]$Expected)
+    $null = Run-Text $controlPython @('-I','-B','-c',$check,(Join-Path $PSScriptRoot 'forward_daily_contract.py'),$encoded,[string]$Expected)
 }
 function Undo-PollEnable {
     $script:rollbackAttempted = $true
@@ -213,20 +252,36 @@ try {
         @{status='PREVIEW';session_date=$SessionDate;poll_task=$pollName;audit_task=$auditName;writes=0;network_calls=0;credential_reads=0;approval_authority=$false} | ConvertTo-Json -Compress
         exit 0
     }
+    if ($Action -eq 'CheckTools') {
+        $phase = 'REVIEWED_TOOLS_CHECKOUT'
+        Assert-ToolsCheckout $PSScriptRoot
+        @{status='REVIEWED_TOOLS_CHECK_PASSED';normal_window='NOT_CHECKED';python_bootstrap='NOT_CHECKED';private_ops='NOT_CHECKED';operational_writes=0;network_calls=0;credential_reads=0;capture_invocations=0;task_mutations=0;start_attempt_marker_effect='NOT_REACHED';approval_authority=$false} | ConvertTo-Json -Compress
+        exit 0
+    }
     $phase = 'NORMAL_WINDOW_CHECK'
     if ($env:OS -cne 'Windows_NT') { Stop-Daily 'WINDOWS_OWNER_RUN_ONLY' }
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     if (([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Stop-Daily 'NORMAL_NON_ADMIN_WINDOW_REQUIRED' }
     $ownerSid = $identity.User.Value
     $phase = 'REVIEWED_TOOLS_CHECKOUT'
-    if ((Run-Text 'git' @('-C',$PSScriptRoot,'rev-parse','--show-toplevel')).Trim().Replace('\','/').TrimEnd('/') -ine $PSScriptRoot.Replace('\','/').TrimEnd('/')) { Stop-Daily 'TOOLS_CHECKOUT_ROOT_REQUIRED' }
-    if ((Run-Text 'git' @('-C',$PSScriptRoot,'status','--porcelain')).Trim()) { Stop-Daily 'TOOLS_CHECKOUT_NOT_CLEAN' }
+    Assert-ToolsCheckout $PSScriptRoot
+    $phase = 'OWNER_PATH_CONTEXT'
     $stateRoot = Join-Path $env:LOCALAPPDATA 'KiranTrading\Forward'
     $opsRoot = Join-Path $env:LOCALAPPDATA 'KiranTrading\ForwardOps'
     $codeRoot = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) ('kiran_forward_' + $stamp)
     $codePython = Join-Path $codeRoot '.venv\Scripts\python.exe'
-    $null = Run-Text 'py' @('-3.13','-I','-B','-c','import sys; assert sys.version_info[:3] == (3,13,9)')
-    Assert-PrivateOps
+    $phase = 'PINNED_PYTHON_BOOTSTRAP_CHECK'
+    Assert-BootstrapPython
+    $phase = 'PRIVATE_OPS_READ_ONLY_CHECK'
+    try { Assert-PrivateOps }
+    catch {
+        if ($_.Exception.Message -cin $publicCodes) { throw }
+        Stop-Daily 'PRIVATE_OPS_READ_UNAVAILABLE'
+    }
+    if ($Action -eq 'CheckSetup') {
+        @{status='SETUP_PREREQUISITES_CHECK_PASSED_NOT_COMMISSIONED';normal_window='VERIFIED_NON_ADMIN';python_bootstrap='VERIFIED_3139';private_ops='READ_ONLY_CHECK_PASSED';capsule='NOT_CHECKED';calendar='NOT_CHECKED';clock='NOT_CHECKED';provider_and_drive='NOT_CHECKED';operational_writes=0;credential_reads=0;capture_invocations=0;task_mutations=0;start_attempt_marker_effect='NOT_REACHED';approval_authority=$false} | ConvertTo-Json -Compress
+        exit 0
+    }
     if ($Action -eq 'Setup') {
         $phase = 'PUBLIC_CAPSULE_SETUP'
         if (($day.Date-(Now-Ist).Date).TotalDays -lt 0 -or ($day.Date-(Now-Ist).Date).TotalDays -gt 7) { Stop-Daily 'SETUP_DATE_OUTSIDE_REVIEW_WINDOW' }
@@ -237,7 +292,7 @@ try {
         }
         Assert-Capsule
         if (-not (Test-Path -LiteralPath $codePython -PathType Leaf)) {
-            $null = Run-Text 'py' @('-3.13','-I','-m','venv',(Join-Path $codeRoot '.venv'))
+            $null = Run-Text $controlPython @('-I','-m','venv',(Join-Path $codeRoot '.venv'))
             $null = Run-Text $codePython @('-I','-m','pip','--isolated','install','--index-url','https://pypi.org/simple','-r',(Join-Path $codeRoot 'requirements-forward-operations.txt'))
         }
         $null = Run-Text $codePython @('-I','-m','pip','--isolated','check')
@@ -344,18 +399,25 @@ try {
 } catch {
     if ($pollEnableAttemptedByThisRun -and -not $pollEnableCommitted -and -not $rollbackAttempted) { Undo-PollEnable }
     $code = if ($_.Exception.Message -cin $publicCodes) { $_.Exception.Message } else { 'DAILY_OWNER_REVIEW_REQUIRED_NO_RETRY' }
+    if ($code -cin $publicCodes -and $publicBlockers.Count -eq 0) { $publicBlockers = @($code) }
+    $beforeOps = $phase -in @('INPUT','NORMAL_WINDOW_CHECK','REVIEWED_TOOLS_CHECKOUT',
+        'TOOLS_ROOT_QUERY','TOOLS_ROOT_COMPARE','TOOLS_CLEAN_QUERY',
+        'OWNER_PATH_CONTEXT','PINNED_PYTHON_BOOTSTRAP_CHECK','PRIVATE_OPS_READ_ONLY_CHECK')
+    $exceptionClass = if ($_.Exception -is [InvalidOperationException]) {'CONTROLLED_REJECTION'} elseif ($_.Exception -is [Management.Automation.CommandNotFoundException]) {'NATIVE_TOOL_UNAVAILABLE'} else {'UNCLASSIFIED_FAILURE'}
     $fix = switch -Regex ($code) {
         '^NORMAL_NON_ADMIN' { 'Close the elevated shell. Open NORMAL PowerShell; do not change permissions.'; break }
         'CLOCK|WINDOWS_TIME' { 'Keep capture off. Inspect/resync Windows Time as owner, then require the unchanged fresh NTP gate. No blind poll retry.'; break }
         'DOWNLOAD|OWNER_CLOSE' { 'Download the official prior-session CSV on this session morning; supply its ACTUAL completion timestamp. Never relabel an evening download.'; break }
         'DISK|PERMISSIONS' { 'Keep capture off. Review storage/permissions privately; this tool does not repair ACLs or delete data.'; break }
+        '^TOOLS_|^PUBLIC_NATIVE_TOOL|^CHILD_BLOCKED' { 'Keep tasks disabled or inspect rollback status. Review this stage and native-tool code; use the effect fields, not an assumption about writes. Do not reset markers or change pins.'; break }
+        '^PINNED_PYTHON|^BOOTSTRAP_PYTHON' { 'Keep tasks disabled. Supply the reviewed existing local Python executable with -BootstrapPython; it must prove exactly 3.13.9. No launcher/install or pin relaxation.'; break }
         'DEADLINE|CATCHUP' { 'Keep future polling disabled. Preserve any partial evidence; no catch-up or same-slot retry.'; break }
         default { 'Keep tasks disabled or check rollback status. Inspect this stage and redacted operations reports; do not reset a marker, recipe or journal.' }
     }
     if ($rollback -eq 'FUTURE_POLL_DISABLE_UNCONFIRMED_OWNER_CHECK_REQUIRED') {
         $fix = 'Task state is UNKNOWN: inspect actual polling state as owner. Do not assume disabled, retry Start, remove markers or catch up.'
     }
-    @{status='BLOCKED';code=$code;blockers=$publicBlockers;stage=$phase;owner_step=$fix;rollback=$rollback;raw_error_printed=$false;catchup_allowed=$false;same_slot_retry_allowed=$false;approval_authority=$false} | ConvertTo-Json -Compress
+    @{status='BLOCKED';code=$code;blockers=$publicBlockers;stage=$phase;exception_category=$exceptionClass;native_exit_code=$lastNativeExit;operational_state_effect=$(if ($beforeOps) {'NOT_REACHED'} else {'NOT_ESTABLISHED'});start_attempt_marker_effect=$(if ($beforeOps) {'NOT_REACHED'} else {'NOT_ESTABLISHED'});owner_step=$fix;rollback=$rollback;raw_error_printed=$false;catchup_allowed=$false;same_slot_retry_allowed=$false;approval_authority=$false} | ConvertTo-Json -Compress
     exit 2
 } finally {
     # Pipeline cancellation bypasses catch. This also covers cooperative Ctrl+C;
