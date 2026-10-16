@@ -27,6 +27,7 @@ htmlcov/
 
 # Generated exports
 *.csv
+!PROJECT_STATUS_LEDGER_2026-10-16.csv
 *.xlsx
 
 # Drive archival credentials and local archive exports (never upload to GitHub)

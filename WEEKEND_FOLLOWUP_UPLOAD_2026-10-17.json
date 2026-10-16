@@ -1,0 +1,24 @@
+{
+  "version": "weekend-followup-upload-v1",
+  "base": "a6e5be8484565be0f3d1669d6c3e004f692478e8",
+  "files": {
+    ".gitignore": "76bd4c77f9c0e1dcebf5cda3f86fa564cde7f050a40365180b00ef27436667fe",
+    "forward_saved_audit_status.py": "cbb342c24d5009a88f82255d1779fd54bf9dd1d1b0dc767ff8238ac5eb5d035d",
+    "tests/test_forward_saved_audit_status.py": "13f691d246c0c655d49852fcdf04b85662bc92fc4883f9d66667ee987aa722a3",
+    "PROJECT_STATUS_LEDGER_2026-10-16.csv": "55574664f56ce09741a3dc8545fc5b1049d07c9f15dc3e3882ac26576ee6b8f3",
+    "FRIDAY_OWNER_STATUS_2026-10-16.md": "98a68e5c1ccd08a1c4810a46537e766cbb9806fe6a1bbfbc0527b91a6baec545",
+    "OPERATIONS_EVIDENCE_2026-10-16.json": "5167540ea502329adae564405711af3b4343597e9788bb6ea1facf613fd1edd5",
+    "WEEKEND_OWNER_PLAN_2026-10-16.md": "2f86dfbabe1669eb5782c3e7f8c3d979f13cf44f441682d5b2a10d4ff064409f",
+    "FORWARD_OBSERVER_RUNBOOK_2026-10-16.md": "fb1ae85cbea54ecdd2227c6dbfb082f38e3d661853ed5e5948ab7d94304f583f",
+    "WEEKEND_COMMISSIONING_STATUS_2026-10-17.md": "65d9a36ea770683322c60dcb83543bf1ab87719de1cc4e6566a9551052f5f56c",
+    "weekend_followup_upload_check.py": "31e5d6e373e89d6c7f94c31b7cd52da7709b10f708f00f7fd65f5994f4ec2394",
+    "tests/test_weekend_followup_upload_check.py": "ca605eadb2eb842f6f842af9594d540272282169b84c0a0a6d47b8b8dc60e257",
+    "WEEKEND_FOLLOWUP_UPLOAD_2026-10-17.md": "bb4434f4855c1edf28e61577e1710ad505207225bd51c1450354e4912a430f72",
+    "WEEKEND_FOLLOWUP_UPLOAD_2026-10-17.json": null
+  },
+  "prerequisites": {
+    "forward_live_status.py": "eb53fd0f8774490becd82bb2bd278e84661c75e2cd134a30f44487d776320af2",
+    "forward_daily_contract.py": "9f72b8e0431fc1d484d0bbdfb4bfe0a8a30a5f64fc17ca4ae6b60b47cafa4a0c",
+    "forward_daily_owner.ps1": "4ee910bc266fe87b7dd768f4037c4a126896ff1f3d3b5ea7fdab0214b51ce8db"
+  }
+}
