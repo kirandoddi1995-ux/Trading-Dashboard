@@ -1,0 +1,32 @@
+{
+  "version": "forward-observer-upload-v2",
+  "base": "0b0aad4efa102643cc5dc4073dc7fc915281c1bf",
+  "files": {
+    "owner_capability_inventory.py": "7ddefca97ad506c58ff71799bd788ab5824a3158d63f95a8c0469cdef3ca5c7b",
+    "tests/test_owner_capability_inventory.py": "9e23b07b62bcba40a94a3e8de6b7fbacb6b36993fa62ace5a33a348423cfefb9",
+    "tests/test_project_status_ledger.py": "39ba660a175577b17ca840cadf68dde1bebd11bcebb2274746ab315be0d43748",
+    "PROJECT_STATUS_LEDGER_2026-10-16.csv": "6219e19737f4b21f09095630952d052d2c1aa841ea192efbc7ad110a17f8c2ae",
+    "FRIDAY_OWNER_STATUS_2026-10-16.md": "cbd4e30ca8e5ec3cc4bd52d0f5b6eb42f7ffc8668ad7f14be028c965b70c1acd",
+    "forward_live_status.py": "eb53fd0f8774490becd82bb2bd278e84661c75e2cd134a30f44487d776320af2",
+    "forward_observer_tools.ps1": "2067b209e18ed9afe025fe7b2712a10174f0b80927c0ea0df4fa1750cb117cb1",
+    "forward_operations_runner.py": "b1fae31218d82504f61d3c2af8d42bf561ff17c86724eb236a10acdadc2b36a0",
+    "operations_evidence_matrix.py": "822d897c452319cffe0a4a7317ca06c2ed98be060a9c939ed0fbe967c6147386",
+    "tests/test_forward_live_status.py": "f11b4387b7372ecd8b943c3972d8b91d7e02df43d1f27be6e1a61d1f4b847e5c",
+    "tests/test_forward_operations_runner.py": "6c987f4df7caabea64ccc959070856c961a19d5918adbc7a6a111244f2c818a2",
+    "tests/test_operations_evidence_matrix.py": "9af27cdc64d41be25176a3414918a12283a8e9bbbdb62ace451dac2af23a7da7",
+    "FORWARD_OBSERVER_RUNBOOK_2026-10-16.md": "13098133417e22f5e5d90ff4bbead31106c9d21f5f40f4cf45fc1885873890b5",
+    "OPERATIONS_EVIDENCE_2026-10-16.json": "692a4a6e8836deab75cff6365699a800d9772e7a88b1d825219ac69e5fca3dec",
+    "forward_observer_upload_check.py": "183f7215dd66c05c72d0af03f7319ea766ce53ce35664688af906e184e535cf0",
+    "tests/test_forward_observer_upload_check.py": "e56576f6adf3dc01fc8e925624e26745b2af1b65c622b5c1ae63e9b2a5355475",
+    "FORWARD_OBSERVER_UPLOAD_2026-10-16.md": "837e59f0251c9739c9cbd0311367e509ddd79f39216a547c36ba9d5aae9dbd31",
+    "forward_guided_owner.ps1": "ed2dfde42fca19b7d9e883f632b457db85540bb57469795f4a9fbddd861adb01",
+    "tests/test_forward_guided_owner.py": "9499d1928a3552bbaf2b759f2231950da70a83fdbe12d1ac0e6cf05e97df88e9",
+    "FRIDAY_COMPLETION_WITNESS_2026-10-16.json": "c17af647a0a7cea93ec3ea769db42d1d629e790336e1de9d9b6230db6bb1af67",
+    "WEEKEND_OWNER_PLAN_2026-10-16.md": "91d932bf425d2f21a14aded95dae9e73e2fd07ca674c30d630ac2c42648af6e4",
+    "FORWARD_OBSERVER_UPLOAD_2026-10-16.json": null
+  },
+  "prerequisites": {
+    "forward_daily_contract.py": "9f72b8e0431fc1d484d0bbdfb4bfe0a8a30a5f64fc17ca4ae6b60b47cafa4a0c",
+    "forward_daily_owner.ps1": "4ee910bc266fe87b7dd768f4037c4a126896ff1f3d3b5ea7fdab0214b51ce8db"
+  }
+}
