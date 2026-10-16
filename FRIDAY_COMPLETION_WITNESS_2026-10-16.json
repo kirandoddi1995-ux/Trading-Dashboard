@@ -1,0 +1,30 @@
+{
+  "version": "owner-reported-session-completion-v1",
+  "session_date": "2026-10-16",
+  "provenance": "OWNER_REPORTED_NOT_BUILDER_PRIVATE_STATE_VERIFICATION",
+  "manual_read_only_audit": {
+    "status": "VERSIONED_COVERAGE_COMPLETE",
+    "raw_polls": 75,
+    "recorded_decisions": 75,
+    "missing_decisions": 0,
+    "slot_status": "ALL_75_OBSERVED_DECISION",
+    "first_slot_ist": "09:20",
+    "last_slot_ist": "15:30",
+    "operational_cause_per_slot": "NOT_ESTABLISHED",
+    "generation_sha256": "17f7fbd62eafd8770ef2370becc5936a8fef16e4d6d71bee03f66d0ac08aabe9",
+    "capture_writes": 0,
+    "full_session_cohort_eligible": false,
+    "training_eligible": false,
+    "remote_custody_verified": false
+  },
+  "task_query_at_ist": "2026-10-16T18:03:00+05:30",
+  "task_query_time_precision": "OWNER_REPORTED_MINUTE",
+  "dated_poll": {"state": "Ready", "last_run_ist": "15:30:31", "result": 0, "missed": 0, "next_run": null},
+  "dated_audit": {"state": "Ready", "last_run_ist": "15:40:00", "result": 0, "missed": 0, "next_run": null},
+  "scheduled_audit_report_content_independently_inspected": false,
+  "production_blocked_poll_alert_seen": false,
+  "builder_capture_reads": 0,
+  "builder_task_queries": 0,
+  "custody_commissioned": false,
+  "approval_authority": false
+}

@@ -1,0 +1,1147 @@
+{
+  "version": "operations-concept-test-evidence-v2",
+  "date": "2026-10-16",
+  "scope": "SYNTHETIC_COMPONENT_TESTS_AND_SEPARATE_OWNER_REPORTED_COMPLETION",
+  "owner_completion_witness": "FRIDAY_COMPLETION_WITNESS_2026-10-16.json",
+  "owner_session_status": "75_OF_75_OBSERVED_OWNER_REPORTED_NOT_BUILDER_PRIVATE_VERIFICATION",
+  "generation_sha256": "17f7fbd62eafd8770ef2370becc5936a8fef16e4d6d71bee03f66d0ac08aabe9",
+  "full_session_cohort_eligible": false,
+  "training_eligible": false,
+  "remote_custody_verified": false,
+  "scheduled_audit_owner_report": "15:40:00_RESULT_0_MISSED_0",
+  "production_failure_alert_delivery_proven": false,
+  "focused": {
+    "windows": {
+      "passed": 173,
+      "skipped": 1,
+      "failed": 0
+    },
+    "linux": {
+      "passed": 126,
+      "skipped": 48,
+      "failed": 0
+    },
+    "skip_scope": "Windows symlink privilege; Linux WindowsPowerShell5.1 unavailable; no permission changes"
+  },
+  "selected_components": {
+    "unique_selectors": 34,
+    "selected_test_files": 22,
+    "windows": {
+      "passed": 156,
+      "skipped": 0,
+      "failed": 0
+    },
+    "linux": {
+      "passed": 134,
+      "skipped": 22,
+      "failed": 0
+    },
+    "concept_counts_can_overlap": true,
+    "linux_skip_scope": "WindowsPowerShell5.1 unavailable plus native Windows bootstrap-only cases"
+  },
+  "python": "3.13.9",
+  "windows_powershells": "5.1 and 7.6.5",
+  "linux_powershell": "7.6.5; 5.1 unavailable",
+  "same_isolated_public_source_fixture": true,
+  "selected_test_source_hash_differences": [],
+  "unfinished_working_library_variants_excluded": true,
+  "linux_network": "disabled",
+  "lint_and_strict_typing": "PASSED_BOTH_OS_12_PYTHON_FILES",
+  "hosted_ci": "NOT_RUN_FOR_REFRESHED_PACKAGE",
+  "exact_public_base_staged_acceptance": "NOT_EXECUTED_BASE_OBJECT_UNAVAILABLE_OWNER_GATE_REQUIRED",
+  "builder_capture_reads": 0,
+  "builder_live_task_queries": 0,
+  "builder_real_alert_calls": 0,
+  "builder_native_power_calls": 0,
+  "builder_hosted_changes": 0,
+  "concepts": {
+    "NSE transport and daily preparation automation": {
+      "what_this_tests": "Single synthetic transport request; guided child order and stop on failure. Browser download remains manual.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_nse_close_transport_check.py::test_success_is_transport_only_and_single_request",
+      "supporting_selectors": [
+        "tests/test_forward_guided_owner.py::test_real_chain_exact_order_once",
+        "tests/test_forward_guided_owner.py::test_prepare_failure_never_reaches_start"
+      ],
+      "windows": {
+        "selector": "tests/test_nse_close_transport_check.py::test_success_is_transport_only_and_single_request",
+        "passed": 11,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [
+          "tests/test_forward_guided_owner.py::test_real_chain_exact_order_once",
+          "tests/test_forward_guided_owner.py::test_prepare_failure_never_reaches_start"
+        ],
+        "what_this_tests": "Single synthetic transport request; guided child order and stop on failure. Browser download remains manual.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_nse_close_transport_check.py::test_success_is_transport_only_and_single_request",
+        "passed": 6,
+        "failed": 0,
+        "skipped": 5,
+        "supporting_selectors": [
+          "tests/test_forward_guided_owner.py::test_real_chain_exact_order_once",
+          "tests/test_forward_guided_owner.py::test_prepare_failure_never_reaches_start"
+        ],
+        "what_this_tests": "Single synthetic transport request; guided child order and stop on failure. Browser download remains manual.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Standing role-based agent team": {
+      "what_this_tests": "Runtime agent role is report-only; not a deployed standing team.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_programme_agent_team.py::test_runtime_agents_report_only",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_programme_agent_team.py::test_runtime_agents_report_only",
+        "passed": 6,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Runtime agent role is report-only; not a deployed standing team.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_programme_agent_team.py::test_runtime_agents_report_only",
+        "passed": 6,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Runtime agent role is report-only; not a deployed standing team.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Full Supabase database restore drill": {
+      "what_this_tests": "No automated full-project restore evidence; real owner drill required.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": null,
+      "supporting_selectors": [],
+      "windows": {
+        "selector": null,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "No automated full-project restore evidence; real owner drill required.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "OWNER_OR_NATIVE_EVIDENCE_REQUIRED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": null,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "No automated full-project restore evidence; real owner drill required.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "OWNER_OR_NATIVE_EVIDENCE_REQUIRED",
+        "commissioning_verified": false
+      }
+    },
+    "Upstox Analytics authorization and licence": {
+      "what_this_tests": "No credential/provider/licence evidence inspected.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": null,
+      "supporting_selectors": [],
+      "windows": {
+        "selector": null,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "No credential/provider/licence evidence inspected.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "OWNER_OR_NATIVE_EVIDENCE_REQUIRED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": null,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "No credential/provider/licence evidence inspected.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "OWNER_OR_NATIVE_EVIDENCE_REQUIRED",
+        "commissioning_verified": false
+      }
+    },
+    "Runtime database credential rotation": {
+      "what_this_tests": "No hosted credential rotation tested or performed.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": null,
+      "supporting_selectors": [],
+      "windows": {
+        "selector": null,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "No hosted credential rotation tested or performed.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "OWNER_OR_NATIVE_EVIDENCE_REQUIRED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": null,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "No hosted credential rotation tested or performed.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "OWNER_OR_NATIVE_EVIDENCE_REQUIRED",
+        "commissioning_verified": false
+      }
+    },
+    "Setup and tools checkout": {
+      "what_this_tests": "Synthetic partial registration states and disabled-role reporting; not native owner-task creation.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_forward_daily_owner.py::test_disabled_setup_partial_registration_proofs",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_forward_daily_owner.py::test_disabled_setup_partial_registration_proofs",
+        "passed": 16,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic partial registration states and disabled-role reporting; not native owner-task creation.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_forward_daily_owner.py::test_disabled_setup_partial_registration_proofs",
+        "passed": 8,
+        "failed": 0,
+        "skipped": 8,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic partial registration states and disabled-role reporting; not native owner-task creation.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Dated poll task": {
+      "what_this_tests": "Generated date-specific disabled task plan; null/unset next-run metadata stays nonfatal and unknown.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_forward_ops_plan.py::test_disabled_date_pinned_and_versioned_audit",
+      "supporting_selectors": [
+        "tests/test_forward_operations_runner.py::test_task_summary_empty_next_trigger_is_not_blocked"
+      ],
+      "windows": {
+        "selector": "tests/test_forward_ops_plan.py::test_disabled_date_pinned_and_versioned_audit",
+        "passed": 11,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [
+          "tests/test_forward_operations_runner.py::test_task_summary_empty_next_trigger_is_not_blocked"
+        ],
+        "what_this_tests": "Generated date-specific disabled task plan; null/unset next-run metadata stays nonfatal and unknown.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_forward_ops_plan.py::test_disabled_date_pinned_and_versioned_audit",
+        "passed": 6,
+        "failed": 0,
+        "skipped": 5,
+        "supporting_selectors": [
+          "tests/test_forward_operations_runner.py::test_task_summary_empty_next_trigger_is_not_blocked"
+        ],
+        "what_this_tests": "Generated date-specific disabled task plan; null/unset next-run metadata stays nonfatal and unknown.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Dated audit task": {
+      "what_this_tests": "Generated action targets versioned audit at dated trigger, initially disabled; not actual firing.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_forward_ops_plan.py::test_disabled_date_pinned_and_versioned_audit",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_forward_ops_plan.py::test_disabled_date_pinned_and_versioned_audit",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Generated action targets versioned audit at dated trigger, initially disabled; not actual firing.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_forward_ops_plan.py::test_disabled_date_pinned_and_versioned_audit",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Generated action targets versioned audit at dated trigger, initially disabled; not actual firing.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Fresh official owner-close file": {
+      "what_this_tests": "Synthetic owner-file recipe accepted by poll/audit validators; not independent CSV provenance.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_nse_owner_close.py::test_manual_recipe_poll_and_audit_acceptance",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_nse_owner_close.py::test_manual_recipe_poll_and_audit_acceptance",
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic owner-file recipe accepted by poll/audit validators; not independent CSV provenance.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_nse_owner_close.py::test_manual_recipe_poll_and_audit_acceptance",
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic owner-file recipe accepted by poll/audit validators; not independent CSV provenance.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Prepare and policy freeze": {
+      "what_this_tests": "Real pure Prepare date gates plus no-overwrite/preopen/clock-failure freeze behavior using synthetic inputs.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_forward_daily_contract.py::test_prepare_rejects_previous_evening_and_future_downloads",
+      "supporting_selectors": [
+        "tests/test_forward_daily_contract.py::test_prepare_preopen_deadline_is_exclusive",
+        "tests/test_forward_versioned_capture.py::test_prepare_no_overwrite_or_after_open",
+        "tests/test_forward_versioned_capture.py::test_clock_failure_does_not_freeze"
+      ],
+      "windows": {
+        "selector": "tests/test_forward_daily_contract.py::test_prepare_rejects_previous_evening_and_future_downloads",
+        "passed": 9,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [
+          "tests/test_forward_daily_contract.py::test_prepare_preopen_deadline_is_exclusive",
+          "tests/test_forward_versioned_capture.py::test_prepare_no_overwrite_or_after_open",
+          "tests/test_forward_versioned_capture.py::test_clock_failure_does_not_freeze"
+        ],
+        "what_this_tests": "Real pure Prepare date gates plus no-overwrite/preopen/clock-failure freeze behavior using synthetic inputs.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_forward_daily_contract.py::test_prepare_rejects_previous_evening_and_future_downloads",
+        "passed": 9,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [
+          "tests/test_forward_daily_contract.py::test_prepare_preopen_deadline_is_exclusive",
+          "tests/test_forward_versioned_capture.py::test_prepare_no_overwrite_or_after_open",
+          "tests/test_forward_versioned_capture.py::test_clock_failure_does_not_freeze"
+        ],
+        "what_this_tests": "Real pure Prepare date gates plus no-overwrite/preopen/clock-failure freeze behavior using synthetic inputs.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Supervised Start admission": {
+      "what_this_tests": "Actual coordinator stage code with synthetic callbacks enforces two verified polls and audit-first/poll-last enable order.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_forward_daily_owner.py::test_start_two_verified_polls_audit_first_poll_last",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_forward_daily_owner.py::test_start_two_verified_polls_audit_first_poll_last",
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Actual coordinator stage code with synthetic callbacks enforces two verified polls and audit-first/poll-last enable order.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_forward_daily_owner.py::test_start_two_verified_polls_audit_first_poll_last",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 1,
+        "supporting_selectors": [],
+        "what_this_tests": "Actual coordinator stage code with synthetic callbacks enforces two verified polls and audit-first/poll-last enable order.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Automatic recurrence": {
+      "what_this_tests": "Generated recurrence/date boundaries plus mocked coordinator admission and repeat-Start prevention; not native scheduler execution.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_forward_ops_plan.py::test_disabled_date_pinned_and_versioned_audit",
+      "supporting_selectors": [
+        "tests/test_forward_daily_owner.py::test_start_two_verified_polls_audit_first_poll_last",
+        "tests/test_forward_daily_owner.py::test_second_start_cannot_repeat_slot_or_replace_claim"
+      ],
+      "windows": {
+        "selector": "tests/test_forward_ops_plan.py::test_disabled_date_pinned_and_versioned_audit",
+        "passed": 5,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [
+          "tests/test_forward_daily_owner.py::test_start_two_verified_polls_audit_first_poll_last",
+          "tests/test_forward_daily_owner.py::test_second_start_cannot_repeat_slot_or_replace_claim"
+        ],
+        "what_this_tests": "Generated recurrence/date boundaries plus mocked coordinator admission and repeat-Start prevention; not native scheduler execution.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_forward_ops_plan.py::test_disabled_date_pinned_and_versioned_audit",
+        "passed": 3,
+        "failed": 0,
+        "skipped": 2,
+        "supporting_selectors": [
+          "tests/test_forward_daily_owner.py::test_start_two_verified_polls_audit_first_poll_last",
+          "tests/test_forward_daily_owner.py::test_second_start_cannot_repeat_slot_or_replace_claim"
+        ],
+        "what_this_tests": "Generated recurrence/date boundaries plus mocked coordinator admission and repeat-Start prevention; not native scheduler execution.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Version-aware capture and revisions": {
+      "what_this_tests": "Changed provider close affects new observation without rewriting first observation.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_forward_versioned_producer.py::test_provider_close_revision_does_not_stop_next_observation_or_rewrite_first",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_forward_versioned_producer.py::test_provider_close_revision_does_not_stop_next_observation_or_rewrite_first",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Changed provider close affects new observation without rewriting first observation.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_forward_versioned_producer.py::test_provider_close_revision_does_not_stop_next_observation_or_rewrite_first",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Changed provider close affects new observation without rewriting first observation.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Local journal and capture receipts": {
+      "what_this_tests": "Real unchanged job integrates two synthetic polls into separate versioned receipt namespace.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_forward_versioned_capture.py::test_unchanged_job_integrates_two_polls_and_separate_receipts",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_forward_versioned_capture.py::test_unchanged_job_integrates_two_polls_and_separate_receipts",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Real unchanged job integrates two synthetic polls into separate versioned receipt namespace.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_forward_versioned_capture.py::test_unchanged_job_integrates_two_polls_and_separate_receipts",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Real unchanged job integrates two synthetic polls into separate versioned receipt namespace.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Drive publish and remote readback": {
+      "what_this_tests": "Synthetic remote byte/manifest mismatch never acknowledged; not current Drive availability.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_forward_versioned_producer.py::test_remote_readback_mismatch_never_acknowledged",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_forward_versioned_producer.py::test_remote_readback_mismatch_never_acknowledged",
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic remote byte/manifest mismatch never acknowledged; not current Drive availability.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_forward_versioned_producer.py::test_remote_readback_mismatch_never_acknowledged",
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic remote byte/manifest mismatch never acknowledged; not current Drive availability.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Independent encrypted custody and restore": {
+      "what_this_tests": "Authenticated synthetic replica restores; code refuses to call this independent custody.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_recovery_custody_rehearsal.py::test_both_restores_authenticated_but_not_independent_custody",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_recovery_custody_rehearsal.py::test_both_restores_authenticated_but_not_independent_custody",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Authenticated synthetic replica restores; code refuses to call this independent custody.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_recovery_custody_rehearsal.py::test_both_restores_authenticated_but_not_independent_custody",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Authenticated synthetic replica restores; code refuses to call this independent custody.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Daily local audit": {
+      "what_this_tests": "Synthetic slot coverage distinguishes absent observations from real decisions; not a dated owner journal audit.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_forward_session_ops.py::test_gap_counts_and_no_fabricated_decision",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_forward_session_ops.py::test_gap_counts_and_no_fabricated_decision",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic slot coverage distinguishes absent observations from real decisions; not a dated owner journal audit.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_forward_session_ops.py::test_gap_counts_and_no_fabricated_decision",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic slot coverage distinguishes absent observations from real decisions; not a dated owner journal audit.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Remote custody audit": {
+      "what_this_tests": "Complete synthetic local coverage does not grant custody or training eligibility.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_forward_session_ops.py::test_complete_does_not_claim_custody_or_training",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_forward_session_ops.py::test_complete_does_not_claim_custody_or_training",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Complete synthetic local coverage does not grant custody or training eligibility.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_forward_session_ops.py::test_complete_does_not_claim_custody_or_training",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Complete synthetic local coverage does not grant custody or training eligibility.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Local alert notification": {
+      "what_this_tests": "Synthetic reports append and category alerts deduplicate; notifier is fake, no desktop delivery.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_forward_session_ops.py::test_report_append_and_alert_once",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_forward_session_ops.py::test_report_append_and_alert_once",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic reports append and category alerts deduplicate; notifier is fake, no desktop delivery.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_forward_session_ops.py::test_report_append_and_alert_once",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic reports append and category alerts deduplicate; notifier is fake, no desktop delivery.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Independent alert delivery": {
+      "what_this_tests": "Transport acceptance is not owner acknowledgement or commissioning.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_storage_alert_delivery.py::test_acceptance_is_not_owner_receipt_or_commissioning",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_storage_alert_delivery.py::test_acceptance_is_not_owner_receipt_or_commissioning",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Transport acceptance is not owner acknowledgement or commissioning.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_storage_alert_delivery.py::test_acceptance_is_not_owner_receipt_or_commissioning",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Transport acceptance is not owner acknowledgement or commissioning.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Windows Time service": {
+      "what_this_tests": "Mocked stopped service does not falsely establish independent NTP failure; no service continuity proof.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_forward_session_ops.py::test_preflight_stopped_service_does_not_imply_ntp_failure",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_forward_session_ops.py::test_preflight_stopped_service_does_not_imply_ntp_failure",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Mocked stopped service does not falsely establish independent NTP failure; no service continuity proof.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_forward_session_ops.py::test_preflight_stopped_service_does_not_imply_ntp_failure",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Mocked stopped service does not falsely establish independent NTP failure; no service continuity proof.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Producer fresh clock gate": {
+      "what_this_tests": "Missing, malformed, stale and excessive-uncertainty clock samples fail closed; no live offset measured.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_equity_runtime_health.py::test_clock_missing_invalid_stale_and_uncertain_fail",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_equity_runtime_health.py::test_clock_missing_invalid_stale_and_uncertain_fail",
+        "passed": 9,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Missing, malformed, stale and excessive-uncertainty clock samples fail closed; no live offset measured.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_equity_runtime_health.py::test_clock_missing_invalid_stale_and_uncertain_fail",
+        "passed": 9,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Missing, malformed, stale and excessive-uncertainty clock samples fail closed; no live offset measured.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "14 October historical read-only audit": {
+      "what_this_tests": "CLI read-only mode neither saves reports nor alerts on synthetic state; does not examine14Oct data.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_forward_session_ops.py::test_read_only_audit_cli_never_saves_or_alerts",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_forward_session_ops.py::test_read_only_audit_cli_never_saves_or_alerts",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "CLI read-only mode neither saves reports nor alerts on synthetic state; does not examine14Oct data.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_forward_session_ops.py::test_read_only_audit_cli_never_saves_or_alerts",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "CLI read-only mode neither saves reports nor alerts on synthetic state; does not examine14Oct data.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Legacy audit result2 and shared-root writes": {
+      "what_this_tests": "No forensic result inspected; old exit code/shared-root attribution remains unknown.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": null,
+      "supporting_selectors": [],
+      "windows": {
+        "selector": null,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "No forensic result inspected; old exit code/shared-root attribution remains unknown.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "OWNER_OR_NATIVE_EVIDENCE_REQUIRED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": null,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "No forensic result inspected; old exit code/shared-root attribution remains unknown.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "OWNER_OR_NATIVE_EVIDENCE_REQUIRED",
+        "commissioning_verified": false
+      }
+    },
+    "OPTION_CAPTURE_ENABLED skipped schedules": {
+      "what_this_tests": "No exact workflow variable/run-history diagnosis performed.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": null,
+      "supporting_selectors": [],
+      "windows": {
+        "selector": null,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "No exact workflow variable/run-history diagnosis performed.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "OWNER_OR_NATIVE_EVIDENCE_REQUIRED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": null,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "No exact workflow variable/run-history diagnosis performed.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "OWNER_OR_NATIVE_EVIDENCE_REQUIRED",
+        "commissioning_verified": false
+      }
+    },
+    "Consistent-cut exports": {
+      "what_this_tests": "Fake database driver verifies query/transaction/cut contract; not a hosted export.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_storage_consistent_cut_export.py::test_exact_cut_reader_contract_and_native_query",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_storage_consistent_cut_export.py::test_exact_cut_reader_contract_and_native_query",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Fake database driver verifies query/transaction/cut contract; not a hosted export.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_storage_consistent_cut_export.py::test_exact_cut_reader_contract_and_native_query",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Fake database driver verifies query/transaction/cut contract; not a hosted export.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Writer guards and cold readers": {
+      "what_this_tests": "Synthetic authenticated cold rows returned by selected real reader methods; not every live factory wired.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_overnight_storage_cold_methods.py::test_actual_reader_exact_authenticated_rows",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_overnight_storage_cold_methods.py::test_actual_reader_exact_authenticated_rows",
+        "passed": 24,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic authenticated cold rows returned by selected real reader methods; not every live factory wired.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_overnight_storage_cold_methods.py::test_actual_reader_exact_authenticated_rows",
+        "passed": 24,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic authenticated cold rows returned by selected real reader methods; not every live factory wired.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Universe shadow deduplication": {
+      "what_this_tests": "Payload sharing preserves snapshot identities and exact originals; no hosted normalization.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_overnight_storage_universe.py::test_payload_shared_but_snapshot_identity_and_originals_preserved",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_overnight_storage_universe.py::test_payload_shared_but_snapshot_identity_and_originals_preserved",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Payload sharing preserves snapshot identities and exact originals; no hosted normalization.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_overnight_storage_universe.py::test_payload_shared_but_snapshot_identity_and_originals_preserved",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Payload sharing preserves snapshot identities and exact originals; no hosted normalization.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Bounded retention and deletion": {
+      "what_this_tests": "Each synthetic source round-trips exact bytes and retention gates; not real custody or deletion authority.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_overnight_storage_sources.py::test_each_source_exact_dedup_restore_retention",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_overnight_storage_sources.py::test_each_source_exact_dedup_restore_retention",
+        "passed": 45,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Each synthetic source round-trips exact bytes and retention gates; not real custody or deletion authority.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_overnight_storage_sources.py::test_each_source_exact_dedup_restore_retention",
+        "passed": 45,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Each synthetic source round-trips exact bytes and retention gates; not real custody or deletion authority.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Capacity guard across live writers": {
+      "what_this_tests": "Uncertain synthetic COMMIT requires reconciliation, not repeat; not global writer enforcement.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_storage_write_guard.py::test_uncertain_commit_must_reconcile_not_repeat",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_storage_write_guard.py::test_uncertain_commit_must_reconcile_not_repeat",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Uncertain synthetic COMMIT requires reconciliation, not repeat; not global writer enforcement.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_storage_write_guard.py::test_uncertain_commit_must_reconcile_not_repeat",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Uncertain synthetic COMMIT requires reconciliation, not repeat; not global writer enforcement.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Capacity alerts": {
+      "what_this_tests": "Synthetic trend warning is diagnostic, not write authorization or real alert delivery.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_storage_capacity_watch.py::test_warning_growth_is_diagnostic_not_write_authorisation",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_storage_capacity_watch.py::test_warning_growth_is_diagnostic_not_write_authorisation",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic trend warning is diagnostic, not write authorization or real alert delivery.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_storage_capacity_watch.py::test_warning_growth_is_diagnostic_not_write_authorisation",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic trend warning is diagnostic, not write authorization or real alert delivery.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "ML backtesting and Evidence Assistant": {
+      "what_this_tests": "Synthetic source references cannot become measured reports; no real learned edge or LLM commission.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_research_assistant.py::test_synthetic_references_are_not_measured_reports",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_research_assistant.py::test_synthetic_references_are_not_measured_reports",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic source references cannot become measured reports; no real learned edge or LLM commission.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_research_assistant.py::test_synthetic_references_are_not_measured_reports",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Synthetic source references cannot become measured reports; no real learned edge or LLM commission.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Licensed frozen paper-first study": {
+      "what_this_tests": "Too little/single-class/missing-feature synthetic data fails before fitting; no real labels or licence approval.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_model_training_pipeline.py::test_too_few_single_class_or_missing_features_fail_before_fitting",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_model_training_pipeline.py::test_too_few_single_class_or_missing_features_fail_before_fitting",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Too little/single-class/missing-feature synthetic data fails before fitting; no real labels or licence approval.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_model_training_pipeline.py::test_too_few_single_class_or_missing_features_fail_before_fitting",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Too little/single-class/missing-feature synthetic data fails before fitting; no real labels or licence approval.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      }
+    },
+    "Pinned Python and PowerShell toolchain": {
+      "what_this_tests": "Actual explicit test interpreter bootstrap path checked without py fallback; not all future machines.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": "tests/test_forward_daily_owner.py::test_bootstrap_real_explicit_pinned_python_without_launcher",
+      "supporting_selectors": [],
+      "windows": {
+        "selector": "tests/test_forward_daily_owner.py::test_bootstrap_real_explicit_pinned_python_without_launcher",
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "Actual explicit test interpreter bootstrap path checked without py fallback; not all future machines.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "COMPONENT_CASES_PASSED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": "tests/test_forward_daily_owner.py::test_bootstrap_real_explicit_pinned_python_without_launcher",
+        "passed": 0,
+        "failed": 0,
+        "skipped": 2,
+        "supporting_selectors": [],
+        "what_this_tests": "Actual explicit test interpreter bootstrap path checked without py fallback; not all future machines.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "SKIPPED_ONLY",
+        "commissioning_verified": false
+      }
+    },
+    "Encrypted-disk 7-Zip tool": {
+      "what_this_tests": "No 7-Zip installation, native encryption or independent-disk restore proved.",
+      "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+      "primary_selector": null,
+      "supporting_selectors": [],
+      "windows": {
+        "selector": null,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "No 7-Zip installation, native encryption or independent-disk restore proved.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "OWNER_OR_NATIVE_EVIDENCE_REQUIRED",
+        "commissioning_verified": false
+      },
+      "linux": {
+        "selector": null,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "supporting_selectors": [],
+        "what_this_tests": "No 7-Zip installation, native encryption or independent-disk restore proved.",
+        "does_not_prove": "Live commissioning, custody, restore, licence or training approval; see scope limits.",
+        "selectors_not_found_in_report": [],
+        "status": "OWNER_OR_NATIVE_EVIDENCE_REQUIRED",
+        "commissioning_verified": false
+      }
+    }
+  },
+  "final_source_setup_order": "CheckSetup -> Setup -> CheckTasks; capsule creation must precede CheckTasks",
+  "source_test_revision": "FINAL_CORRECTED_FRESH_SETUP_ORDER_AND_DATED_REPORTS"
+}
