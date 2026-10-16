@@ -1,5 +1,12 @@
 # Observe without controlling capture
 
+CURRENT OWNER UPDATE: PR37 merged; Friday tasks disabled;19/21Oct Setup complete,
+both roles disabled. Synthetic popup and awake request/release drills passed on
+the owner PC. Production failure delivery remains unproven. Do not repeat those
+completed steps below. Current plan: WEEKEND_COMMISSIONING_STATUS_2026-10-17.md.
+Saved audit reports can now be inspected separately with forward_saved_audit_status.py
+(preview then --confirm-read-only); this does not prove their task origin.
+
 ## Friday complete: preserve it; do not run capture again
 
 Owner-reported16Oct evidence: Start completed; supervised remote receipts1/74 then

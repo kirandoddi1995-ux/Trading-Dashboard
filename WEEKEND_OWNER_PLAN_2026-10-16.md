@@ -1,5 +1,13 @@
 # Friday complete; weekend order and Monday routine
 
+CURRENT UPDATE: PR37 merged green (owner report), Friday tasks disabled and
+verified, Setup19/21Oct completed with both roles disabled. Those steps below
+are historical and MUST NOT be repeated. Synthetic AlertDrill and AwakeDrill
+passed; real failure routing is still unproven. Tools7-Zip26.04/PG17.11 installed.
+WEEKEND_COMMISSIONING_STATUS_2026-10-17.md supersedes the pending-action list here.
+The original22-file manifest remains an immutable historical upload contract;
+do not rerun it against newer main or re-upload the old package.
+
 ## What Friday established
 
 OWNER-REPORTED, not a builder read of private evidence: manual read-only Audit

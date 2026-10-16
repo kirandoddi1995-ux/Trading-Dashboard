@@ -1,5 +1,15 @@
 # Friday: complete owner-reported75-slot capture; preserve evidence
 
+## Superseding weekend update
+
+PR37 is owner-reported merged green as a6e5be8484565be0f3d1669d6c3e004f692478e8.
+Friday tasks are now Disabled and verified. Setup19/21Oct completed, both roles
+Disabled; do not repeat Setup. AlertDrill and AwakeDrill passed on the owner PC,
+not the production blocked-poll route. 7-Zip26.04 and PostgreSQL17.11 clients are
+installed. The chronology below is historical. Current actions and unresolved
+items: WEEKEND_COMMISSIONING_STATUS_2026-10-17.md. Monday uses manual Prepare->Start;
+optional guided commissioning belongs to a different date, never both routes.
+
 ## Ready / not verified / first action
 
 OWNER-REPORTED at about03:52 IST: PR36 merged green as
