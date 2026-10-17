@@ -1,0 +1,43 @@
+{
+  "version": "commissioning-next-upload-v1",
+  "base": "9be13929644dab3a091210df13743ddfbb38db32",
+  "files": {
+    "archive_maintenance.py": "7715add8c1c9893a875dc54db75110aa3be5d17f9b6f6ae6aec20bbce6baf46f",
+    ".github/workflows/drive-archive.yml": "5cc2b4dfc8751315e406285d26b7c2a65281102dad30a7042d66c727c6a2c138",
+    "tests/test_drive_archive.py": "dcaeb0056b5b34dc81a235779f260e4e13feb3fc82cfdd0b8b4e56a2d1ae20d2",
+    "tests/test_archive_maintenance_sql.py": "1ebdde71e127e865b045e4fb4d088eb097c821548748a785f2d0a12783073095",
+    "tests/test_archive_storage_relief.py": "5728339976de8131701b2b4ae432c61c298f2e32ab1106e7984056889e754d2b",
+    "tests/test_archive_commissioning_hold.py": "8ea61e76bd842279790dd8dcb0db10d20f8c7ffbeffa4e2fc7e3f46cf5be13c7",
+    "quote_faithful_futures_replay.py": "0d461eec560f4b05215b0db2fdb345cbf14bac82cb66b99c9e25b1ff839108e6",
+    "tests/test_quote_faithful_futures_replay.py": "577c47d1808bb7ae86cf7ff79acc258e048b0f65883e93900144a931346aad3c",
+    "FUTURES_REPLAY_FOUNDATION_2026-10-17.md": "d734978e85ca606863c7a1dd9cc4bb6d4466b6ec6fb68ceb8a680ced48d221e5",
+    "preserved_drill_first_run.ps1": "c7648f3d60ce512b6bed3e919bad5005abb7f64a94e98462ce7556815ba25362",
+    "tests/test_preserved_drill_first_run.py": "55799a670bf7a4a7d1af0ce9411e05b1c34c62bec2504ec03458c34c194eb2cd",
+    "sql/archive_hold_reconciliation_read_only.sql": "2db1e791e308642700888f1f224669bb924b0464db442d27950e31e6fb3f2311",
+    "COMMISSIONING_NEXT_2026-10-17.md": "b0ae9f3040de87f5797f9d52b89c43eb57ad7ba8c143af2eb4cfd4b58d74f62e",
+    "commissioning_next_upload_check.py": "c9e2891dd5c62b5a28fdebaaed0f8b341ee8604cfdc0751438f195220785e067",
+    "tests/test_commissioning_next_upload_check.py": "0e9bfece13c8d83bfa6b672e2ad30ae0e41b2ab3371e621e8e12cf1fa8a49689",
+    "COMMISSIONING_NEXT_UPLOAD_2026-10-17.json": null
+  },
+  "modified_base_files": {
+    "archive_maintenance.py": "04aa20f18b055e328db486a0ebede0fa68ff885e5d8a3a15379b734fea5aab15",
+    ".github/workflows/drive-archive.yml": "c3dae6de15d2debcf269f3bf462046623beb51b6047419a63c6afdae5b4f988d",
+    "tests/test_drive_archive.py": "6db9282228b62902cd4b64cb3fcf66356d0c45591241a9310d2a70aa1324beef",
+    "tests/test_archive_maintenance_sql.py": "f15784af5e85477a10b313bca66ecd9ee8f14ef62372e07de6c619c75705fdf1",
+    "tests/test_archive_storage_relief.py": "2f3556819b2e4cff27fdf37f057cd00e7e3411f8958adf5dac3769d863b827e2"
+  },
+  "prerequisites": {
+    "programme_next_upload_check.py": "c975be41f99994b2159e1e19b699fb1b71e6699e186bb6bb19e711adfcd01a81",
+    "drive_archive.py": "47bae109d49a43408fbe2cd3176a974d49e997442ddf1f1f9adcb8161caea38f",
+    "requirements-archive.txt": "9c21fb56692035e7ce6bce156a589eff9e7135fe27884d7513356da62f564af4",
+    "constraints.txt": "433d34cc1146a838c792b8b417acefed300895a3543d62a295cb00c2791a7ba3",
+    "isolated_alert_task_drill.ps1": "d37bbf5d6fb9e5f650adbe35d7b8cff4811da9a29126268e3f8bcd89f7dd3191",
+    "isolated_alert_drill.py": "fbc263471ae04fa3a38c5d2ee91add58f2d9020f0268ac6bbebb1e26ff2e25b4",
+    "preserved_drill_audit.ps1": "5a64a23d700c9d228592ed7bb3f459a7943a9a7a8ad03cb77baa012a46309ae6",
+    "preserved_drill_audit.py": "546c7e2936ba22278f84410b998f59add20ed72fc706dbdd10ebbf0fee5347f6",
+    "forward_session_ops.py": "e2acaed4856bf215e64507dcd1ea45bef538de4fde9a7e18f96438b6b478490c",
+    "forward_ops_host.py": "41e17a6d94ba90c19607a14d35949a555356df732f033d9e0c70996300e34885",
+    "automated_development_checks.py": "54d4530d75bf61fc4e7c9a01e797a4734bd6db5a9cd740ab0b314078200d2cd7",
+    "research_integrity.py": "37a2c4b372bee7f989ab196efe7020d5c39585486d9ec8e3c35709e7dbead689"
+  }
+}

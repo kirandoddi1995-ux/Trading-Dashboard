@@ -1,4 +1,4 @@
-"""Separate, bounded archive job. Preview is read-only; deletion is double-gated.
+"""Separate bounded archive job. Deletion is held pending custody commissioning.
 
 Only explicit source tables are allowlisted. No source locks during network I/O.
 """
@@ -17,6 +17,15 @@ from drive_archive import ArchiveError, DriveArchive, RELATIONS, SPECS, credenti
 ROLE = 'quant_archive_worker'
 UTC = dt.timezone.utc
 HOT_RETENTION_DAYS = 14  # Eligibility below additionally protects live dependencies.
+
+
+def require_commissioned_delete() -> None:
+    """No env/CLI boolean can establish independent custody or matching restore.
+
+    A future reviewed implementation must validate real generation-bound evidence.
+    Historical algorithm tests replace this denial only within disposable fixtures.
+    """
+    raise ArchiveError('AUTHENTICATED_CUSTODY_AND_RESTORE_NOT_COMMISSIONED')
 
 
 def batch_size_for(table, requested=None):
@@ -191,10 +200,13 @@ class ArchiveRepository:
             return [row[0] for row in rows]
 
     def acknowledge(self, manifest, texts, cutoff, delete):
-        """Verified manifest + exact-row deletion commit together. Crash => retry.
+        """Verification records are atomic; deletion commissioning is held.
 
         A completed manifest is never reused to authorize unrelated source data.
+        Unknown outcomes require read-only reconciliation, never automatic retry.
         """
+        if delete:
+            require_commissioned_delete()
         table = manifest['source_table']
         condition = predicate(table)
         with self.connection() as conn:
@@ -251,6 +263,8 @@ class ArchiveRepository:
 
 
 def run_batch(repo, drive, table, cutoff, limit=1000, delete=False):
+    if delete:
+        require_commissioned_delete()
     texts = repo.select(table, cutoff, limit)
     if not texts:
         return {'selected': 0, 'verified': 0, 'deleted': 0, 'retained': 0}
@@ -286,6 +300,8 @@ def main(argv=None):
         deleting = args.mode == 'delete'
         if deleting and os.environ.get('ARCHIVE_DELETE_ENABLED') != 'true':
             raise ArchiveError('DELETION_NOT_ENABLED')
+        if deleting:
+            require_commissioned_delete()
         cutoff = cutoff_for(args.table, dt.datetime.now(UTC).date(), args.nav_cutoff)
         repo = ArchiveRepository(os.environ.get('ARCHIVE_DATABASE_URL'))
         repo.check()

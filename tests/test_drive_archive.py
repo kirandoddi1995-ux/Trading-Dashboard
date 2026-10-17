@@ -19,6 +19,15 @@ from drive_archive import (
 )
 
 
+@pytest.fixture(autouse=True)
+def legacy_algorithm_only(monkeypatch):
+    """Exercise historical row/Drive algorithms, NOT production commissioning.
+
+    Separate test_archive_commissioning_hold.py tests the unmodified denial.
+    """
+    monkeypatch.setattr(maintenance, 'require_commissioned_delete', lambda: None)
+
+
 def nav(code='A', value=Decimal('1.123456789123456789')):
     return dict(scheme_code=code, nav_date='2026-08-01', isin_growth=None,
                 isin_reinvestment=None, scheme_name='Fund Ω', amc=None, category='Equity',
@@ -153,18 +162,15 @@ def workflow_script():
     return textwrap.dedent(text.split("python - <<'PY'\n", 1)[1].rsplit('          PY', 1)[0])
 
 
-def test_schedule_requests_deletion_for_all_six_tables(monkeypatch):
+def test_schedule_is_explicit_hold_and_never_calls_archive(monkeypatch):
     calls = []
     monkeypatch.setenv('EVENT_NAME', 'schedule')
     monkeypatch.setenv('ARCHIVE_DELETE_ENABLED', 'true')
     monkeypatch.setattr(maintenance, 'main', lambda args: calls.append(args) or 0)
-    exec(compile(workflow_script(), '<archive-workflow>', 'exec'), {})
-    assert calls == [['--mode', 'delete', '--table', 'mf_nav'],
-                     ['--mode', 'delete', '--table', 'market_quotes'],
-                     ['--mode', 'delete', '--table', 'universe_membership_versions'],
-                     ['--mode', 'delete', '--table', 'scanner_observations'],
-                     ['--mode', 'delete', '--table', 'equity_research.outcomes'],
-                     ['--mode', 'delete', '--table', 'universe_membership']]
+    with pytest.raises(SystemExit) as caught:
+        exec(compile(workflow_script(), '<archive-workflow>', 'exec'), {})
+    assert caught.value.code == 0
+    assert calls == []
 
 
 def test_manual_batch_input_is_passed_as_data(monkeypatch):
@@ -238,16 +244,16 @@ def test_research_preview_has_no_drive_export_or_deletion(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)['eligible'] == 7
 
 
-def test_schedule_fails_closed_instead_of_export_fallback(monkeypatch, capsys):
+def test_schedule_reports_hold_instead_of_silent_export_fallback(monkeypatch, capsys):
     monkeypatch.setenv('EVENT_NAME', 'schedule')
     monkeypatch.delenv('ARCHIVE_DELETE_ENABLED', raising=False)
     repo = Mock()
     monkeypatch.setattr(maintenance, 'ArchiveRepository', repo)
     with pytest.raises(SystemExit) as caught:
         exec(compile(workflow_script(), '<archive-workflow>', 'exec'), {})
-    assert caught.value.code == 1
+    assert caught.value.code == 0
     repo.assert_not_called()
-    assert 'DELETION_NOT_ENABLED' in capsys.readouterr().out
+    assert 'ARCHIVE_SCHEDULE_HELD_NO_IO' in capsys.readouterr().out
 
 
 def test_enabled_delete_verifies_before_acknowledging(monkeypatch):
