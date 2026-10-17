@@ -1,5 +1,15 @@
 # Isolated full failure-route drill — owner commissioning after merge
 
+## Native Setup rejection — preserve and reconcile first
+
+Owner reported PR39 merged d2da7bb90f092dc53be9e5b5bf5875799108d123.
+Drill389daf12415a482eb0231443ddfd8697 stopped during disabled registration on
+current_user. Do NOT repeat Setup, Run, generate a replacement ID or delete state.
+See ISOLATED_ALERT_IDENTITY_REPAIR_2026-10-17.md for the new read-only reconciliation.
+The old attempt is preserved; no new attempt is authorised by this repair upload.
+Canonical SID equality now replaces raw account-text equality; unresolved or
+different SIDs still block. This does not change capture task validation.
+
 Not yet native-proven. This procedure is for one supervised synthetic task,
 after exact-final-SHA CI is green and the owner merges this package. Do not run
 it from the working source folder or copy it into an installed capture capsule.

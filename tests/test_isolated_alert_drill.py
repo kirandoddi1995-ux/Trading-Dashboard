@@ -134,7 +134,7 @@ def test_real_controller_block_and_finally_with_fake_native_commands(shell: str,
     script = r'''
 $ErrorActionPreference='Stop';$errors=$null;$tokens=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'isolated_alert_task_drill.ps1'),[ref]$tokens,[ref]$errors)
-foreach ($name in @('Invoke-IsolatedDrillRun','Assert-DrillTask')) {
+foreach ($name in @('Invoke-IsolatedDrillRun','Assert-DrillTask','Test-DrillCurrentUser')) {
  $node=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true)
  Invoke-Expression $node.Extent.Text
 }
@@ -144,6 +144,7 @@ $cleanup=[scriptblock]::Create($cleanupText.Substring(1,$cleanupText.Length-2))
 $script:events=[Collections.Generic.List[string]]::new();$script:enabled=$false;$script:worker=$false
 $script:controller=('SCENARIO' -ceq 'already_attempted');$script:attemptedEnable=$false;$script:disabledVerified=$false
 $script:taskName='SYNTHETIC';$script:blocked=$false
+function Resolve-DrillAccountSid {param($Account) if ($Account -ceq 'SID') {return 'SYNTHETIC_SID'};throw 'UNRESOLVED'}
 function SyntheticPython {$global:LASTEXITCODE=0;return '{"status":"ISOLATED_DRILL_PREREQUISITES_CHECK_PASSED"}'}
 function Get-ScheduledTask {
  param($TaskPath,$TaskName,$ErrorAction)
@@ -194,10 +195,11 @@ def test_ps_preview_and_real_ast_binding_contract(shell: str) -> None:
 $errors=$null;$tokens=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'isolated_alert_task_drill.ps1'),[ref]$tokens,[ref]$errors)
 if ($errors.Count -ne 0) {throw 'PARSE_FAILED'}
-foreach ($name in @('Drill-Arguments','Assert-DrillTask','Assert-DrillWindow')) {
+foreach ($name in @('Drill-Arguments','Assert-DrillTask','Assert-DrillWindow','Test-DrillCurrentUser')) {
   $node=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true)
   Invoke-Expression $node.Extent.Text
 }
+function Resolve-DrillAccountSid {param($Account) if ($Account -ceq 'SID') {return 'SYNTHETIC_SID'};throw 'UNRESOLVED'}
 $argsText=Drill-Arguments 'C:\Reviewed Tools\isolated_alert_drill.py' ('a'*32)
 $task=[pscustomobject]@{Actions=@([pscustomobject]@{Execute='PYTHON';Arguments=$argsText;WorkingDirectory='DIR'});
  Triggers=@();Principal=[pscustomobject]@{RunLevel='Limited';LogonType='Interactive';UserId='SID'};

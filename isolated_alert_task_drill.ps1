@@ -32,6 +32,24 @@ function Assert-DrillTools([string]$Root) {
     if ($LASTEXITCODE -ne 0) {throw 'REVIEWED_TRACKED_DRILL_FILES_REQUIRED'}
 }
 
+function Resolve-DrillAccountSid([string]$Account) {
+    if ([string]::IsNullOrWhiteSpace($Account) -or $Account.Length -gt 512) {throw 'ACCOUNT_IDENTITY_UNRESOLVED'}
+    if ($Account -match '^S-') {
+        return ([Security.Principal.SecurityIdentifier]::new($Account)).Value
+    }
+    return ([Security.Principal.NTAccount]::new($Account)).Translate([Security.Principal.SecurityIdentifier]).Value
+}
+
+function Test-DrillCurrentUser([string]$Account,[string]$Sid) {
+    $script:identityProof='UNRESOLVED'
+    try {
+        $actual=Resolve-DrillAccountSid $Account
+        $expected=Resolve-DrillAccountSid $Sid
+        if ($actual -cne $expected) {$script:identityProof='SID_MISMATCH';return $false}
+        $script:identityProof='SID_EQUAL';return $true
+    } catch {return $false}
+}
+
 function Assert-DrillTask($Task,[string]$Exe,[string]$Arguments,[string]$Directory,[string]$Sid,[string]$User) {
     $actions=@($Task.Actions | Where-Object {$null -ne $_})
     $one=if ($actions.Count -eq 1) {$actions[0]} else {$null}
@@ -47,7 +65,7 @@ function Assert-DrillTask($Task,[string]$Exe,[string]$Arguments,[string]$Directo
         working_directory=([string]$one.WorkingDirectory -ceq $Directory)
         run_level=([string]$Task.Principal.RunLevel -ceq 'Limited')
         logon_type=([string]$Task.Principal.LogonType -ceq 'Interactive')
-        current_user=([string]$Task.Principal.UserId -in @($Sid,$User))
+        current_user=(Test-DrillCurrentUser ([string]$Task.Principal.UserId) $Sid)
         multiple_instances=([string]$Task.Settings.MultipleInstances -ceq 'IgnoreNew')
         execution_limit=($duration -eq [timespan]::FromMinutes(2))
         no_restart=(($restartCount -is [int32] -or $restartCount -is [uint32] -or $restartCount -is [int64]) -and $restartCount -eq 0)
@@ -100,7 +118,7 @@ if (-not $ConfirmRun -or $Action -ceq 'Preview') {
     @{status='PREVIEW';reads=0;writes=0;task_queries=0;task_mutations=0;capture_invocations=0}|ConvertTo-Json -Compress
     exit 0
 }
-$phase='PREREQUISITES';$attemptedEnable=$false;$disabledVerified=$false;$taskName=$null;$bindingFailures=@()
+$phase='PREREQUISITES';$attemptedEnable=$false;$disabledVerified=$false;$taskName=$null;$bindingFailures=@();$script:identityProof='NOT_CHECKED'
 try {
     if ($env:OS -cne 'Windows_NT') {throw 'WINDOWS_REQUIRED'}
     $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
@@ -166,7 +184,7 @@ try {
       'SYNTHETIC_COMPLETION_NOT_PROVEN','PERSONAL_SYNTHETIC_POPUP_ACK_REQUIRED','PERSONAL_SYNTHETIC_POPUP_CODE_REQUIRED','PERSONAL_SYNTHETIC_POPUP_CODE_MISMATCH','SYNTHETIC_ROUTE_REVIEW_REQUIRED','DRILL_ARGUMENT_INVALID')
     $reason=if ($_.Exception.Message -cin $publicReasons) {$_.Exception.Message} else {'UNCLASSIFIED_NATIVE_OR_IO_FAILURE'}
     @{status='BLOCKED';code='ISOLATED_TASK_DRILL_STOP_REVIEW_NO_RETRY';stage=$phase;raw_error_printed=$false;
-      reason=$reason;binding_failures=@($bindingFailures);task_enable_attempted=$attemptedEnable;task_disabled_verified=$disabledVerified;capture_invocations=0;approval_authority=$false}|ConvertTo-Json -Compress
+      reason=$reason;binding_failures=@($bindingFailures);identity_proof=$script:identityProof;task_enable_attempted=$attemptedEnable;task_disabled_verified=$disabledVerified;capture_invocations=0;approval_authority=$false}|ConvertTo-Json -Compress
     exit 2
 } finally {
     if ($attemptedEnable -and -not $disabledVerified) {
