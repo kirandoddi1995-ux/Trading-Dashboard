@@ -1,0 +1,31 @@
+{
+  "version": "programme-next-upload-v1",
+  "base": "597a19d404cd1dc6c2734e48833c80e729d05d50",
+  "files": {
+    "download_nifty_history.py": "1c8b1bd4e3026e9bb8c4c4c42b778c3efeb637d02a36f2a62a86468ec422278b",
+    "tests/test_download_nifty_history.py": "2f7a6370c741bf6cf677b36d77727f983e79701656f85f94449a95ae3c8b0616",
+    "isolated_alert_drill.py": "fbc263471ae04fa3a38c5d2ee91add58f2d9020f0268ac6bbebb1e26ff2e25b4",
+    "isolated_alert_task_drill.ps1": "086ee265a6d94023e9a1ddafd728dfdf005be3f035debf5c089a25383dc57503",
+    "tests/test_isolated_alert_drill.py": "380a4e32942ca4454f221eabdf83fe15b9ac8d261919f10839e18d28ae635fc7",
+    "research_session_inference.py": "7f3fabf2adc9978fd4721debeaf7d14e5c73adbcb4bcfb8e79d5f4c46d43209e",
+    "tests/test_research_session_inference.py": "f66f0094302e048a30a6f1fe8029fce5a4f9960abf2a6f41fe4c0964e105ead8",
+    "PROGRAMME_BUILD_AND_COMMISSION_2026-10-17.md": "e8a7e1eda712a9fdb16d52539ddbea133d73826891f442d96c7795ad322519bd",
+    "RESEARCH_METHODS_AND_DELIVERY_2026-10-17.md": "55f74d954d62c8bdd6770f483c6922aba67545aa70f78c4842bc29f3aa019805",
+    "ISOLATED_ALERT_DRILL_RUNBOOK_2026-10-17.md": "52417d49cc0625c9847c5edab36991b4812a151b73eb6b5477d297ca174df507",
+    "programme_next_upload_check.py": "c975be41f99994b2159e1e19b699fb1b71e6699e186bb6bb19e711adfcd01a81",
+    "tests/test_programme_next_upload_check.py": "d3ea6ce29c0734349006355dd82d5b95c162faddaf0bf70919d428c2a6e95255",
+    "PROGRAMME_NEXT_UPLOAD_2026-10-17.md": "8a34282ea1c3f5c1627fc8f2e10c64e1cd7b4faf3d8cdcf54c98f944e0b711e9",
+    "PROGRAMME_VERIFICATION_2026-10-17.json": "0b4d084b11390baae600d7e1aeea734e16f45262e4c1f8308858be3f14ea7cb1",
+    "PROGRAMME_NEXT_UPLOAD_2026-10-17.json": null
+  },
+  "prerequisites": {
+    "forward_session_ops.py": "e2acaed4856bf215e64507dcd1ea45bef538de4fde9a7e18f96438b6b478490c",
+    "forward_ops_host.py": "41e17a6d94ba90c19607a14d35949a555356df732f033d9e0c70996300e34885",
+    "automated_development_checks.py": "54d4530d75bf61fc4e7c9a01e797a4734bd6db5a9cd740ab0b314078200d2cd7",
+    "research_integrity.py": "37a2c4b372bee7f989ab196efe7020d5c39585486d9ec8e3c35709e7dbead689"
+  },
+  "modified_base_files": {
+    "download_nifty_history.py": "33ce8943b90c7a5aa460bb3561a650ec7820a63186bd4a258822cabdc877c4a0",
+    "tests/test_download_nifty_history.py": "208a248840c661b24f88b42e953f5b058eb01f49a5b178dbee6fcb6c1d806b55"
+  }
+}

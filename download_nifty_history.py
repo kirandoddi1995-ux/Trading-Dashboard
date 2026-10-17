@@ -214,8 +214,8 @@ def main(argv=None):
     parser.add_argument("mode", choices=["check", "download", "download-daily"])
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--date", type=date.fromisoformat)
-    parser.add_argument("--start", type=date.fromisoformat, default=date(2022, 1, 1))
-    parser.add_argument("--end", type=date.fromisoformat, default=date(2026, 9, 30))
+    parser.add_argument("--start", type=date.fromisoformat)
+    parser.add_argument("--end", type=date.fromisoformat)
     parser.add_argument("--reviewed-session-check", action="store_true")
     parser.add_argument("--licence-confirmed", action="store_true")
     args = parser.parse_args(argv)
@@ -226,6 +226,16 @@ def main(argv=None):
             raise HistoryError("DATA_MUST_BE_OUTSIDE_PROJECT")
         if not args.licence_confirmed:
             raise HistoryError("LICENCE_CONFIRMATION_REQUIRED")
+        # This CLI is development-only. No implicit bulk range, sealed-period
+        # credential request, or cached sealed prices before reviewed admission.
+        if args.mode == "check" and args.date and not date(2022, 1, 1) <= args.date <= date(2024, 12, 31):
+            raise HistoryError("DEVELOPMENT_SESSION_ONLY_SEALED_HISTORY_BLOCKED")
+        if args.mode in {"download", "download-daily"}:
+            if args.start is None or args.end is None:
+                raise HistoryError("EXPLICIT_DEVELOPMENT_RANGE_REQUIRED")
+            earliest = date(2000, 1, 1) if args.mode == "download-daily" else date(2022, 1, 1)
+            if not earliest <= args.start <= args.end <= date(2024, 12, 31):
+                raise HistoryError("DEVELOPMENT_RANGE_ONLY_SEALED_HISTORY_BLOCKED")
         today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
         if args.mode == "check" and (not args.date or args.date >= today):
             raise HistoryError("COMPLETED_SESSION_DATE_REQUIRED")
@@ -234,6 +244,8 @@ def main(argv=None):
             if not args.reviewed_session_check or receipt.get("status") != "PASS":
                 raise HistoryError("REVIEWED_SESSION_CHECK_REQUIRED")
             checked = date.fromisoformat(receipt["date"])
+            if not date(2022, 1, 1) <= checked <= date(2024, 12, 31):
+                raise HistoryError("DEVELOPMENT_SESSION_RECEIPT_REQUIRED")
             verified_rows, _ = acquire(None, root, checked, checked)
             if check_session(verified_rows, checked) != receipt:
                 raise HistoryError("SESSION_RECEIPT_INVALID")

@@ -10,12 +10,12 @@ import requests
 import download_nifty_history as history
 
 
-DAY = date(2026, 9, 30)
+DAY = date(2024, 9, 30)
 SECRET = "sensitive-test-token-never-print"
 
 
 def rows():
-    times = pd.date_range("2026-09-30 09:15", periods=75, freq="5min", tz="Asia/Kolkata")
+    times = pd.date_range("2024-09-30 09:15", periods=75, freq="5min", tz="Asia/Kolkata")
     return [[t.isoformat(), 25000, 25002, 24998, 25001, 0, 0] for t in times]
 
 
@@ -63,7 +63,7 @@ def test_documented_order_timezone_and_reverse_provider_order():
 def test_invalid_candles_rejected(issue):
     data = rows()
     if issue == "naive":
-        data[0][0] = "2026-09-30T09:15:00"
+        data[0][0] = "2024-09-30T09:15:00"
     elif issue in {"duplicate", "conflict"}:
         data.append(data[0].copy())
         if issue == "conflict":
@@ -73,7 +73,7 @@ def test_invalid_candles_rejected(issue):
     elif issue == "crossed":
         data[0][2] = 1
     elif issue == "out_of_range":
-        data[0][0] = "2026-09-29T09:15:00+05:30"
+        data[0][0] = "2024-09-29T09:15:00+05:30"
     elif issue == "string":
         data[0][1] = "25000"
     elif issue == "bool":
@@ -158,7 +158,38 @@ def test_csv_and_parquet_roundtrip_and_assumption_label():
 def test_bulk_gate_precedes_token_access(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(history.getpass, "getpass", lambda _: pytest.fail("Token prompt before gate"))
     assert history.main(["download", "--root", str(tmp_path), "--licence-confirmed"]) == 1
-    assert "REVIEWED_SESSION_CHECK_REQUIRED" in capsys.readouterr().out
+    assert "EXPLICIT_DEVELOPMENT_RANGE_REQUIRED" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('arguments', [
+    ['check', '--date', '2025-01-02'], ['check', '--date', '2026-09-30'],
+    ['download', '--start', '2024-01-01', '--end', '2025-01-02'],
+    ['download-daily', '--start', '2024-01-01', '--end', '2026-09-30'],
+    ['download'], ['download-daily'],
+])
+def test_sealed_or_implicit_ranges_precede_any_cache_auth_or_network(tmp_path, monkeypatch, capsys, arguments):
+    def forbidden(*args, **kwargs):
+        pytest.fail('A rejected history range attempted I/O/authentication')
+    monkeypatch.setattr(history.getpass, 'getpass', forbidden)
+    monkeypatch.setattr(history.requests, 'Session', forbidden)
+    monkeypatch.setattr(history, 'acquire', forbidden)
+    monkeypatch.setattr(history.Path, 'read_text', forbidden)
+    assert history.main(arguments + ['--root', str(tmp_path), '--licence-confirmed']) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output['code'] in {'DEVELOPMENT_SESSION_ONLY_SEALED_HISTORY_BLOCKED',
+        'DEVELOPMENT_RANGE_ONLY_SEALED_HISTORY_BLOCKED', 'EXPLICIT_DEVELOPMENT_RANGE_REQUIRED'}
+    assert not list(tmp_path.iterdir())
+
+
+def test_sealed_session_receipt_cannot_open_cached_prices(tmp_path, monkeypatch, capsys):
+    (tmp_path / 'session-check.json').write_text(json.dumps({'status': 'PASS', 'date': '2026-09-30'}))
+    def forbidden(*args, **kwargs):
+        pytest.fail('Sealed cached prices or credentials accessed')
+    monkeypatch.setattr(history, 'acquire', forbidden)
+    monkeypatch.setattr(history.getpass, 'getpass', forbidden)
+    assert history.main(['download', '--start', '2024-01-01', '--end', '2024-01-02',
+        '--root', str(tmp_path), '--licence-confirmed', '--reviewed-session-check']) == 1
+    assert json.loads(capsys.readouterr().out)['code'] == 'DEVELOPMENT_SESSION_RECEIPT_REQUIRED'
 
 
 def test_check_is_first_cli_run(tmp_path, monkeypatch, capsys):
