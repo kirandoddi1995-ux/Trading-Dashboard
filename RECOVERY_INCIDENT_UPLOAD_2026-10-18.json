@@ -1,0 +1,31 @@
+{
+  "version": "recovery-incident-upload-v1",
+  "base": "f2be345c34bb3c058273b142ccf3589cc3e80b7a",
+  "files": {
+    "archive_recovery_review.py": "17aaeb69b32d3513d9ecfcb70ef96ee16eb7b2b8ff1a345c0339a1e54bc16c8d",
+    "tests/test_archive_recovery_review.py": "d3c9e9ae0eb59d7bd016ce6ff24079cbd078287a097fbcac17f064de78350233",
+    "ARCHIVE_RECOVERY_FOUNDATION_2026-10-17.md": "1d131f1fca28f03d8847e9d1f9882a64126d70a2bab81f2ceed9b8dbbf4a9959",
+    "preserved_drill_history.ps1": "ae72733a781b8a2dfbfc7220b8321a5a3fff583105a4985c17f89e4c98700693",
+    "tests/test_preserved_drill_history.py": "8c4deb8ba638d36e68588064e89443ac6b0b7c83053a2a9f5d861d70ef632899",
+    "sql/archive_deleted_inventory_read_only.sql": "33e9d515b3f29e1f3e12e4d97c458eee94806c1080269f1f81b86a2a23071efe",
+    "tests/test_archive_deleted_inventory_sql.py": "3ebf09f0facdd3b86c2de45e76f75fbca06c1b5267b286cfa62c12ea1472335c",
+    "RECOVERY_INCIDENT_HANDOFF_2026-10-18.md": "52689244087c4b030bcf6361048d977f02ed3367a300dbadbdc5f849c8b0bc84",
+    "recovery_incident_upload_check.py": "b103e4fc169d444b0d82a7620da9a527c670192cddf23a111aa8c23c6b184727",
+    "tests/test_recovery_incident_upload_check.py": "c8f6410c1f02310525cf29d39246348e864b6299c36d5cdcad231745c1b9258f",
+    "RECOVERY_INCIDENT_UPLOAD_2026-10-18.json": null
+  },
+  "modified_base_files": {},
+  "prerequisites": {
+    "programme_next_upload_check.py": "c975be41f99994b2159e1e19b699fb1b71e6699e186bb6bb19e711adfcd01a81",
+    "drive_archive.py": "47bae109d49a43408fbe2cd3176a974d49e997442ddf1f1f9adcb8161caea38f",
+    "archive_maintenance.py": "7715add8c1c9893a875dc54db75110aa3be5d17f9b6f6ae6aec20bbce6baf46f",
+    "requirements-archive.txt": "9c21fb56692035e7ce6bce156a589eff9e7135fe27884d7513356da62f564af4",
+    "constraints.txt": "433d34cc1146a838c792b8b417acefed300895a3543d62a295cb00c2791a7ba3",
+    "isolated_alert_drill.py": "fbc263471ae04fa3a38c5d2ee91add58f2d9020f0268ac6bbebb1e26ff2e25b4",
+    "isolated_alert_task_drill.ps1": "d37bbf5d6fb9e5f650adbe35d7b8cff4811da9a29126268e3f8bcd89f7dd3191",
+    "preserved_drill_first_run.ps1": "c7648f3d60ce512b6bed3e919bad5005abb7f64a94e98462ce7556815ba25362",
+    "preserved_drill_outcome.ps1": "94846ad4507229ae5bda121c727dd3a059d14393a5355e0869d483c521a8a556"
+  },
+  "commissioned": false,
+  "verification": "REQUIRES_FINAL_REHEARSAL_AND_INDEPENDENT_REVIEW"
+}
