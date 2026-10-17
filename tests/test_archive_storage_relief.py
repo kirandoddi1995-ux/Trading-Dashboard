@@ -12,6 +12,14 @@ from test_archive_maintenance_sql import scanner, research_snapshot
 from test_drive_archive import MemoryDrive
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def legacy_algorithm_only(monkeypatch):
+    """Disposable SQL algorithm rehearsal only; does not commission deletion."""
+    monkeypatch.setattr('archive_maintenance.require_commissioned_delete', lambda: None)
+
+
 pg = sql_harness.pg
 pytestmark = pytest.mark.skipif(not os.environ.get('EQUITY_TEST_PGLITE_MODULE'),
                                 reason='Local SQL harness not configured')

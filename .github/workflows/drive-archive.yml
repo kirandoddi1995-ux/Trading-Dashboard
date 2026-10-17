@@ -1,13 +1,13 @@
-name: Verified Drive archive (7-day outcomes, 14-day other sources)
+name: Verified Drive archive (scheduled hold; manual preview or export)
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Preview, verify one archive batch, or verified deletion
+        description: Read-only preview or explicitly publish one verified batch (no deletion)
         type: choice
         default: preview
-        options: [preview, export, delete]
+        options: [preview, export]
       table:
         description: Approved source table
         type: choice
@@ -22,7 +22,7 @@ on:
         type: string
         default: ''
       max_batches:
-        description: Manual batch limit 1–200 (use 1 for the first deletion trial)
+        description: Manual batch bound 1–200 (export verifies at most one batch; deletion held)
         type: string
         default: '1'
   schedule:
@@ -36,10 +36,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  scheduled-hold:
+    if: github.event_name == 'schedule' && vars.ARCHIVE_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Report commissioning hold without credentials or source IO
+        run: >-
+          python -c "import json; print(json.dumps({'status':'ARCHIVE_SCHEDULE_HELD_NO_IO','custody_commissioned':False,'database_connections':0,'drive_requests':0,'source_deletes':0}))"
   archive:
-    # Manual preview/export works before enabling the schedule. Deletion has a
-    # separate switch, enforced inside Python as well as workflow configuration.
-    if: github.event_name == 'workflow_dispatch' || vars.ARCHIVE_ENABLED == 'true'
+    # Publication is a separate explicit owner operation, not scheduled custody.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -71,21 +77,16 @@ jobs:
         run: |
           python - <<'PY'
           import os
+          import json
+          if os.environ['EVENT_NAME'] != 'workflow_dispatch':
+              print(json.dumps({'status': 'ARCHIVE_SCHEDULE_HELD_NO_IO', 'database_connections': 0, 'source_deletes': 0}))
+              raise SystemExit(0)
           from archive_maintenance import main
-          if os.environ['EVENT_NAME'] == 'schedule':
-              # Fail closed in Python if the deletion switch is not enabled;
-              # never silently report a scheduled export as storage cleanup.
-              mode = 'delete'
-              for table in ('mf_nav', 'market_quotes', 'universe_membership_versions', 'scanner_observations', 'equity_research.outcomes', 'universe_membership'):
-                  result = main(['--mode', mode, '--table', table])
-                  if result:
-                      raise SystemExit(result)
-          else:
-              args = ['--mode', os.environ['REQUESTED_MODE'], '--table', os.environ['REQUESTED_TABLE']]
-              if os.environ.get('NAV_CUTOFF'):
-                  args += ['--nav-cutoff', os.environ['NAV_CUTOFF']]
-              if os.environ.get('REQUESTED_BATCH_SIZE', '').strip():
-                  args += ['--batch-size', os.environ['REQUESTED_BATCH_SIZE'].strip()]
-              args += ['--max-batches', os.environ.get('REQUESTED_MAX_BATCHES', '').strip() or '1']
-              raise SystemExit(main(args))
+          args = ['--mode', os.environ['REQUESTED_MODE'], '--table', os.environ['REQUESTED_TABLE']]
+          if os.environ.get('NAV_CUTOFF'):
+              args += ['--nav-cutoff', os.environ['NAV_CUTOFF']]
+          if os.environ.get('REQUESTED_BATCH_SIZE', '').strip():
+              args += ['--batch-size', os.environ['REQUESTED_BATCH_SIZE'].strip()]
+          args += ['--max-batches', os.environ.get('REQUESTED_MAX_BATCHES', '').strip() or '1']
+          raise SystemExit(main(args))
           PY
