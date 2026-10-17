@@ -1,0 +1,26 @@
+{
+  "version": "outcome-cohort-upload-v1",
+  "base": "0ffcb53f1b00f9db266b432d7194d8fc59c8ccf1",
+  "files": {
+    "preserved_drill_outcome.ps1": "94846ad4507229ae5bda121c727dd3a059d14393a5355e0869d483c521a8a556",
+    "tests/test_preserved_drill_outcome.py": "1d8e1bcf65d93ff22176c700393e3786aa10024c7ff0ea63380be588478db5dd",
+    "research_frozen_cohort.py": "6617166bd74398b3ef44fb83e014f4082943b197c78de1cf39c33e3eeafb0b35",
+    "tests/test_research_frozen_cohort.py": "03a368b7dfc1f515fcd53fdb1115ce973502d0aef65c521a023f665250cc1a2a",
+    "FROZEN_COHORT_FOUNDATION_2026-10-17.md": "2b20ca1ab26e50ddda222777b48bf9f2696f626818950536195dab7529838419",
+    "OUTCOME_AND_COHORT_HANDOFF_2026-10-17.md": "14ee5c2eda6d59c9f4bb70a3c2b1a7ea4f38a245f2fdcdcdc6a9fd3d7b7175af",
+    "outcome_cohort_upload_check.py": "0e05eab71576c957e8c94d278e565611dec747a40bacfb71e15a4e91ed9d395d",
+    "tests/test_outcome_cohort_upload_check.py": "c3d0328d5b0c99c423a3c30490d74066a758a83c6ded3af45f1c177ddfd813a7",
+    "OUTCOME_COHORT_UPLOAD_2026-10-17.json": null
+  },
+  "modified_base_files": {},
+  "prerequisites": {
+    "programme_next_upload_check.py": "c975be41f99994b2159e1e19b699fb1b71e6699e186bb6bb19e711adfcd01a81",
+    "isolated_alert_task_drill.ps1": "d37bbf5d6fb9e5f650adbe35d7b8cff4811da9a29126268e3f8bcd89f7dd3191",
+    "isolated_alert_drill.py": "fbc263471ae04fa3a38c5d2ee91add58f2d9020f0268ac6bbebb1e26ff2e25b4",
+    "research_dataset_boundary.py": "8b7721a0617e575c6bc3f2b4a7a290d9b40cb282f387a699b1588189c3f5c9c5",
+    "quote_faithful_futures_replay.py": "0d461eec560f4b05215b0db2fdb345cbf14bac82cb66b99c9e25b1ff839108e6",
+    "research_session_inference.py": "7f3fabf2adc9978fd4721debeaf7d14e5c73adbcb4bcfb8e79d5f4c46d43209e",
+    "sql/archive_hold_reconciliation_read_only.sql": "2db1e791e308642700888f1f224669bb924b0464db442d27950e31e6fb3f2311"
+  },
+  "commissioned": false
+}
