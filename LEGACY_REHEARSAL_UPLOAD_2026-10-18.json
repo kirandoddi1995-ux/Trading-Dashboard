@@ -1,0 +1,25 @@
+{
+  "version": "legacy-rehearsal-upload-v1",
+  "base": "a9bbcd4359a3f941fad24f7202aba155c1582eb2",
+  "files": {
+    "legacy_archive_rehearsal.py": "5a2ebdbd8415b95ee8fe7335804793ebdf36492797d31497d651f44e7166ebb0",
+    "tests/test_legacy_archive_rehearsal.py": "86346372adc698892b8e7c74b4da1c2fa10be80738aaa8c0de4947b850dc710d",
+    "LEGACY_REHEARSAL_HANDOFF_2026-10-18.md": "a3181acb4f2ae7b64e73b9131963ec2be57cd42bcd480c1a0c3753c62d417532",
+    "legacy_rehearsal_upload_check.py": "f9a4de6ec6ad7e9ef25c348fb59abb4b1cb3da3295212755d7153bf70abcabf8",
+    "tests/test_legacy_rehearsal_upload_check.py": "aef21d242ad8cf929791a9348b4ac68536ff0646d12a55301441cb8b32901e9d",
+    "LEGACY_REHEARSAL_UPLOAD_2026-10-18.json": null
+  },
+  "modified_base_files": {},
+  "prerequisites": {
+    "programme_next_upload_check.py": "c975be41f99994b2159e1e19b699fb1b71e6699e186bb6bb19e711adfcd01a81",
+    "archive_recovery_review.py": "17aaeb69b32d3513d9ecfcb70ef96ee16eb7b2b8ff1a345c0339a1e54bc16c8d",
+    "drive_archive.py": "47bae109d49a43408fbe2cd3176a974d49e997442ddf1f1f9adcb8161caea38f",
+    "catalog_receipts.py": "ff0608df2cd2efa8feec3749a045c173fc3a6ec40fe46b8d86f439f57cb0e5d2",
+    "cold_catalog.py": "4753cab1ca61ff551284c75b1a8004be41b5712ab8534bde9981b1272de7ff8a",
+    "evidence_ledger.py": "6c410ee20bf664552e0ac42845fb995d652dc1e6488ddf8bfe66dadabd930669",
+    "requirements-archive.txt": "9c21fb56692035e7ce6bce156a589eff9e7135fe27884d7513356da62f564af4",
+    "constraints.txt": "433d34cc1146a838c792b8b417acefed300895a3543d62a295cb00c2791a7ba3"
+  },
+  "commissioned": false,
+  "verification": "REQUIRES_INDEPENDENT_REVIEW_AND_FINAL_SHA_CI"
+}
