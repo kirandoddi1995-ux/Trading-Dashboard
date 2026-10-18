@@ -1,0 +1,24 @@
+{
+  "version": "archive-verify-upload-v1",
+  "base": "6b873593f3cdc8dec8cbf265c6e15dfc21a7e0e9",
+  "files": {
+    "archive_catalog_verify.py": "f63723a83bb9ee4a39790ad064da1caf91dbb291081bf7592c0e90eea323ef61",
+    "tests/test_archive_catalog_verify.py": "fb1164527f415cc0210bb01b114cdd947b24c9f8664c1f5d1873dd0f6484e1e0",
+    "ARCHIVE_RECOVERY_PLAN_2026-10-18.md": "655963b66388f5151b4c9efe1b39c593934561f8ef9705713f14fdc311802522",
+    "archive_verify_upload_check.py": "a6c358c0ef7cf388d52c64413841c12cfa3576c066c1ff9b9d8b0eb72ea277ef",
+    "tests/test_archive_verify_upload_check.py": "d669d106201ba5437a21657287cce8ff56773ef2bbdc017a5a28c30d0ddf57f5",
+    "ARCHIVE_VERIFY_UPLOAD_2026-10-18.json": null
+  },
+  "modified_base_files": {},
+  "prerequisites": {
+    "programme_next_upload_check.py": "c975be41f99994b2159e1e19b699fb1b71e6699e186bb6bb19e711adfcd01a81",
+    "archive_catalog_reconcile.py": "f00ffd005e68d076ff9667a516c3d77c8d686fbd6152b88291dc455fb46b7eb8",
+    "archive_recovery_review.py": "17aaeb69b32d3513d9ecfcb70ef96ee16eb7b2b8ff1a345c0339a1e54bc16c8d",
+    "archive_maintenance.py": "7715add8c1c9893a875dc54db75110aa3be5d17f9b6f6ae6aec20bbce6baf46f",
+    "drive_archive.py": "47bae109d49a43408fbe2cd3176a974d49e997442ddf1f1f9adcb8161caea38f",
+    "requirements-archive.txt": "9c21fb56692035e7ce6bce156a589eff9e7135fe27884d7513356da62f564af4",
+    "constraints.txt": "433d34cc1146a838c792b8b417acefed300895a3543d62a295cb00c2791a7ba3"
+  },
+  "commissioned": false,
+  "verification": "REQUIRES_OWNER_EXACT_BASE_INDEX_CHECK_AND_FINAL_SHA_CI"
+}
