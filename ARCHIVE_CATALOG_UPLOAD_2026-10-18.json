@@ -1,0 +1,21 @@
+{
+  "version": "archive-catalog-upload-v1",
+  "base": "7021fdd3a5009341969c05ab5fe340e00eea825a",
+  "files": {
+    "archive_catalog_reconcile.py": "f00ffd005e68d076ff9667a516c3d77c8d686fbd6152b88291dc455fb46b7eb8",
+    "tests/test_archive_catalog_reconcile.py": "1eed2d2232193c5054adef519e56f5e21cea14eefdcdee5bf00075a79385b9d0",
+    "sql/archive_catalog_all_read_only.sql": "8d72c00f711b5ba1705e0c8e93de88471bbbd34ffe2f8052bfa3a90e5a42387a",
+    "tests/test_archive_catalog_all_sql.py": "a0a22dc7552c36876ab21726611b6488f1e1f7ac09ebdd0cbe879ba6acfc67c7",
+    "archive_catalog_upload_check.py": "c265b41bc752bbc12ee86e17817d4446e57e36896e824f1e14a3f9832e3dcd41",
+    "tests/test_archive_catalog_upload_check.py": "e1303824053c1cfb5d8a88a3f9ed14426b6b2938ec4dbe9a35820b287aa0e521",
+    "ARCHIVE_CATALOG_HANDOFF_2026-10-18.md": "6cc637d13a2e08d3c5d242ee247821d6d792fa1c37ed89c5d4c17d3e3257fd31",
+    "ARCHIVE_CATALOG_UPLOAD_2026-10-18.json": null
+  },
+  "modified_base_files": {},
+  "prerequisites": {
+    "programme_next_upload_check.py": "c975be41f99994b2159e1e19b699fb1b71e6699e186bb6bb19e711adfcd01a81",
+    "archive_recovery_review.py": "17aaeb69b32d3513d9ecfcb70ef96ee16eb7b2b8ff1a345c0339a1e54bc16c8d"
+  },
+  "commissioned": false,
+  "verification": "REQUIRES_OWNER_EXACT_BASE_REHEARSAL_AND_FINAL_SHA_CI"
+}
