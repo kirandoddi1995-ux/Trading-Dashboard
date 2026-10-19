@@ -1,0 +1,19 @@
+{
+  "version": "archive-preservation-upload-v1",
+  "base": "1175e5515de0f9b7f6a682cdddda9f2f4a94eb4a",
+  "files": {
+    "archive_preservation_inventory.py": "4b274005403c9bfc3a4df1cb06a9f0e19970134a6b199cac4204414af3949bdf",
+    "archive_preservation_witness.py": "fd90d64a1a8dbff203c02f0b94782f822fd302996719412eebb5cacf8a63e74c",
+    "tests/test_archive_preservation_inventory.py": "f365b60c96129a5af180c12a33044f77fd5433a28b78be61a765a5ad1536ab2d",
+    "tests/test_archive_preservation_witness.py": "832147769c8690bb735451b96176a73ce9daf4ac24528c56f6d6c2b89bff1706",
+    "archive_preservation_upload_check.py": "873d739c90613dc72f499c78e3fae114c00a0c720fa68a9567d7cc374560fcf2",
+    "tests/test_archive_preservation_upload_check.py": "97ae26cc0a7304681c7155dcf1370b1e0cda6d8f377c62800492631bfe3510d2",
+    "ARCHIVE_PRESERVATION_RUNBOOK.md": "3a6cd44bd829fbd0bf9e24b31775724985dd89d8665e8071072f729f070c2323",
+    "ARCHIVE_PRESERVATION_UPLOAD.json": null
+  },
+  "prerequisites": {
+    "programme_next_upload_check.py": "c975be41f99994b2159e1e19b699fb1b71e6699e186bb6bb19e711adfcd01a81",
+    "archive_catalog_verify.py": "f63723a83bb9ee4a39790ad064da1caf91dbb291081bf7592c0e90eea323ef61",
+    "constraints.txt": "433d34cc1146a838c792b8b417acefed300895a3543d62a295cb00c2791a7ba3"
+  }
+}
