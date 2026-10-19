@@ -1,0 +1,50 @@
+name: Disposable outcomes resource conformance
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_disposable:
+        description: Run fixed synthetic cases only; no private archives or commissioning
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+jobs:
+  synthetic:
+    if: ${{ inputs.confirm_disposable && vars.OUTCOMES_RESOURCE_CONFORMANCE_ENABLED == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      ARROW_NUM_THREADS: '1'
+      NUMEXPR_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13.9'
+      - name: Create disposable venv (also exercises Windows redirector)
+        run: python -m venv .conformance-venv
+      - name: Linux synthetic cases
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          .conformance-venv/bin/python -m pip install -r requirements-archive.txt
+          .conformance-venv/bin/python -B outcomes_resource_conformance.py --execute --confirm-synthetic
+      - name: Windows synthetic cases
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\.conformance-venv\Scripts\python.exe -m pip install -r requirements-archive.txt
+          if ($LASTEXITCODE -ne 0) { throw 'SYNTHETIC_INSTALL_FAILED' }
+          & .\.conformance-venv\Scripts\python.exe -B outcomes_resource_conformance.py --execute --confirm-synthetic
+          if ($LASTEXITCODE -ne 0) { throw 'SYNTHETIC_CASES_FAILED' }
