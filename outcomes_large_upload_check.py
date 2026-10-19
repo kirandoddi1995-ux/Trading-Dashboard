@@ -9,9 +9,13 @@ from typing import Any
 from programme_next_upload_check import git, safe_read, sha, unique
 
 BASE = '07313864a9033a8b97f041012c77f55d54cb127a'
+REVIEWED_PR_HEAD = '088fab77bc2bc847d2d798eb2cbe429a9a81c997'
 MANIFEST = 'OUTCOMES_LARGE_UPLOAD_2026-10-19.json'
-MODIFIED: dict[str, str] = {}
+MODIFIED: dict[str, str] = {
+    'tests/test_workflow_runtimes.py': '68f23381098e65766064a9ab7e2d4b709568401e44ecadbcdbb420c82f2c3a47',
+}
 FILES = (
+    'tests/test_workflow_runtimes.py',
     'outcomes_large_profile.py',
     'outcomes_resource_conformance.py',
     'tests/test_outcomes_large_profile.py',
@@ -39,17 +43,23 @@ PREREQUISITES = {
 
 
 
-def check(root: Path, base: str) -> dict[str, Any]:
+def check(root: Path, base: str, update_pr49: bool = False) -> dict[str, Any]:
     failures: list[dict[str, Any]] = []
     try:
-        if base != BASE or git(root, 'rev-parse', 'HEAD').decode().strip() != BASE:
+        if base != BASE:
             raise ValueError('EXACT_BASE_REQUIRED')
+        expected_head = REVIEWED_PR_HEAD if update_pr49 else BASE
+        if git(root, 'rev-parse', 'HEAD').decode().strip() != expected_head:
+            raise ValueError('EXACT_REVIEWED_PR_HEAD_REQUIRED' if update_pr49 else 'EXACT_BASE_REQUIRED')
+        if update_pr49 and git(root, 'rev-parse', 'HEAD^').decode().strip() != BASE:
+            raise ValueError('REVIEWED_PR_PARENT_REQUIRED')
         if Path(git(root, 'rev-parse', '--show-toplevel').decode().strip()).resolve() != root.resolve():
             raise ValueError('CHECKOUT_ROOT_REQUIRED')
         raw = safe_read(root / MANIFEST)
         value = json.loads(raw, object_pairs_hook=unique)
         hashes = value['files']
-        if (value.get('version') != 'outcomes-large-upload-v1' or value.get('base') != BASE
+        if (value.get('version') != 'outcomes-large-upload-v2' or value.get('base') != BASE
+                or value.get('reviewed_pr_head') != REVIEWED_PR_HEAD
                 or set(hashes) != set(FILES) or hashes[MANIFEST] is not None
                 or value.get('modified_base_files') != MODIFIED or value.get('prerequisites') != PREREQUISITES):
             raise ValueError('MANIFEST_CONTRACT_INVALID')
@@ -83,6 +93,7 @@ def check(root: Path, base: str) -> dict[str, Any]:
             raise ValueError('MANIFEST_INDEX_WORKTREE_MISMATCH')
     except Exception as error:
         allowed = {'EXACT_BASE_REQUIRED', 'CHECKOUT_ROOT_REQUIRED', 'MANIFEST_CONTRACT_INVALID',
+                   'EXACT_REVIEWED_PR_HEAD_REQUIRED', 'REVIEWED_PR_PARENT_REQUIRED',
                    'EXACT_REVIEWED_PATHS_REQUIRED', 'REGULAR_STAGE_ZERO_FILES_REQUIRED',
                    'UNSTAGED_OR_UNTRACKED_FILES', 'MANIFEST_INDEX_WORKTREE_MISMATCH', 'DUPLICATE_MANIFEST_KEY',
                    'PACKAGE_LINK_REJECTED', 'GIT_READ_FAILED', 'BOUNDED_REGULAR_FILE_REQUIRED', 'PUBLIC_FILE_IDENTITY_CHANGED'}
@@ -95,7 +106,9 @@ def check(root: Path, base: str) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base', required=True)
-    result = check(Path.cwd(), parser.parse_args().base)
+    parser.add_argument('--update-pr49', action='store_true', help='Only the exact reviewed unmerged PR49 head; never arbitrary HEAD')
+    args = parser.parse_args()
+    result = check(Path.cwd(), args.base, args.update_pr49)
     print(json.dumps(result))
     return 2 if result['failures'] else 0
 
