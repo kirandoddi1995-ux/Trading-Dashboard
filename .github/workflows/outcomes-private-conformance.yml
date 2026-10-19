@@ -1,0 +1,31 @@
+name: Disposable outcomes private bridge conformance
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_disposable:
+        description: Synthetic inputs only; never private recovery files
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+jobs:
+  synthetic:
+    if: ${{ inputs.confirm_disposable && vars.OUTCOMES_PRIVATE_CONFORMANCE_ENABLED == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install only reviewed host signature dependency
+        run: python -m pip install cryptography==50.0.1
+      - name: Stage exact public context (no repository-wide Docker context)
+        run: python outcomes_private_container.py --mode stage --run-root "$RUNNER_TEMP/outcomes-build" --confirm-run
+      - name: Build pinned disposable decoder
+        run: docker build --platform linux/amd64 --iidfile "$RUNNER_TEMP/outcomes-image.id" "$RUNNER_TEMP/outcomes-build"
+      - name: Verify Linux containment and synthetic large outcomes
+        run: python outcomes_private_container.py --mode selftest --image-id "$(cat "$RUNNER_TEMP/outcomes-image.id")" --run-root "$RUNNER_TEMP/outcomes-proof" --confirm-run
