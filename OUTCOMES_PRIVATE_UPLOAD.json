@@ -1,0 +1,32 @@
+{
+  "version": "outcomes-private-upload-v1",
+  "base": "e2e1d0d797e453e2fd9d12fd0df7fb8bcb968b99",
+  "files": {
+    "outcomes_private_worker.py": "c40f12d445a63de0d05b20e696476950563d09347f507e61c7e8f98a6e0ee0f2",
+    "outcomes_private_container.py": "03098b9e0466fb5f38c247fcdf1a9c9b490b0b63c9c2e307f65c242a8371a110",
+    "tests/test_outcomes_private_worker.py": "2a8ec1b24237cde87f9390b7a391d4ac4192906d505542b8485b46d453c82998",
+    "tests/test_outcomes_private_container.py": "093f374f67821a3a96252625777ad1b14e3c7d7a37a5a8001e608946975b40be",
+    "docker/outcomes-private.Dockerfile": "e5fd02e2045971eb2a93b13a3b147eba8072953a46abde735ecf809d6aaf3f88",
+    "docker/outcomes-private.requirements.txt": "430df71779f7eecd816c5171d0d35d31133aaa21f017e364169a0e8a1ab1694b",
+    ".github/workflows/outcomes-private-conformance.yml": "3ff38058bcc633385a728571424c08b2cad3a3ac502c17190deb8f1fdf2b3f01",
+    "normal_user_test_run.py": "72a58c562beae96e2f770dff4589bd6ec2fd760fd0165e62ddd45502f3ef875d",
+    "tests/test_normal_user_test_run.py": "0b7788e44805c692cbe0d4d0c4b46276b0cf18aaf07ed1d84fbf64749e5233c3",
+    "PRESERVATION_COMMISSION_2026-10-20.md": "65ed67edab1b64951b711a4b06c671a9b77eddd1730c99daccbece9bbadbbc08",
+    "OUTCOMES_PRIVATE_RUNBOOK.md": "c0f9d2c48e89b176124fc9c9981dc208ac73205abe470505b20d30bf5d2de2af",
+    "outcomes_private_upload_check.py": "339ad4b1c4f9b3c3ac9432724d9ea88a819da7e870f2235668ea1b1ee173ac91",
+    "tests/test_outcomes_private_upload_check.py": "2f5a8379defc60cb2af616cdae956b593097ff37f1f1588714c23d2c72f74fc6",
+    "OUTCOMES_PRIVATE_UPLOAD.json": null
+  },
+  "prerequisites": {
+    "programme_next_upload_check.py": "c975be41f99994b2159e1e19b699fb1b71e6699e186bb6bb19e711adfcd01a81",
+    "constraints.txt": "433d34cc1146a838c792b8b417acefed300895a3543d62a295cb00c2791a7ba3",
+    "archive_preservation_inventory.py": "4b274005403c9bfc3a4df1cb06a9f0e19970134a6b199cac4204414af3949bdf",
+    "archive_preservation_witness.py": "fd90d64a1a8dbff203c02f0b94782f822fd302996719412eebb5cacf8a63e74c",
+    "archive_catalog_verify.py": "f63723a83bb9ee4a39790ad064da1caf91dbb291081bf7592c0e90eea323ef61",
+    "archive_catalog_reconcile.py": "f00ffd005e68d076ff9667a516c3d77c8d686fbd6152b88291dc455fb46b7eb8",
+    "archive_recovery_review.py": "17aaeb69b32d3513d9ecfcb70ef96ee16eb7b2b8ff1a345c0339a1e54bc16c8d",
+    "outcomes_footer_diagnostic.py": "3a1d87da023084a2f35269412645827774c943e21ae1dda188494db794cc565d",
+    "outcomes_large_profile.py": "d7fa2493d95941dacf3a88df4e3c0755b3a7842fa167d30584ca742255b0c61f",
+    "tests/sql-harness/package-lock.json": "f8a3f615f5815cef039b6f133914e724abe25117424c9a612b3c678454e1af4d"
+  }
+}
