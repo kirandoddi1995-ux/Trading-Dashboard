@@ -1,5 +1,6 @@
 """Keep reviewed CI images/actions separate from application runtime versions."""
 from pathlib import Path
+import hashlib
 import re
 
 import pytest
@@ -13,6 +14,32 @@ ACTION_VERSIONS = {
     'actions/setup-python': 'v6',
     'actions/upload-artifact': 'v6',
 }
+
+# Deliberate exception, not a general Windows/matrix/SHA-action allowance. Native
+# Job Object acceptance cannot run on Linux. Changing ANY workflow bytes requires
+# a fresh policy review, including its manual-only activation and no-secret scope.
+NATIVE_CONFORMANCE_PATH = ROOT / '.github/workflows/outcomes-resource-conformance.yml'
+NATIVE_CONFORMANCE_SHA256 = '3ed866c3dc84ee9025dcd22c3d5e32a583e60600defbc139fdb1286a1b3a9fe4'
+NATIVE_ACTIONS = {
+    'actions/checkout': 'fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09',
+    'actions/setup-python': 'ece7cb06caefa5fff74198d8649806c4678c61a1',
+}
+
+
+def reviewed_native_conformance(text):
+    """One content-pinned synthetic workflow; ordinary workflow policy is unchanged."""
+    normalized = text.replace('\r\n', '\n')
+    assert hashlib.sha256(normalized.encode('utf-8')).hexdigest() == NATIVE_CONFORMANCE_SHA256, 'Native workflow review pin differs'
+    assert re.findall(r'^\s*runs-on:\s*(.+?)\s*$', text, re.MULTILINE) == ['${{ matrix.os }}']
+    assert 'os: [ubuntu-24.04, windows-2022]' in text
+    assert dict(re.findall(r'uses:\s*(actions/[\w-]+)@(\S+)', text)) == NATIVE_ACTIONS
+    assert re.findall(r"python-version:\s*'([^']+)'", text) == ['3.13.9']
+    assert 'workflow_dispatch:' in text and 'default: false' in text
+    assert "inputs.confirm_disposable && vars.OUTCOMES_RESOURCE_CONFORMANCE_ENABLED == 'true'" in text
+    assert 'persist-credentials: false' in text and 'contents: read' in text
+    assert 'secrets.' not in text and 'schedule:' not in text
+    assert 'ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION' not in text
+    assert 'FORCE_JAVASCRIPT_ACTIONS_TO_NODE24' not in text
 
 
 def runtime_text(path, visiting=frozenset()):
@@ -35,6 +62,10 @@ def runtime_text(path, visiting=frozenset()):
 @pytest.mark.parametrize('path', WORKFLOWS, ids=lambda p: p.name)
 def test_workflows_use_reviewed_image_and_node24_actions(path):
     text = runtime_text(path)
+    if path.resolve() == NATIVE_CONFORMANCE_PATH.resolve():
+        assert not path.is_symlink(), 'Native workflow must be a regular reviewed file'
+        reviewed_native_conformance(text)
+        return
     runners = re.findall(r'^\s*runs-on:\s*(\S+)\s*$', text, re.MULTILINE)
     assert runners and all(r == 'ubuntu-24.04' for r in runners)
     for action, version in re.findall(r'uses:\s*(actions/[\w-]+)@(\S+)', text):
@@ -75,3 +106,42 @@ def test_bad_reusable_workflow_reference_blocks(tmp_path, problem):
     caller.write_text(f'jobs:\n  verify:\n    uses: {reference}\n')
     with pytest.raises(AssertionError):
         runtime_text(caller)
+
+
+@pytest.mark.parametrize('change', ['runner', 'images', 'action', 'python', 'gate', 'confirmation',
+    'schedule', 'secret', 'write_permission', 'reuse', 'runtime_override'])
+def test_native_exception_rejects_every_unreviewed_workflow_change(change):
+    text = NATIVE_CONFORMANCE_PATH.read_text(encoding='utf-8')
+    replacements = {
+        'runner': ('${{ matrix.os }}', 'windows-latest'),
+        'images': ('windows-2022', 'windows-latest'),
+        'action': (NATIVE_ACTIONS['actions/checkout'], 'v5'),
+        'python': ("python-version: '3.13.9'", "python-version: '3.15'"),
+        'gate': ("vars.OUTCOMES_RESOURCE_CONFORMANCE_ENABLED == 'true'", 'true'),
+        'confirmation': ('default: false', 'default: true'),
+        'write_permission': ('contents: read', 'contents: write'),
+    }
+    if change in replacements:
+        before, after = replacements[change]
+        assert before in text
+        text = text.replace(before, after)
+    else:
+        text += {'schedule': '\n  schedule: []\n', 'secret': '\n# secrets.TEST\n',
+            'reuse': '\n  unreviewed:\n    uses: ./.github/workflows/quality.yml\n',
+            'runtime_override': '\n# ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION\n'}[change]
+    with pytest.raises(AssertionError):
+        reviewed_native_conformance(text)
+
+
+def test_same_native_workflow_name_elsewhere_is_not_an_exception(monkeypatch):
+    text = NATIVE_CONFORMANCE_PATH.read_text(encoding='utf-8')
+    monkeypatch.setitem(test_workflows_use_reviewed_image_and_node24_actions.__globals__,
+        'runtime_text', lambda path: text)
+    with pytest.raises(AssertionError):
+        test_workflows_use_reviewed_image_and_node24_actions(ROOT / 'unreviewed' / NATIVE_CONFORMANCE_PATH.name)
+
+
+def test_native_content_pin_is_line_ending_neutral():
+    text = NATIVE_CONFORMANCE_PATH.read_text(encoding='utf-8')
+    reviewed_native_conformance(text)
+    reviewed_native_conformance(text.replace('\n', '\r\n'))

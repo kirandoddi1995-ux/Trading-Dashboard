@@ -1,0 +1,36 @@
+{
+  "version": "outcomes-large-upload-v2",
+  "base": "07313864a9033a8b97f041012c77f55d54cb127a",
+  "files": {
+    "tests/test_workflow_runtimes.py": "008779697c5507bfb0feb70160bf3251f840bd08f72d08a67b5c2329a3d07415",
+    "outcomes_large_profile.py": "d7fa2493d95941dacf3a88df4e3c0755b3a7842fa167d30584ca742255b0c61f",
+    "outcomes_resource_conformance.py": "6b6079d8e98c83454aea9621fa8356064d1091c40ca9d936cc6aa33e55e92c88",
+    "tests/test_outcomes_large_profile.py": "7fae8e55213e9895371842bc887dcef8acd32d100f8d1b8ed788e0945b4d0639",
+    "tests/test_outcomes_resource_conformance.py": "32b49fa5943c0f67e54853212e249f6443132bb0c623a5422db813840aaa723e",
+    ".github/workflows/outcomes-resource-conformance.yml": "3ed866c3dc84ee9025dcd22c3d5e32a583e60600defbc139fdb1286a1b3a9fe4",
+    "OUTCOMES_LARGE_HANDOFF_2026-10-19.md": "f3bb47559a10c277d4dc0e7bf7f6b8e087f6a40047e986e91e947faf42ba906b",
+    "outcomes_large_upload_check.py": "9732de4f1a12a326f33e4a6f024c589ec54203eaab2b573dda9098f6917558d1",
+    "tests/test_outcomes_large_upload_check.py": "e611a9261be01922c527b8dea351b64102c7eef56931351307f49bf0aae7aa8c",
+    "OUTCOMES_LARGE_UPLOAD_2026-10-19.json": null
+  },
+  "modified_base_files": {
+    "tests/test_workflow_runtimes.py": "68f23381098e65766064a9ab7e2d4b709568401e44ecadbcdbb420c82f2c3a47"
+  },
+  "prerequisites": {
+    "programme_next_upload_check.py": "c975be41f99994b2159e1e19b699fb1b71e6699e186bb6bb19e711adfcd01a81",
+    "outcomes_footer_diagnostic.py": "3a1d87da023084a2f35269412645827774c943e21ae1dda188494db794cc565d",
+    "archive_catalog_verify.py": "f63723a83bb9ee4a39790ad064da1caf91dbb291081bf7592c0e90eea323ef61",
+    "archive_catalog_reconcile.py": "f00ffd005e68d076ff9667a516c3d77c8d686fbd6152b88291dc455fb46b7eb8",
+    "archive_recovery_review.py": "17aaeb69b32d3513d9ecfcb70ef96ee16eb7b2b8ff1a345c0339a1e54bc16c8d",
+    "archive_maintenance.py": "7715add8c1c9893a875dc54db75110aa3be5d17f9b6f6ae6aec20bbce6baf46f",
+    "drive_archive.py": "47bae109d49a43408fbe2cd3176a974d49e997442ddf1f1f9adcb8161caea38f",
+    "requirements-archive.txt": "9c21fb56692035e7ce6bce156a589eff9e7135fe27884d7513356da62f564af4",
+    "constraints.txt": "433d34cc1146a838c792b8b417acefed300895a3543d62a295cb00c2791a7ba3",
+    "equity_research_outcomes.py": "63cb023dc7b09d914d880d323d6c42e883776103e792dc28b01252c23d480718",
+    "equity_research_collector.py": "c582c01b0817a6f7a775b5d2f77fc46b577f6fbd17e5323952133f97f0d10464",
+    "equity_research_repository.py": "a8af611399128ebd15e468dc051a27a397baeff12f9b78e5d93f16178d27b3ca"
+  },
+  "commissioned": false,
+  "verification": "REQUIRES_OWNER_EXACT_BASE_INDEX_CHECK_AND_FINAL_SHA_CI",
+  "reviewed_pr_head": "088fab77bc2bc847d2d798eb2cbe429a9a81c997"
+}
