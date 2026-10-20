@@ -1,0 +1,27 @@
+{
+  "version": "live-backup-upload-v1",
+  "base": "563665a32e5454633b0c27256072a7249503c520",
+  "files": {
+    "live_database_backup.py": "62b009b7521e5c18145e88349b9645a0a8c49268bdd105df8f531f25c29fffc4",
+    "live_backup_conformance.py": "46c4667e232904ce65ee00ef30fe4e30f22949511926f266388b1354f65d7f12",
+    "tests/test_live_database_backup.py": "9dfcd97789e1ae8f67b7432be9eef99079e1755c326d7f07d689b8eb5302d564",
+    "tests/test_live_backup_conformance.py": "03dd4341137ad673831824b65d086076636ebacf82e40dfc88004b7f2bdf2275",
+    ".github/workflows/live-backup-conformance.yml": "7bfc4df5c9a44f303a34fe184dafba86401824fe094716ffd1913c9c40ce3bff",
+    "live_backup_upload_check.py": "797fa44e3eb548664604c428681f4438b30c96294231664313370e635824b3aa",
+    "tests/test_live_backup_upload_check.py": "c1fd7e1a323ce836a2a28c5413da0bfe25f3d4dc7a2aaffa11c1033228ae3747",
+    "LIVE_BACKUP_HANDOFF_2026-10-21.md": "c7998546270386e0d08db7d411756ae517971ff124b26dd8002242d188a425be",
+    "LIVE_BACKUP_UPLOAD.json": null
+  },
+  "prerequisites": {
+    "programme_next_upload_check.py": "c975be41f99994b2159e1e19b699fb1b71e6699e186bb6bb19e711adfcd01a81",
+    "archive_preservation_inventory.py": "ec497442d9e5d779584a5153db6b15bcea07fe58b2fd2c79889ac8083b69de27",
+    "archive_preservation_witness.py": "6348101f6e1ed5789854ee700539e2ca078b030c7b5a500d0d9a3901e05570cc",
+    "archive_restore_policy.py": "dab6613432f93f473d585535df63b2d4102d9010d35b6889898dc9f1e6124c25",
+    "archive_recovery_binding.py": "7a267a61bdf681ee7b3195576d025810182950674fe57ea304c83048330d5910",
+    "project_conductor.py": "f318b5ca3c14d00f34c3780c2384fcc45f243e3c1fcede54515e6227c9a858bb",
+    "programme_agent_team.py": "b66d5ba6f366f2edfda299bbdb7340a2c8ce6a53a8e797d80c86aca7ca227e5a",
+    "constraints.txt": "433d34cc1146a838c792b8b417acefed300895a3543d62a295cb00c2791a7ba3",
+    "tests/test_workflow_runtimes.py": "008779697c5507bfb0feb70160bf3251f840bd08f72d08a67b5c2329a3d07415",
+    "RECOVERY_CONTRACT_UPLOAD.json": "377ed1544ec06cdf39ed5b1ffd4e703a5bb8f44183958b2b1b920bf253cf016b"
+  }
+}
