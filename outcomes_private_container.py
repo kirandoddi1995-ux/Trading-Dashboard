@@ -17,7 +17,7 @@ import uuid
 from archive_preservation_inventory import measure, private_path, publish
 from archive_preservation_witness import verify_observation
 from archive_catalog_verify import PRESERVED_BUNDLE_SHA256
-from outcomes_private_worker import SAFE_ERROR_CODES
+from outcomes_private_worker import SAFE_ERROR_CODES, CONTAINMENT_PROFILE, PROBE_FIELDS, WRITE_RESULTS, readonly_detail_passes
 from programme_next_upload_check import safe_read
 from normal_user_test_run import _normal_windows, Blocked
 
@@ -33,9 +33,27 @@ CHECKS = frozenset({'nonroot', 'non_pid1', 'no_new_privileges', 'zero_capabiliti
 
 
 class SyntheticFailure(ValueError):
-    def __init__(self, failed: tuple[str, ...]) -> None:
-        super().__init__('SYNTHETIC_CONTAINER_PROOF_MISSING')
+    def __init__(self, failed: tuple[str, ...], probes: dict[str, Any]) -> None:
+        super().__init__('SYNTHETIC_CONTAINER_CHECK_FAILED')
+        if any(name not in CHECKS for name in failed):
+            raise ValueError('SYNTHETIC_PROBE_SCHEMA_INVALID')
         self.failed = failed
+        self.probes = validate_probes(probes)
+
+
+def validate_probes(value: Any) -> dict[str, Any]:
+    """Closed public diagnostic vocabulary, never arbitrary worker text/paths."""
+    if type(value) is not dict or set(value) != {'root', 'catalog', 'bundle'}:
+        raise ValueError('SYNTHETIC_PROBE_SCHEMA_INVALID')
+    result: dict[str, Any] = {}
+    for name in ('root', 'catalog', 'bundle'):
+        detail = value[name]
+        if (type(detail) is not dict or set(detail) != PROBE_FIELDS
+                or any(type(detail[k]) is not bool for k in PROBE_FIELDS - {'write_open_result'})
+                or type(detail['write_open_result']) is not str or detail['write_open_result'] not in WRITE_RESULTS):
+            raise ValueError('SYNTHETIC_PROBE_SCHEMA_INVALID')
+        result[name] = dict(detail)
+    return result
 
 
 def docker_prefix(config: Path) -> list[str]:
@@ -184,7 +202,8 @@ def run_container(image: str, catalog: Path, bundle: Path, args: list[str], jour
             raise ValueError('EXACT_WORKER_COMMAND_REQUIRED')
         if after['State']['Running'] or after['State']['Pid'] != 0 or after['State']['OOMKilled']:
             raise ValueError('CONTAINER_TERMINAL_STATE_NOT_VERIFIED')
-        result = json.loads(raw)
+        from programme_next_upload_check import unique
+        result = json.loads(raw, object_pairs_hook=unique)
         if not isinstance(result, dict):
             raise ValueError('WORKER_REPORT_INVALID')
         if after['State']['ExitCode'] != 0:
@@ -233,15 +252,21 @@ def synthetic(image: str, root: Path) -> dict[str, Any]:
     if result.get('status') == 'BLOCKED' and result.get('code') in SAFE_ERROR_CODES:
         publish(root / 'worker-blocked.json', json.dumps(result, sort_keys=True).encode())
         raise ValueError(result['code'])
-    if (set(result) != {'status', 'checks', 'private_decode_authorised'}
+    if result.get('containment_profile') != CONTAINMENT_PROFILE:
+        raise ValueError('CONTAINMENT_PROFILE_MISMATCH')
+    if (set(result) != {'status', 'checks', 'private_decode_authorised', 'readonly_probes', 'containment_profile'}
             or result['status'] not in {'SYNTHETIC_CONTAINER_CHECK_PASSED', 'SYNTHETIC_CONTAINER_CHECK_FAILED'}
             or result['private_decode_authorised'] is not False or set(result['checks']) != CHECKS
             or any(type(v) is not bool for v in result['checks'].values())):
         raise ValueError('SYNTHETIC_CONTAINER_PROOF_MISSING')
+    probes = validate_probes(result['readonly_probes'])
+    if (result['checks']['root_readonly'] is not readonly_detail_passes(probes['root'])
+            or result['checks']['input_readonly'] is not all(readonly_detail_passes(probes[n]) for n in ('catalog', 'bundle'))):
+        raise ValueError('SYNTHETIC_PROBE_SCHEMA_INVALID')
     failed = tuple(sorted(key for key in CHECKS if result['checks'][key] is not True))
     if failed or result['status'] != 'SYNTHETIC_CONTAINER_CHECK_PASSED':
         publish(root / 'result.json', json.dumps(result, sort_keys=True).encode())
-        raise SyntheticFailure(failed)
+        raise SyntheticFailure(failed, probes)
     run_container(image, catalog, bundle, ['--watchdog-probe'], root / 'watchdog-intent.json', watchdog=True)
     result['autonomous_watchdog_verified'] = True
     publish(root / 'result.json', json.dumps(result, sort_keys=True).encode())
@@ -333,8 +358,9 @@ def main() -> int:
                 raise ValueError(result['code'])
             flags = {'full_catalog_byte_footer_coverage', 'row_values_printed', 'receipt_claims_authenticated',
                 'independent_custody_verified', 'restore_verified', 'deletion_authorised', 'training_eligible'}
-            if (set(result) != flags | {'status', 'batches', 'rows', 'historical_original_catalog_matched', 'original_catalog_total'}
+            if (set(result) != flags | {'status', 'batches', 'rows', 'historical_original_catalog_matched', 'original_catalog_total', 'containment_profile'}
                     or result['status'] != 'EIGHT_OUTCOMES_STRUCTURAL_CHECK_NOT_CATALOG_ACCEPTANCE'
+                    or result['containment_profile'] != CONTAINMENT_PROFILE
                     or type(result['batches']) is not int or result['batches'] != 8
                     or type(result['rows']) is not int or not 0 < result['rows'] <= 800
                     or result['historical_original_catalog_matched'] != 868 or result['original_catalog_total'] != 876
@@ -345,7 +371,8 @@ def main() -> int:
         summary: dict[str, Any] = dict(status=result['status'], stage=stage, raw_values_printed=False,
             private_result_is_not_catalog_acceptance=True, deletion_authorised=False, training_eligible=False)
         if args.mode == 'selftest':
-            summary.update(synthetic_checks=result['checks'], autonomous_watchdog_verified=True)
+            summary.update(synthetic_checks=result['checks'], autonomous_watchdog_verified=True,
+                readonly_probes=result['readonly_probes'], containment_profile=CONTAINMENT_PROFILE)
         elif args.mode == 'private':
             summary.update(local_native_admission_verified=True, batches=result['batches'], rows=result['rows'])
         print(json.dumps(summary))
@@ -356,9 +383,13 @@ def main() -> int:
             'EXPLICIT_PRIVATE_COMMISSIONING_REQUIRED', 'EXTERNAL_PUBLIC_KEY_FINGERPRINT_REQUIRED',
             'PRESERVATION_GENERATION_MISMATCH', 'ORIGINAL_GENERATION_PINS_REQUIRED', 'SYNTHETIC_CONTAINER_PROOF_MISSING',
             'CONTAINER_STOPPED_REVIEW_REQUIRED_NO_RETRY', 'CONTAINER_CLEANUP_NOT_ESTABLISHED_NO_RETRY'}
+        safe |= {'SYNTHETIC_CONTAINER_CHECK_FAILED', 'SYNTHETIC_PROBE_SCHEMA_INVALID', 'CONTAINMENT_PROFILE_MISMATCH'}
+        reason = ('SYNTHETIC_CONTAINER_CHECK_FAILED' if isinstance(error, SyntheticFailure) else
+            str(error) if type(error) is ValueError and str(error) in safe else 'PRIVATE_ADMISSION_OR_IO_UNVERIFIED')
         print(json.dumps(dict(status='BLOCKED', code='PRIVATE_BRIDGE_REVIEW_REQUIRED_NO_RETRY', stage=stage,
-            reason=str(error) if type(error) is ValueError and str(error) in safe else 'PRIVATE_ADMISSION_OR_IO_UNVERIFIED',
+            reason=reason,
             failed_checks=list(error.failed) if isinstance(error, SyntheticFailure) else [],
+            readonly_probes=error.probes if isinstance(error, SyntheticFailure) else {},
             raw_error_printed=False, retry_authorised=False, deletion_authorised=False, training_eligible=False)))
         return 2
 
