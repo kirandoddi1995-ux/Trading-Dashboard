@@ -1,0 +1,27 @@
+{
+  "version": "recovery-contract-upload-v1",
+  "base": "eb58dc2bdc29fe32ef2bc04df9f85ab381ed8d7f",
+  "files": {
+    "archive_recovery_binding.py": "7a267a61bdf681ee7b3195576d025810182950674fe57ea304c83048330d5910",
+    "archive_restore_policy.py": "dab6613432f93f473d585535df63b2d4102d9010d35b6889898dc9f1e6124c25",
+    "sql/recovery_backup_facts_read_only.sql": "187ea0c577fd34ab695fb6dedccf71ee0a783d18d8ca50c370bef44bcf72662b",
+    "tests/test_archive_recovery_binding.py": "cfb1c16979d93f4ece5cdca3409f70ab68325383d887ed1f8465866d31627287",
+    "tests/test_archive_restore_policy.py": "b63906847b5194232c9cf6f4ca61fba379a6467f3b8c26df7923e590369c91e5",
+    "tests/test_recovery_backup_facts_sql.py": "d70d147f19b598b2494c0cc35e5438345176a4d84e90647148c789fed6cafbe2",
+    "recovery_contract_upload_check.py": "8399d2b0fc60bc25e4baba470b3eda07e4865b410aaae52333b37e312b453078",
+    "tests/test_recovery_contract_upload_check.py": "96c6fb6d714692ad5ba3527c262ae99cc144c71abb04ff562cf1bf30c7923d21",
+    "RECOVERY_CONTRACT_HANDOFF_2026-10-20.md": "e4809e7b9be511b9df9ee0a0bd4e5f5e487729089bfebdb2bbdcc8ea48f149e0",
+    "RECOVERY_CONTRACT_UPLOAD.json": null
+  },
+  "prerequisites": {
+    "programme_next_upload_check.py": "c975be41f99994b2159e1e19b699fb1b71e6699e186bb6bb19e711adfcd01a81",
+    "archive_preservation_witness.py": "6348101f6e1ed5789854ee700539e2ca078b030c7b5a500d0d9a3901e05570cc",
+    "archive_preservation_inventory.py": "ec497442d9e5d779584a5153db6b15bcea07fe58b2fd2c79889ac8083b69de27",
+    "archive_catalog_verify.py": "f63723a83bb9ee4a39790ad064da1caf91dbb291081bf7592c0e90eea323ef61",
+    "outcomes_private_container.py": "8cba58d494b9cc2ccc13399a71a48d3458b05ddfc4f95d99d11994763c19e5fa",
+    "outcomes_private_worker.py": "cbbe1f72d4249448679576462999dc3d5f488e7a8f33447e4905c8ac98f94340",
+    "drive_archive.py": "47bae109d49a43408fbe2cd3176a974d49e997442ddf1f1f9adcb8161caea38f",
+    "storage_consistent_cut_export.py": "5b808a5214b014806b229bbd9c59fb066796010efead512b1b0b7e07c2c8d6b2",
+    "constraints.txt": "433d34cc1146a838c792b8b417acefed300895a3543d62a295cb00c2791a7ba3"
+  }
+}
