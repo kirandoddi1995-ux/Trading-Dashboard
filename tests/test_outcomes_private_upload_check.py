@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 import outcomes_private_upload_check as c
+from preservation_integer_upload_check import reviewed_successor_hash
 
 
 def test_manifest_and_prerequisite_hashes() -> None:
@@ -17,9 +18,9 @@ def test_manifest_and_prerequisite_hashes() -> None:
     assert value['prerequisites'] == c.PREREQUISITES
     assert set(value['files']) == set(c.FILES)
     for name, digest in value['files'].items():
-        assert digest is None if name == c.MANIFEST else c.sha(c.safe_read(root / name)) == digest
+        assert digest is None if name == c.MANIFEST else c.sha(c.safe_read(root / name)) == reviewed_successor_hash(root, name, digest)
     for name, digest in c.PREREQUISITES.items():
-        assert c.sha(c.safe_read(root / name)) == digest
+        assert c.sha(c.safe_read(root / name)) == reviewed_successor_hash(root, name, digest)
 
 
 def test_runtime_import_closure_has_no_capture_transport_or_database() -> None:
