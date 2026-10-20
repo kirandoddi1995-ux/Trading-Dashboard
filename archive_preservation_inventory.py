@@ -14,6 +14,10 @@ from typing import Any, NoReturn, cast
 
 MAX_FILE_BYTES = 1024 * 1024 * 1024
 MAX_SELECTION_BYTES = 65536
+# Native identifiers are opaque exact integers, never signed generation numbers.
+# Python >=3.12 can return a 128-bit Windows st_ino (including ReFS).
+MAX_DEVICE_ID = 2**64 - 1
+MAX_FILE_ID = 2**128 - 1
 HASH = re.compile(r'[0-9a-f]{64}')
 ROLES = frozenset({'inventory', 'catalog', 'bundle', 'reconcile', 'verify', 'footer', 'other'})
 CIPHER_SHA256 = '9c9b22afbbc0e027e12ad4c5fe81bf184614ca9aea7aa535a525bf5cb115519e'
@@ -28,7 +32,7 @@ SAFE_CODES = frozenset({'DUPLICATE_KEY', 'AWARE_TIMESTAMP_REQUIRED', 'LOCAL_NATI
     'DUPLICATE_FILE_IDENTITY', 'CIPHER_PATH_REQUIRED', 'CIPHER_ANCHOR_MISMATCH',
     'DESTINATION_VOLUME_MISMATCH', 'DESTINATION_NOT_SEPARATE_VOLUME', 'OWNER_REPORT_CONTRACT',
     'PUBLICATION_INCOMPLETE', 'ONE_EXPLICIT_OPERATION_REQUIRED', 'SELECTION_AND_NEW_OUTPUT_REQUIRED',
-    'ORIGINAL_AGGREGATE_BOUND'})
+    'ORIGINAL_AGGREGATE_BOUND', 'NATIVE_ID_INTEGER_BOUND'})
 
 
 def reject(code: str) -> NoReturn:
@@ -87,6 +91,9 @@ def identity(fd: int) -> dict[str, Any]:
     info = os.fstat(fd)
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         reject('SINGLE_LINK_REGULAR_FILE_REQUIRED')
+    if (type(info.st_dev) is not int or not 0 <= info.st_dev <= MAX_DEVICE_ID
+            or type(info.st_ino) is not int or not 0 <= info.st_ino <= MAX_FILE_ID):
+        reject('NATIVE_ID_INTEGER_BOUND')
     result: dict[str, Any] = {'device': info.st_dev, 'file_id': info.st_ino,
                               'volume': 'posix-device:' + str(info.st_dev)}
     if os.name == 'nt':

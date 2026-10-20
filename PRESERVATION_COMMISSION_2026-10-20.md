@@ -1,5 +1,23 @@
 # Tuesday holiday: Package A commissioning, one normal PowerShell block at a time
 
+## 20 October commissioning repair: existing measurement/key are preserved
+
+PR52/fc74c01 was NOT merged: the owner reports a CodeQL result blocking its preview
+metadata. Use the replacement upload-v2 package and a fresh reviewed GREEN merge,
+not the superseded PR head. Preview now has a literal unlock_input_policy object;
+the enforced16-1024 UTF-8-byte bounds and resume/signing commands are unchanged.
+No alert dismissal, key replacement, remeasurement or commissioning is implied.
+
+The owner reports A measurement and dedicated-key recovery succeeded, but signing
+stopped at JSON_INTEGER_BOUND before the hidden prompt and without a witness/head.
+The signer incorrectly used a signed generation limit for native identity numbers.
+Read PRESERVATION_INTEGER_REPAIR_2026-10-20.md FIRST and use its resume blocks only
+after that repair merges green. Keep the existing selection, probe, measured bytes,
+key copies, independent fingerprint and original inventory unchanged. Do NOT restart
+Blocks1-12 or generate another key just because this signing attempt was blocked.
+Existing reports are observations made at their measured_at time, not a new claim
+that the external disk is currently connected or that the archive was restored.
+
 Package A is owner-reported merged in PR50; builder independently checked current
 public main e2e1d0d797e453e2fd9d12fd0df7fb8bcb968b99. This document is NOT an
 attestation, private measurement or authorization for deletion. No capture folder,
@@ -128,6 +146,10 @@ those key files or archive. Keep the independently retained public fingerprint a
 accepted head separately from the bundle/key copies (paper or other offline trust
 record). Same-account Drive copies add a location, not an independent account domain.
 No additional password-manager service/account is required by this package.
+For NEW key creation, the secret is 16-1024 UTF-8 BYTES inclusive (not characters).
+Run a single command, wait for its hidden prompt, enter only the dedicated secret;
+never paste a multiline command block while input is waiting. Preview states these
+bounds but does not read or validate a secret. Already recovered keys stay in use.
 
 Block8 (key preview):
 ```powershell

@@ -126,7 +126,7 @@ def test_strict_external_generation_types(keys: tuple[bytes, bytes], bad: object
 
 
 def test_json_structure_bounds_and_no_nonjson_coercion() -> None:
-    for bad in (float('nan'), float('inf'), 2**63, (1, 2), {1: 'not string'}, '\ud800'):
+    for bad in (float('nan'), float('inf'), 2**128, (1, 2), {1: 'not string'}, '\ud800'):
         with pytest.raises(witness.WitnessError):
             witness.canonical_json(cast(witness.JsonValue, bad))
     value: witness.JsonValue = None
