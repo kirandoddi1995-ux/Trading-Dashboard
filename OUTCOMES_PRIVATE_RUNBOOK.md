@@ -1,5 +1,16 @@
 # Package B: inactive contained private structural verification
 
+## Current gate: kernel-readonly-v2 repair
+
+Read OUTCOMES_READONLY_REPAIR_2026-10-20.md FIRST. The owner reports the older local
+image passed14 checks/watchdog but hosted Linux failed input_readonly. Its exact
+errno is unknown. The replacement requires descriptor ST_RDONLY AND exact FD mount
+ID/target/ro readback AND denied write-open on root and BOTH synthetic inputs.
+EACCES alone never passes. No chmod, umask, ownership, ACL or user change is made.
+After the reviewed repair merges, build/enroll a NEW immutable image and repeat
+BOTH native acceptance gates in fresh run roots. Old-profile receipts/images are
+preserved but do not satisfy kernel-readonly-v2. Private decoding remains held.
+
 Exact upload base: e2e1d0d797e453e2fd9d12fd0df7fb8bcb968b99 (PR50 merge).
 This is ONE additive PR. No original verifier/profile/pin, production key, capture,
 workflow setting, service, ACL, journal or deletion permission is changed.
@@ -55,7 +66,8 @@ Worker independently requires Linux/nonroot/non-PID1/no-new-privileges/zero effe
 caps/no routes/no host socket and finite cgroup-v2 memory/PID limits. Default kernel
 SIGALRM120s terminates the non-PID1 worker, independent of Python GIL/client lifetime;
 host wall150s and output4KiB caps are separate. Synthetic acceptance additionally
-requires readable exact fixture bytes, EROFS write denials, network denial, large-row
+requires readable exact fixture bytes, independently verified read-only mounts and
+EROFS/EACCES write-open denials, network denial, large-row
 codec/content proof and a SECOND detached-start watchdog container exiting142 after
 its1s alarm. --init plus non-PID1 matters: Linux namespace init ignores many default
 signals. Killing only the Docker CLI is NOT cleanup proof.
@@ -219,7 +231,8 @@ Preview local selftest, then in a separate block:
 & $bridgePython -B outcomes_private_container.py --mode selftest --image-id $Image --run-root $SyntheticRun --confirm-run
 if ($LASTEXITCODE -ne 0) { throw 'Local native containment NOT proven; preserve and stop' }
 ```
-Require all14 exact checks and autonomous watchdog proof; no real rows exist in this
+Require kernel-readonly-v2, all14 exact checks, the closed root/catalog/bundle
+readonly_probes details and autonomous watchdog proof; no real rows exist in this
 test. Unknown mapping/permissions/cgroup/init/denial mechanism blocks, never falls
 back to uncontained Windows Python or asks for ACL changes. Windows itself is not
 running a Linux process natively; Desktop's reviewed Linux VM/engine is the boundary.
@@ -278,7 +291,7 @@ Official sources reviewed19October2026:
 - https://hub.docker.com/v2/namespaces/library/repositories/python/tags/3.13.9-slim-bookworm
 - https://pypi.org/pypi/pyarrow/24.0.0/json
 
-## Verification ledger (builder, 19 October 2026)
+## Historical verification ledger (builder, 19 October 2026; not v2 acceptance)
 
 - Final clean candidate at the exact base: 142 focused tests passed, zero skipped;
   this includes the existing workflow runner policy and both available PowerShell

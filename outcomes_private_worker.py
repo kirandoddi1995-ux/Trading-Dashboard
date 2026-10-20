@@ -11,6 +11,7 @@ from pathlib import Path
 import socket
 import signal
 import errno
+import stat
 import time
 from typing import Any, NoReturn
 import os
@@ -22,6 +23,9 @@ import archive_recovery_review as review
 from outcomes_footer_diagnostic import PRIOR_FAILURE_ORDINALS, inspect_footer
 from outcomes_large_profile import candidate_matches, MAX_ROW_BYTES
 
+CONTAINMENT_PROFILE = 'kernel-readonly-v2'
+PROBE_FIELDS = frozenset({'read_fd_opened', 'kind_matches', 'mount_bound', 'mount_readonly', 'identity_stable', 'write_open_result'})
+WRITE_RESULTS = frozenset({'EROFS', 'EACCES', 'EPERM', 'ENOENT', 'ELOOP', 'OTHER_DENIAL', 'OPEN_SUCCEEDED', 'NOT_ATTEMPTED'})
 KERNEL_FIELDS = frozenset({'nonroot', 'non_pid1', 'no_new_privileges', 'zero_capabilities',
     'host_socket_absent', 'no_routes', 'finite_memory_cgroup', 'finite_pid_cgroup', 'core_dumps_disabled'})
 SAFE_ERROR_CODES = frozenset({'BYTE_HASH', 'CANDIDATE_METADATA_REJECTED', 'ROW_COUNT', 'ROW_BYTE_BOUND',
@@ -30,7 +34,8 @@ SAFE_ERROR_CODES = frozenset({'BYTE_HASH', 'CANDIDATE_METADATA_REJECTED', 'ROW_C
     'ORIGINAL_GENERATION_PINS_REQUIRED', 'EXACT_EIGHT_OUTCOMES_REQUIRED',
     'PRIOR_FAILURE_PATTERN_CHANGED', 'AGGREGATE_EXPANSION_BOUND', 'CATALOG_BOUND',
     'KERNEL_CONTAINMENT_UNVERIFIED', 'LINUX_CONTAINMENT_REQUIRED', 'SYNTHETIC_CONTAINMENT_CHECK_FAILED',
-    'CONTAINED_FORMAT_OR_RUNTIME_ERROR', 'PRIVATE_INPUT_READ_DENIED', 'PRIVATE_INPUT_NOT_FOUND'}) | frozenset(
+    'CONTAINED_FORMAT_OR_RUNTIME_ERROR', 'PRIVATE_INPUT_READ_DENIED', 'PRIVATE_INPUT_NOT_FOUND',
+    'PRIVATE_INPUT_MOUNT_NOT_READONLY', 'KERNEL_ROOT_READONLY_UNVERIFIED'}) | frozenset(
         'KERNEL_' + name.upper() + '_UNVERIFIED' for name in KERNEL_FIELDS)
 
 
@@ -142,6 +147,118 @@ def verify_selected(raw: bytes, stream: Any, catalog_sha256: str, bundle_sha256:
                 restore_verified=False, deletion_authorised=False, training_eligible=False)
 
 
+def _bounded_proc(path: str, maximum: int) -> str:
+    with Path(path).open('r', encoding='ascii', errors='strict') as stream:
+        value = stream.read(maximum + 1)
+    if len(value) > maximum:
+        raise ValueError('KERNEL_CONTAINMENT_UNVERIFIED')
+    return value
+
+
+def _descriptor_mount_id(fd: int) -> str | None:
+    try:
+        info = _bounded_proc('/proc/self/fdinfo/' + str(fd), 4096).splitlines()
+        ids = [line.split(':', 1)[1].strip() for line in info if line.startswith('mnt_id:')]
+        return ids[0] if len(ids) == 1 and ids[0].isdecimal() and len(ids[0]) <= 20 else None
+    except (OSError, ValueError, UnicodeError):
+        return None
+
+
+def mount_view(fd: int, target: str) -> tuple[bool, bool]:
+    """Exact FD mount ID + bounded mountinfo target + independent fstatvfs flag.
+
+    No mount table/path/identifier is returned to a report. A bind mount's device
+    and inode are NOT alone enough to distinguish it from a writable mount view.
+    """
+    try:
+        mount_id = _descriptor_mount_id(fd)
+        if mount_id is None:
+            return False, False
+        entries = _bounded_proc('/proc/self/mountinfo', 262144).splitlines()
+        if len(entries) > 2048 or any(len(line) > 16384 for line in entries):
+            return False, False
+        matching = [line.split() for line in entries if line.split() and line.split()[0] == mount_id]
+        if len(matching) != 1 or len(matching[0]) < 10 or '-' not in matching[0]:
+            return False, False
+        entry = matching[0]
+        bound = entry[4] == target
+        flag = getattr(os, 'fstatvfs')(fd).f_flag
+        readonly = bool(flag & getattr(os, 'ST_RDONLY')) and 'ro' in entry[5].split(',')
+        return bound, bound and readonly
+    except (OSError, ValueError, AttributeError, UnicodeError):
+        return False, False
+
+
+def _identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def readonly_detail_passes(value: dict[str, Any]) -> bool:
+    return (set(value) == PROBE_FIELDS and all(value[k] is True for k in PROBE_FIELDS - {'write_open_result'})
+            and value['write_open_result'] in {'EROFS', 'EACCES'})
+
+
+def readonly_probe(target: str) -> dict[str, Any]:
+    """SYNTHETIC ONLY. No truncation, no private inputs, no chmod/ownership change."""
+    if target not in {'/', '/inputs/catalog.json', '/inputs/bundle.zip'}:
+        raise ValueError('KERNEL_CONTAINMENT_UNVERIFIED')
+    result: dict[str, Any] = dict(read_fd_opened=False, kind_matches=False, mount_bound=False,
+        mount_readonly=False, identity_stable=False, write_open_result='NOT_ATTEMPTED')
+    fd: int | None = None
+    try:
+        fd = os.open(target, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        result['read_fd_opened'] = True
+        before = os.fstat(fd)
+        initial_mount = _descriptor_mount_id(fd)
+        result['kind_matches'] = stat.S_ISDIR(before.st_mode) if target == '/' else stat.S_ISREG(before.st_mode)
+        result['mount_bound'], result['mount_readonly'] = mount_view(fd, target)
+        if result['kind_matches'] is not True:
+            return result
+        flags = os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0)
+        probe_target = target
+        if target == '/':
+            probe_target = '/never-create'
+            flags |= os.O_CREAT | os.O_EXCL
+        try:
+            writable = os.open(probe_target, flags, 0o600)
+        except OSError as error:
+            result['write_open_result'] = ('EROFS' if error.errno == errno.EROFS else
+                'EACCES' if error.errno == errno.EACCES else 'EPERM' if error.errno == errno.EPERM else
+                'ENOENT' if error.errno == errno.ENOENT else 'ELOOP' if error.errno == errno.ELOOP else 'OTHER_DENIAL')
+        else:
+            os.close(writable)
+            result['write_open_result'] = 'OPEN_SUCCEEDED'
+        after = os.fstat(fd)
+        named = os.stat(target, follow_symlinks=False)
+        bound, readonly = mount_view(fd, target)
+        result['identity_stable'] = (_identity(before) == _identity(after) == _identity(named)
+            and initial_mount is not None and initial_mount == _descriptor_mount_id(fd)
+            and result['mount_bound'] is bound and result['mount_readonly'] is readonly)
+    except (OSError, ValueError, AttributeError):
+        pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return result
+
+
+def require_private_readonly(fd: int, target: str,
+        expected: tuple[int, int, int, int, int, str] | None = None) -> tuple[int, int, int, int, int, str]:
+    """Non-mutating admission for an actual input descriptor, before/after use."""
+    info = os.fstat(fd)
+    bound, readonly = mount_view(fd, target)
+    if (not stat.S_ISREG(info.st_mode) or not bound or not readonly
+            or _identity(info) != _identity(os.stat(target, follow_symlinks=False))):
+        raise ValueError('PRIVATE_INPUT_MOUNT_NOT_READONLY')
+    mount_id = _descriptor_mount_id(fd)
+    if mount_id is None:
+        raise ValueError('PRIVATE_INPUT_MOUNT_NOT_READONLY')
+    snapshot = (*_identity(info), mount_id)
+    if expected is not None and snapshot != expected:
+        raise ValueError('PRIVATE_INPUT_MOUNT_NOT_READONLY')
+    return snapshot
+
+
 def kernel_checks() -> dict[str, bool]:
     import resource
     checks: dict[str, bool] = {'nonroot': getattr(os, 'geteuid', lambda: -1)() == 65534,
@@ -165,6 +282,12 @@ def require_kernel() -> dict[str, bool]:
     for name in sorted(KERNEL_FIELDS):
         if checks[name] is not True:
             raise ValueError('KERNEL_' + name.upper() + '_UNVERIFIED')
+    fd = os.open('/', os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode) or mount_view(fd, '/') != (True, True):
+            raise ValueError('KERNEL_ROOT_READONLY_UNVERIFIED')
+    finally:
+        os.close(fd)
     return checks
 
 
@@ -178,14 +301,10 @@ def selftest() -> dict[str, Any]:
     with Path('/inputs/bundle.zip').open('rb') as stream:
         second = stream.read(128)
     checks['synthetic_inputs_exact'] = first == b'{"SYNTHETIC_ONLY":true}' and second == b'SYNTHETIC_ONLY_NOT_A_RECOVERY_ZIP'
-    for name, path in [('root_readonly', '/app/never-create'), ('input_readonly', '/inputs/catalog.json')]:
-        try:
-            fd = os.open(path, os.O_WRONLY | (os.O_CREAT | os.O_EXCL if name == 'root_readonly' else 0))
-        except OSError as error:
-            checks[name] = error.errno == errno.EROFS
-        else:
-            os.close(fd)
-            checks[name] = False
+    probes = {name: readonly_probe(path) for name, path in
+        (('root', '/'), ('catalog', '/inputs/catalog.json'), ('bundle', '/inputs/bundle.zip'))}
+    checks['root_readonly'] = readonly_detail_passes(probes['root'])
+    checks['input_readonly'] = all(readonly_detail_passes(probes[name]) for name in ('catalog', 'bundle'))
     checks['host_socket_absent'] = not Path('/var/run/docker.sock').exists()
     routes = Path('/proc/net/route').read_text().splitlines()
     checks['no_routes'] = len(routes) == 1
@@ -212,7 +331,7 @@ def selftest() -> dict[str, Any]:
     receipt = review.Receipt(batch_id, 'equity_research.outcomes', 80, hashlib.sha256(data).hexdigest(), 'synthetic-data', 'synthetic-manifest', 0, '')
     checks['codec'] = verify_batch(data, receipt) == 80
     return dict(status='SYNTHETIC_CONTAINER_CHECK_PASSED' if all(checks.values()) else 'SYNTHETIC_CONTAINER_CHECK_FAILED',
-                checks=checks, private_decode_authorised=False)
+                checks=checks, readonly_probes=probes, containment_profile=CONTAINMENT_PROFILE, private_decode_authorised=False)
 
 
 class _Parser(argparse.ArgumentParser):
@@ -251,12 +370,17 @@ def main() -> int:
             result = selftest()
         else:
             require_kernel()
-            with Path('/inputs/catalog.json').open('rb') as source:
+            with os.fdopen(os.open('/inputs/catalog.json', os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)), 'rb') as source:
+                initial_catalog = require_private_readonly(source.fileno(), '/inputs/catalog.json')
                 raw = source.read(catalog.MAX_CATALOG + 1)
+                require_private_readonly(source.fileno(), '/inputs/catalog.json', initial_catalog)
             if not 0 < len(raw) <= catalog.MAX_CATALOG:
                 raise ValueError('CATALOG_BOUND')
-            with Path('/inputs/bundle.zip').open('rb') as stream:
+            with os.fdopen(os.open('/inputs/bundle.zip', os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)), 'rb') as stream:
+                initial_bundle = require_private_readonly(stream.fileno(), '/inputs/bundle.zip')
                 result = verify_selected(raw, stream, args.catalog_sha256, args.bundle_sha256)
+                require_private_readonly(stream.fileno(), '/inputs/bundle.zip', initial_bundle)
+            result['containment_profile'] = CONTAINMENT_PROFILE
         print(json.dumps(result, sort_keys=True, allow_nan=False))
         return 0
     except Exception as error:

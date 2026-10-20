@@ -15,6 +15,11 @@ import outcomes_private_container as c
 IMAGE = 'sha256:' + 'a' * 64
 
 
+def probe_details() -> dict[str, Any]:
+    return {name: dict(read_fd_opened=True, kind_matches=True, mount_bound=True,
+        mount_readonly=True, identity_stable=True, write_open_result='EROFS') for name in ('root', 'catalog', 'bundle')}
+
+
 def inspected(catalog: Path, bundle: Path) -> dict[str, Any]:
     return dict(Image=IMAGE, Config=dict(Image=IMAGE, User='65534:65534', Volumes=None),
         Mounts=[dict(Destination=target, Source=str(source), RW=False, Type='bind')
@@ -101,7 +106,8 @@ def test_synthetic_admission_requires_closed_proof(tmp_path: Path, monkeypatch: 
         checks['codec'] = 1
     else:
         checks = {}
-    monkeypatch.setattr(c, 'run_container', lambda *a, **kw: dict(status='SYNTHETIC_CONTAINER_CHECK_PASSED', checks=checks, private_decode_authorised=False))
+    monkeypatch.setattr(c, 'run_container', lambda *a, **kw: dict(status='SYNTHETIC_CONTAINER_CHECK_PASSED', checks=checks,
+        readonly_probes=probe_details(), containment_profile=c.CONTAINMENT_PROFILE, private_decode_authorised=False))
     with pytest.raises(ValueError, match='SYNTHETIC_CONTAINER_PROOF_MISSING'):
         c.synthetic(IMAGE, tmp_path / 'synthetic')
 
@@ -205,10 +211,52 @@ def test_successful_synthetic_summary_has_no_stale_review_defaults(tmp_path: Pat
                                    '--run-root', str(tmp_path / 'synthetic')])
     monkeypatch.setattr(c, 'owner_host', lambda _: None)
     monkeypatch.setattr(c, 'synthetic', lambda *a: dict(status='SYNTHETIC_CONTAINER_CHECK_PASSED',
-        checks=dict.fromkeys(c.CHECKS, True), autonomous_watchdog_verified=True))
+        checks=dict.fromkeys(c.CHECKS, True), autonomous_watchdog_verified=True,
+        readonly_probes=probe_details(), containment_profile=c.CONTAINMENT_PROFILE))
     assert c.main() == 0
     value = json.loads(capsys.readouterr().out)
     assert value['autonomous_watchdog_verified'] is True and 'code' not in value and 'reason' not in value
+
+
+@pytest.mark.parametrize('change', ['old-profile', 'missing', 'extra-field', 'integer', 'private-text', 'lying-check'])
+def test_readonly_diagnostic_schema_and_profile_are_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str) -> None:
+    result = dict(status='SYNTHETIC_CONTAINER_CHECK_PASSED', checks=dict.fromkeys(c.CHECKS, True),
+        readonly_probes=probe_details(), containment_profile=c.CONTAINMENT_PROFILE, private_decode_authorised=False)
+    if change == 'old-profile':
+        result['containment_profile'] = 'old'
+    elif change == 'missing':
+        del result['readonly_probes']['bundle']
+    elif change == 'extra-field':
+        result['readonly_probes']['catalog']['path'] = 'SYNTHETIC_PRIVATE_PATH'
+    elif change == 'integer':
+        result['readonly_probes']['catalog']['mount_readonly'] = 1
+    elif change == 'private-text':
+        result['readonly_probes']['catalog']['write_open_result'] = 'SYNTHETIC_PRIVATE_ERROR'
+    else:
+        result['readonly_probes']['bundle']['mount_readonly'] = False
+    monkeypatch.setattr(c, 'run_container', lambda *a, **kw: result)
+    with pytest.raises(ValueError):
+        c.synthetic(IMAGE, tmp_path / 'synthetic')
+
+
+def test_readonly_failure_is_diagnosable_without_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    probes = probe_details()
+    probes['catalog'].update(mount_readonly=False, write_open_result='EACCES')
+    monkeypatch.setattr(c, 'owner_host', lambda _: None)
+    def fail(*a: Any, **kw: Any) -> Any:
+        raise c.SyntheticFailure(('input_readonly',), probes)
+    monkeypatch.setattr(c, 'synthetic', fail)
+    monkeypatch.setattr(sys, 'argv', ['bridge', '--mode', 'selftest', '--confirm-run',
+        '--image-id', IMAGE, '--run-root', str(tmp_path / 'SYNTHETIC_PRIVATE_PATH')])
+    assert c.main() == 2
+    captured = capsys.readouterr()
+    assert 'SYNTHETIC_PRIVATE_PATH' not in captured.out + captured.err
+    value = json.loads(captured.out)
+    assert value['reason'] == 'SYNTHETIC_CONTAINER_CHECK_FAILED'
+    assert value['readonly_probes']['catalog']['write_open_result'] == 'EACCES'
+    assert value['readonly_probes']['catalog']['mount_readonly'] is False
+    assert value['failed_checks'] == ['input_readonly'] and value['retry_authorised'] is False
 
 
 @pytest.mark.parametrize('shell_name', ['powershell', 'pwsh'])

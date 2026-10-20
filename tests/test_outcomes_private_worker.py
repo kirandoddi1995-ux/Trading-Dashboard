@@ -3,6 +3,9 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import hashlib
 import io
+import errno
+import stat
+from types import SimpleNamespace
 from typing import Any
 
 import pyarrow as pa
@@ -91,3 +94,95 @@ def test_selftest_refuses_uncontained_host_before_write_probes(monkeypatch: pyte
     monkeypatch.setattr(w, 'kernel_checks', lambda: checks)
     with pytest.raises(ValueError, match='KERNEL_NONROOT_UNVERIFIED'):
         w.selftest()
+
+
+@pytest.mark.parametrize('readonly,denial,changed,accepted', [
+    (True, errno.EROFS, False, True), (True, errno.EACCES, False, True),
+    (False, errno.EACCES, False, False), (False, errno.EROFS, False, False),
+    (True, errno.EPERM, False, False), (True, errno.ENOENT, False, False),
+    (True, None, False, False), (True, errno.EACCES, True, False)])
+def test_readonly_probe_needs_independent_mount_proof(monkeypatch: pytest.MonkeyPatch,
+        readonly: bool, denial: int | None, changed: bool, accepted: bool) -> None:
+    def info(ino: int = 7) -> Any:
+        return SimpleNamespace(st_mode=stat.S_IFREG, st_dev=3, st_ino=ino, st_size=20, st_mtime_ns=1, st_ctime_ns=1)
+    opened: list[int] = []
+    def open_file(path: str, flags: int, mode: int = 0) -> int:
+        opened.append(flags)
+        if flags & w.os.O_WRONLY:
+            if denial is not None:
+                raise OSError(denial, 'SYNTHETIC_PRIVATE_ERROR_NOT_FOR_OUTPUT')
+            return 43
+        return 42
+    with monkeypatch.context() as patch:
+        patch.setattr(w.os, 'open', open_file)
+        patch.setattr(w.os, 'close', lambda _: None)
+        patch.setattr(w.os, 'fstat', lambda _: info())
+        patch.setattr(w.os, 'stat', lambda *a, **kw: info(8 if changed else 7))
+        patch.setattr(w, 'mount_view', lambda *a: (True, readonly))
+        patch.setattr(w, '_descriptor_mount_id', lambda _: '42')
+        detail = w.readonly_probe('/inputs/catalog.json')
+    assert w.readonly_detail_passes(detail) is accepted
+    assert set(detail) == w.PROBE_FIELDS
+    assert not opened[1] & (w.os.O_TRUNC | w.os.O_CREAT)
+    assert 'SYNTHETIC_PRIVATE_ERROR' not in str(detail)
+
+
+@pytest.mark.parametrize('change', ['', 'rw-options', 'rw-flag', 'wrong-target', 'duplicate', 'missing-id', 'wrong-id'])
+def test_descriptor_mount_id_and_flags_are_both_required(monkeypatch: pytest.MonkeyPatch, change: str) -> None:
+    line = '42 1 0:10 / /inputs/catalog.json ro,nosuid - ext4 SYNTHETIC rw\n'
+    if change == 'rw-options':
+        line = line.replace('ro,nosuid', 'rw,nosuid')
+    if change == 'wrong-target':
+        line = line.replace('/inputs/catalog.json', '/another-file')
+    if change == 'duplicate':
+        line += line
+    if change == 'wrong-id':
+        line = line.replace('42 1 ', '99 1 ')
+    monkeypatch.setattr(w, '_bounded_proc', lambda path, limit: ('other: 42\n' if change == 'missing-id' else 'mnt_id:\t42\n')
+        if 'fdinfo' in path else line)
+    monkeypatch.setattr(w.os, 'fstatvfs', lambda _: SimpleNamespace(f_flag=0 if change == 'rw-flag' else 1), raising=False)
+    monkeypatch.setattr(w.os, 'ST_RDONLY', 1, raising=False)
+    bound, readonly = w.mount_view(42, '/inputs/catalog.json')
+    assert (bound and readonly) is (not change)
+
+
+def test_private_readonly_admission_never_performs_a_write_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    info = SimpleNamespace(st_mode=stat.S_IFREG, st_dev=1, st_ino=2, st_size=3, st_mtime_ns=4, st_ctime_ns=5)
+    with monkeypatch.context() as patch:
+        patch.setattr(w.os, 'fstat', lambda _: info)
+        patch.setattr(w.os, 'stat', lambda *a, **kw: info)
+        patch.setattr(w, 'mount_view', lambda *a: (True, False))
+        patch.setattr(w.os, 'open', lambda *a, **kw: pytest.fail('Private mount admission attempted to open/write'))
+        with pytest.raises(ValueError, match='PRIVATE_INPUT_MOUNT_NOT_READONLY'):
+            w.require_private_readonly(42, '/inputs/catalog.json')
+
+
+@pytest.mark.parametrize('change', ['st_size', 'st_mtime_ns', 'st_ctime_ns', 'mount_id'])
+def test_private_read_retains_pre_read_identity(monkeypatch: pytest.MonkeyPatch, change: str) -> None:
+    info = SimpleNamespace(st_mode=stat.S_IFREG, st_dev=1, st_ino=2, st_size=3, st_mtime_ns=4, st_ctime_ns=5)
+    mount_id = '42'
+    with monkeypatch.context() as patch:
+        patch.setattr(w.os, 'fstat', lambda _: info)
+        patch.setattr(w.os, 'stat', lambda *a, **kw: info)
+        patch.setattr(w, 'mount_view', lambda *a: (True, True))
+        patch.setattr(w, '_descriptor_mount_id', lambda _: mount_id)
+        before = w.require_private_readonly(42, '/inputs/catalog.json')
+        if change == 'mount_id':
+            mount_id = '43'
+        else:
+            setattr(info, change, getattr(info, change) + 1)
+        with pytest.raises(ValueError, match='PRIVATE_INPUT_MOUNT_NOT_READONLY'):
+            w.require_private_readonly(42, '/inputs/catalog.json', before)
+
+
+def test_root_readonly_admission_is_required_before_codec_or_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+    with monkeypatch.context() as patch:
+        patch.setattr(w, 'kernel_checks', lambda: dict.fromkeys(w.KERNEL_FIELDS, True))
+        patch.setattr(w.os, 'open', lambda path, flags: calls.append(flags) or 42)
+        patch.setattr(w.os, 'close', lambda _: None)
+        patch.setattr(w.os, 'fstat', lambda _: SimpleNamespace(st_mode=stat.S_IFDIR))
+        patch.setattr(w, 'mount_view', lambda *a: (True, False))
+        with pytest.raises(ValueError, match='KERNEL_ROOT_READONLY_UNVERIFIED'):
+            w.require_kernel()
+    assert calls and not any(flags & w.os.O_WRONLY for flags in calls)
