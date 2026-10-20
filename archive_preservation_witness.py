@@ -31,6 +31,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 
 from archive_preservation_inventory import check_path as check_local_path
 from archive_preservation_inventory import open_read as open_local_read
+from archive_preservation_inventory import MAX_FILE_ID
 
 JsonValue: TypeAlias = None | bool | int | float | str | list['JsonValue'] | dict[str, 'JsonValue']
 JsonObject: TypeAlias = dict[str, JsonValue]
@@ -39,6 +40,12 @@ DOMAIN = b'archive-preservation-witness\x00preservation-v1\x00'
 MAX_BYTES = 65536
 MAX_KEY_BYTES = 16384
 MAX_GENERATION = 2**63 - 1
+# Additive v1 numeric-profile extension; existing canonical bytes stay unchanged.
+# This is not RFC8785/I-JSON and must not pass through IEEE754-only JSON tooling.
+# Native identity width and anti-rollback generation bounds are separate contracts.
+MAX_JSON_INTEGER = MAX_FILE_ID
+MIN_PASSPHRASE_BYTES = 16
+MAX_PASSPHRASE_BYTES = 1024
 PROJECT_ROOT = Path(__file__).parent
 
 
@@ -74,7 +81,7 @@ def _validate(value: object, depth: int, budget: list[int]) -> None:
         if len(cast(str, value)) > MAX_BYTES:
             raise WitnessError('JSON_STRING_BOUND')
     elif kind is int:
-        if abs(cast(int, value)) > MAX_GENERATION:
+        if abs(cast(int, value)) > MAX_JSON_INTEGER:
             raise WitnessError('JSON_INTEGER_BOUND')
     elif kind is float:
         if not math.isfinite(cast(float, value)):
@@ -167,7 +174,7 @@ def _predecessor(generation: int, previous: object, digest: object) -> JsonValue
 
 
 def _password(password: bytes) -> None:
-    if type(password) is not bytes or not 16 <= len(password) <= 1024:
+    if type(password) is not bytes or not MIN_PASSPHRASE_BYTES <= len(password) <= MAX_PASSPHRASE_BYTES:
         raise WitnessError('PASSPHRASE_BYTES_BOUND')
 
 
@@ -197,15 +204,10 @@ def public_key_from_encrypted_pkcs8(encrypted_pkcs8: bytes, password: bytes) -> 
         serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 
 
-def sign_observation(encrypted_pkcs8: bytes, password: bytes, observation: JsonObject, *,
-                     generation: int, predecessor_generation: int | None,
-                     predecessor_digest: str | None,
-                     enroll_first_generation: bool = False) -> bytes:
-    """Sign caller claims only; predecessor identity is explicitly supplied.
-
-    This byte API does not authenticate the supplied predecessor or observation.
-    The CLI additionally verifies the prior witness against external anchors.
-    """
+def signing_payload(observation: JsonObject, generation: int,
+                    predecessor_generation: int | None, predecessor_digest: str | None,
+                    enroll_first_generation: bool) -> JsonObject:
+    """Pure full-envelope preflight; no key read, prompt, signature or publication."""
     current = _generation(generation)
     if type(enroll_first_generation) is not bool:
         raise WitnessError('LITERAL_ENROLLMENT_REQUIRED')
@@ -218,6 +220,22 @@ def sign_observation(encrypted_pkcs8: bytes, password: bytes, observation: JsonO
     payload: JsonObject = dict(scope=SCOPE, generation=current,
         predecessor=_predecessor(current, predecessor_generation, predecessor_digest),
         observation=observation)
+    # A fixed-width Ed25519 hex signature makes this an exact envelope size check.
+    canonical_json({'payload': payload, 'signature': '0' * 128})
+    return payload
+
+
+def sign_observation(encrypted_pkcs8: bytes, password: bytes, observation: JsonObject, *,
+                     generation: int, predecessor_generation: int | None,
+                     predecessor_digest: str | None,
+                     enroll_first_generation: bool = False) -> bytes:
+    """Sign caller claims only; predecessor identity is explicitly supplied.
+
+    This byte API does not authenticate the supplied predecessor or observation.
+    The CLI additionally verifies the prior witness against external anchors.
+    """
+    payload = signing_payload(observation, generation, predecessor_generation,
+                              predecessor_digest, enroll_first_generation)
     message = canonical_json(payload)
     signature = _load_key(encrypted_pkcs8, password).sign(DOMAIN + message)
     return canonical_json({'payload': payload, 'signature': signature.hex()})
@@ -353,7 +371,7 @@ def _hidden_password(*, confirmation: bool) -> bytes:
     with warnings.catch_warnings():
         warnings.simplefilter('error', getpass.GetPassWarning)
         try:
-            first = getpass.getpass('Dedicated preservation key passphrase (hidden): ')
+            first = getpass.getpass('Dedicated key passphrase (16-1024 UTF-8 bytes; hidden; no pasted command lines): ')
             if confirmation and first != getpass.getpass('Repeat dedicated passphrase (hidden): '):
                 raise WitnessError('PASSPHRASES_DIFFER')
         except getpass.GetPassWarning:
@@ -380,7 +398,7 @@ def _required(value: str | None) -> Path:
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         parser = _Parser(description=__doc__)
-        parser.add_argument('--mode', choices=('preview', 'keygen', 'check-key', 'sign', 'verify'), default='preview')
+        parser.add_argument('--mode', choices=('preview', 'keygen', 'check-key', 'check-observation', 'sign', 'verify'), default='preview')
         parser.add_argument('--confirm-run', action='store_true')
         for name in ('key-output', 'public-output', 'key', 'observation', 'output',
                      'witness', 'trusted-public-key', 'previous-witness', 'latest-digest',
@@ -392,9 +410,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser.parse_args(argv)
         if not args.confirm_run or args.mode == 'preview':
             print(json.dumps(dict(status='PREVIEW', input_reads=0, writes=0, credential_reads=0,
+                                  passphrase_min_bytes=MIN_PASSPHRASE_BYTES,
+                                  passphrase_max_bytes=MAX_PASSPHRASE_BYTES,
+                                  passphrase_encoding='UTF-8', hidden_prompt_single_command_only=True,
                                   custody_verified=False, delete_authorised=False, training_eligible=False)))
             return 0
-        if args.mode == 'keygen':
+        if args.mode == 'check-observation':
+            observation = _parse(_read(_required(args.observation), MAX_BYTES), require_canonical=False)
+            signing_payload(observation, _generation(args.generation), args.latest_generation,
+                            args.latest_digest, args.confirm_first_generation_enrollment)
+            result: dict[str, object] = dict(status='OBSERVATION_SIGNING_PREFLIGHT_PASSED_NOT_SIGNATURE',
+                input_reads=1, credential_reads=0, writes=0, signature_verified=False)
+        elif args.mode == 'keygen':
             key_out, public_out = _required(args.key_output), _required(args.public_output)
             _private_path(key_out, output=True)
             _private_path(public_out, output=True)
@@ -405,7 +432,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             public = public_key_from_encrypted_pkcs8(key, password)
             _publish(key_out, key)
             _publish(public_out, public)
-            result: dict[str, object] = dict(status='DEDICATED_KEY_CREATED_NOT_TRUST_ENROLLED', writes=2)
+            result = dict(status='DEDICATED_KEY_CREATED_NOT_TRUST_ENROLLED', writes=2)
         elif args.mode == 'check-key':
             fingerprint = _digest(args.trusted_public_key_sha256)
             public = _read(_required(args.trusted_public_key), 32)
@@ -438,6 +465,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     latest_generation=cast(int, previous_generation), latest_digest=cast(str, previous_digest),
                     trusted_public_key_sha256=fingerprint)
             observation = _parse(_read(_required(args.observation), MAX_BYTES), require_canonical=False)
+            signing_payload(observation, generation, previous_generation, previous_digest, first)
             key = _read(_required(args.key), MAX_KEY_BYTES)
             password = _hidden_password(confirmation=False)
             if not hmac.compare_digest(public_key_from_encrypted_pkcs8(key, password), public):

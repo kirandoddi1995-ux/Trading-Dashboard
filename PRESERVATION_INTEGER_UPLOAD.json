@@ -1,0 +1,30 @@
+{
+  "version": "preservation-integer-upload-v1",
+  "base": "a69870ba0bc59fc206824fe6d9f1db138ae1aec0",
+  "files": {
+    "archive_preservation_inventory.py": "ec497442d9e5d779584a5153db6b15bcea07fe58b2fd2c79889ac8083b69de27",
+    "archive_preservation_witness.py": "af9c7f56410be4bd6a2adf112f1d91469308b5fe5754722d82b14114c21e7959",
+    "tests/test_archive_preservation_witness.py": "6dc49e4d6cba1477b781c31f5d473ba1c6bab09525833bf0f6e8afb0bc7d41b3",
+    "tests/test_archive_preservation_upload_check.py": "6c1362558a20ad267f22af87c56ee4bc50e79e1ede849549cdd9a80f0073111b",
+    "tests/test_outcomes_private_upload_check.py": "fed76d15f85b2ca0035e7d9a5a38ebb2d8fc3a61925d7612145ebb501f89b571",
+    "PRESERVATION_COMMISSION_2026-10-20.md": "9017a39af8a138ed2ddd62ad629772fffb5eeaf895df32756832acf1c8b47998",
+    "tests/test_preservation_integer_contract.py": "500ff891ba4c158e41b29f2a1685226b5345301c836312371183f8babf303703",
+    "preservation_integer_upload_check.py": "a493a9b5da1b0fbf824c3e8820259a5990aaf4e352f3eaf83bf4ec12912d6dca",
+    "tests/test_preservation_integer_upload_check.py": "58f0e30c1bd1a5100ce902f87476c6eef872a90b0bb1206156ab8b34f0fed3d5",
+    "PRESERVATION_INTEGER_REPAIR_2026-10-20.md": "14412a1cab1fee2582970cdc6c381d63092072c7779e35b74d76bcba83e554b7",
+    "PRESERVATION_INTEGER_UPLOAD.json": null
+  },
+  "prerequisites": {
+    "programme_next_upload_check.py": "c975be41f99994b2159e1e19b699fb1b71e6699e186bb6bb19e711adfcd01a81",
+    "constraints.txt": "433d34cc1146a838c792b8b417acefed300895a3543d62a295cb00c2791a7ba3",
+    "ARCHIVE_PRESERVATION_UPLOAD.json": "f0aaeb5fbd843578d4ec573000f48a6f8f2c9be6176f379f56776ec0cb703d7e",
+    "OUTCOMES_PRIVATE_UPLOAD.json": "56857aaaca948094a68a326527b1b89e05ebb82137e5d1fa0012909a79d05a30",
+    "archive_catalog_verify.py": "f63723a83bb9ee4a39790ad064da1caf91dbb291081bf7592c0e90eea323ef61",
+    "outcomes_private_container.py": "03098b9e0466fb5f38c247fcdf1a9c9b490b0b63c9c2e307f65c242a8371a110",
+    "outcomes_private_worker.py": "c40f12d445a63de0d05b20e696476950563d09347f507e61c7e8f98a6e0ee0f2",
+    "normal_user_test_run.py": "72a58c562beae96e2f770dff4589bd6ec2fd760fd0165e62ddd45502f3ef875d",
+    "tests/sql-harness/package-lock.json": "f8a3f615f5815cef039b6f133914e724abe25117424c9a612b3c678454e1af4d",
+    "scheduled_collector.py": "6be0f30152472309f3e83378f6053ed9f1a8b09e2c10be4aecef5343d7554dde",
+    "nifty_session_calendar.py": "b6274191ca3399d65314d238194589482ff88c7599e52bce2517c1c0212a935b"
+  }
+}
