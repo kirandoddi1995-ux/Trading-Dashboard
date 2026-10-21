@@ -1,0 +1,29 @@
+name: Disposable live logical backup conformance
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_disposable:
+        description: Synthetic PostgreSQL only; never project data or credentials
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+jobs:
+  synthetic:
+    if: ${{ inputs.confirm_disposable && vars.LIVE_BACKUP_CONFORMANCE_ENABLED == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install existing pinned signature dependency
+        run: python -m pip install cryptography==50.0.1
+      - name: Pull reviewed Linux AMD64 PostgreSQL 17.11 image
+        run: docker pull --platform linux/amd64 postgres@sha256:66aafa11cf15800a3c94763f7e11d1e7b2e37e5e84bc4ce027cb6e1e4bfaf4df
+      - name: Rehearse source and restore in two isolated synthetic clusters
+        run: python live_backup_conformance.py --execute --confirm-disposable

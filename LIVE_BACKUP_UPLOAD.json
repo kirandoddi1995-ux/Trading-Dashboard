@@ -1,0 +1,43 @@
+{
+  "version": "live-backup-upload-v2-security",
+  "base": "563665a32e5454633b0c27256072a7249503c520",
+  "files": {
+    "live_database_backup.py": "62b009b7521e5c18145e88349b9645a0a8c49268bdd105df8f531f25c29fffc4",
+    "live_backup_conformance.py": "46c4667e232904ce65ee00ef30fe4e30f22949511926f266388b1354f65d7f12",
+    "tests/test_live_database_backup.py": "9dfcd97789e1ae8f67b7432be9eef99079e1755c326d7f07d689b8eb5302d564",
+    "tests/test_live_backup_conformance.py": "03dd4341137ad673831824b65d086076636ebacf82e40dfc88004b7f2bdf2275",
+    ".github/workflows/live-backup-conformance.yml": "7bfc4df5c9a44f303a34fe184dafba86401824fe094716ffd1913c9c40ce3bff",
+    "live_backup_upload_check.py": "c68fd019c6f14eea5d721bdb678035fbe2d5df1aedac5244baa77bc46564f0b9",
+    "tests/test_live_backup_upload_check.py": "a4d84c4cbf3123fc3e2539b7165f811a3716e3923e617f88417c8fe3d695f9ff",
+    "LIVE_BACKUP_HANDOFF_2026-10-21.md": "07babcb856970f45dc5058d2c1837cfaa4fd1fa16e76bc1d3118b07a6aa8e1f5",
+    "tests/test_dependency_security.py": "7b1644f4bba0483028efa1c2eec145f84287fba7e7d6472ee99b8bd9d9220aa5",
+    "DEPENDENCY_SECURITY_HANDOFF_2026-10-21.md": "72f14d69f99ef44f184753625ad8bcd00c3701f709421327a439e6cae0d2c41c",
+    "constraints.txt": "de193df5d74ce93e8583c732317cc6553e9c9543156f64fd416c88e6c3bc2454",
+    ".github/workflows/quality.yml": "dbeedbe1f67ce1b8843de621477393f2844b0be4de874af5de0050dfa9033c79",
+    "tests/test_archive_verify_upload_check.py": "ff8cf92bb3980c9ab78e409e4a66d5491e1a96d6554f81bfb22768e0d4332eaf",
+    "tests/test_commissioning_next_upload_check.py": "b06b80573425c255d7324a772aa435f446a338fe0d2cbb0ee30fbb717cfce872",
+    "tests/test_legacy_rehearsal_upload_check.py": "b81066dd6af3549c8904367ac73d6395dc1f58d873bb9a8e0b8e20aa5b6bb255",
+    "tests/test_recovery_incident_upload_check.py": "655df57723cb137a604b081bce1a97857afc81cc0859d34538923e083f4bbdd9",
+    "tests/test_outcomes_footer_upload_check.py": "677adb15c823b559b45835976865456667cc945f86ec09d6314ba3532cb332e5",
+    "tests/test_outcomes_large_upload_check.py": "bc94950662e585d4dcd8970f89795bed8bd9eba8183d00c02269ced46ca7d406",
+    "tests/test_archive_preservation_upload_check.py": "21098846be0d1048955d2291d415ba42b3e8c78c44f7e2524b73a6faa8e5b94f",
+    "tests/test_outcomes_private_upload_check.py": "4e7efc5de6b6ca22808566645c930d373969b2a1f6c89a1ab73d28f4664740bf",
+    "tests/test_preservation_integer_upload_check.py": "f66b83e3fa5508da4309dc1f127ff3715638b2e7f4bca0dcd42cea685252ef86",
+    "tests/test_outcomes_readonly_upload_check.py": "980c440ea70ee97c1cd1cf29edc9ef2a445214dec8b2ba8a59cb281b82c92aaa",
+    "tests/test_recovery_contract_upload_check.py": "0611ba7fcb94201c051b59142ecb1e0d1a9cb6a338456a38f83bf03f470453db",
+    "requirements-forward-operations.txt": "8a4258900e3e8a7aaaac288da454c0d8b527a046e4c29b214daefe57f237b369",
+    "future_ops_diagnostics.py": "ab9241605a8e1d92f91178173e1385e94716626504e4aaad4c2e6399368b7c29",
+    "LIVE_BACKUP_UPLOAD.json": null
+  },
+  "prerequisites": {
+    "programme_next_upload_check.py": "c975be41f99994b2159e1e19b699fb1b71e6699e186bb6bb19e711adfcd01a81",
+    "archive_preservation_inventory.py": "ec497442d9e5d779584a5153db6b15bcea07fe58b2fd2c79889ac8083b69de27",
+    "archive_preservation_witness.py": "6348101f6e1ed5789854ee700539e2ca078b030c7b5a500d0d9a3901e05570cc",
+    "archive_restore_policy.py": "dab6613432f93f473d585535df63b2d4102d9010d35b6889898dc9f1e6124c25",
+    "archive_recovery_binding.py": "7a267a61bdf681ee7b3195576d025810182950674fe57ea304c83048330d5910",
+    "project_conductor.py": "f318b5ca3c14d00f34c3780c2384fcc45f243e3c1fcede54515e6227c9a858bb",
+    "programme_agent_team.py": "b66d5ba6f366f2edfda299bbdb7340a2c8ce6a53a8e797d80c86aca7ca227e5a",
+    "tests/test_workflow_runtimes.py": "008779697c5507bfb0feb70160bf3251f840bd08f72d08a67b5c2329a3d07415",
+    "RECOVERY_CONTRACT_UPLOAD.json": "377ed1544ec06cdf39ed5b1ffd4e703a5bb8f44183958b2b1b920bf253cf016b"
+  }
+}

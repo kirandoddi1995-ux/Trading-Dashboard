@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 import legacy_rehearsal_upload_check as checker
+from live_backup_upload_check import reviewed_successor_hash as security_successor_hash
 
 
 
@@ -17,9 +18,9 @@ def test_final_manifest_and_builder_staged_source_mapping() -> None:
     assert set(value['files']) == set(checker.FILES)
     for name, expected in value['files'].items():
         path = root / name
-        assert (expected is None) if name == checker.MANIFEST else checker.sha(checker.safe_read(path)) == expected
+        assert (expected is None) if name == checker.MANIFEST else checker.sha(checker.safe_read(path)) == security_successor_hash(root, name, expected)
     for name, expected in checker.PREREQUISITES.items():
-        assert checker.sha(checker.safe_read(root / name)) == expected
+        assert checker.sha(checker.safe_read(root / name)) == security_successor_hash(root, name, expected)
 
 
 def test_wrong_base_has_no_io(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

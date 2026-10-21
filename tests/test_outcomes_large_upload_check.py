@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 import outcomes_large_upload_check as checker
+from live_backup_upload_check import reviewed_successor_hash as security_successor_hash
 
 
 def test_final_manifest_and_public_prerequisite_hashes() -> None:
@@ -21,9 +22,9 @@ def test_final_manifest_and_public_prerequisite_hashes() -> None:
         if name == checker.MANIFEST:
             assert pin is None
         else:
-            assert checker.sha(checker.safe_read(root / name)) == pin
+            assert checker.sha(checker.safe_read(root / name)) == security_successor_hash(root, name, pin)
     for name, pin in checker.PREREQUISITES.items():
-        assert checker.sha(checker.safe_read(root / name)) == pin
+        assert checker.sha(checker.safe_read(root / name)) == security_successor_hash(root, name, pin)
 
 
 def test_wrong_base_has_no_git_or_file_reads(monkeypatch: pytest.MonkeyPatch) -> None:

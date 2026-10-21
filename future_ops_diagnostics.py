@@ -25,7 +25,7 @@ PINS = {
     'numpy': '2.4.6', 'pandas': '2.3.3', 'python-dateutil': '2.9.0.post0',
     'six': '1.17.0', 'pytz': '2026.3.post1', 'tzdata': '2026.3',
     'pyarrow': '24.0.0', 'requests': '2.34.2', 'urllib3': '2.8.0',
-    'certifi': '2026.7.22', 'charset-normalizer': '3.5.1', 'idna': '3.19',
+    'certifi': '2026.10.19', 'charset-normalizer': '3.5.1', 'idna': '3.19',
 }
 
 
