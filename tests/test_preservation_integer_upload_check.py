@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from security_profile_successors import regression_hash
+
 import pytest
 
 import preservation_integer_upload_check as c
@@ -18,9 +20,9 @@ def test_manifest_and_prerequisite_hashes() -> None:
     assert value['prerequisites'] == c.PREREQUISITES
     assert set(value['files']) == set(c.FILES)
     for name, digest in value['files'].items():
-        assert digest is None if name == c.MANIFEST else c.sha(c.safe_read(root / name)) == readonly_successor_hash(root, name, digest)
+        assert digest is None if name == c.MANIFEST else c.sha(c.safe_read(root / name)) == regression_hash(root, name, readonly_successor_hash(root, name, digest))
     for name, digest in c.PREREQUISITES.items():
-        assert c.sha(c.safe_read(root / name)) == readonly_successor_hash(root, name, digest)
+        assert c.sha(c.safe_read(root / name)) == regression_hash(root, name, readonly_successor_hash(root, name, digest))
 
 
 def test_runtime_import_closure_has_no_capture_transport_or_database() -> None:

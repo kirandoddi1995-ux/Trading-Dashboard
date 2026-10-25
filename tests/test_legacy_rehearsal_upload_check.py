@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from security_profile_successors import regression_hash
+
 import pytest
 
 import legacy_rehearsal_upload_check as checker
@@ -17,9 +19,9 @@ def test_final_manifest_and_builder_staged_source_mapping() -> None:
     assert set(value['files']) == set(checker.FILES)
     for name, expected in value['files'].items():
         path = root / name
-        assert (expected is None) if name == checker.MANIFEST else checker.sha(checker.safe_read(path)) == expected
+        assert (expected is None) if name == checker.MANIFEST else checker.sha(checker.safe_read(path)) == regression_hash(root, name, expected)
     for name, expected in checker.PREREQUISITES.items():
-        assert checker.sha(checker.safe_read(root / name)) == expected
+        assert checker.sha(checker.safe_read(root / name)) == regression_hash(root, name, expected)
 
 
 def test_wrong_base_has_no_io(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

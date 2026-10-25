@@ -1,4 +1,5 @@
 import streamlit as st
+from build_identity import source_identity
 import technical_indicators as ta
 import mf_research as mfr
 import app_runtime as runtime
@@ -5989,6 +5990,9 @@ if selected_tab in {"Equities Screener & Risk", "Options & Derivatives Chain",
 if selected_tab == "Settings":
     st.subheader("Settings")
     st.caption("Risk, data-source and production-safety configuration.")
+    with st.expander("Running source identity (read-only)"):
+        st.json(source_identity(Path(__file__).resolve().parent))
+        st.caption("Git HEAD is not a clean-source or deployment attestation. If Git metadata is absent, compare app_sha256; the commit remains UNKNOWN.")
     with st.expander("Release configuration (names and sources only)"):
         _render_release_configuration()
     sec1, sec2, sec3 = st.columns(3)
