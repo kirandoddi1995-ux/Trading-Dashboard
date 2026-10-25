@@ -174,9 +174,16 @@ def run_long_bracket_backtest(
                     pending = None
 
         if position is not None:
-            # Daily/intrabar OHLC does not reveal within-bar ordering. Stop-first
-            # is the conservative deterministic rule when both levels touch.
-            if float(row["Low"]) <= position["stop"]:
+            # The opening print precedes the unknown intrabar path. A long stop
+            # cannot fill above an adverse gap open. An opening target fill is
+            # conservatively capped at the limit, not credited with gap upside.
+            opening = float(row["Open"])
+            if opening <= position["stop"]:
+                close_position(bar_at, opening, "STOP")
+            elif opening >= position["target"]:
+                close_position(bar_at, position["target"], "TARGET")
+            # Inside the bracket, OHLC cannot establish touch order: stop first.
+            elif float(row["Low"]) <= position["stop"]:
                 close_position(bar_at, position["stop"], "STOP")
             elif float(row["High"]) >= position["target"]:
                 close_position(bar_at, position["target"], "TARGET")
@@ -219,7 +226,9 @@ def run_long_bracket_backtest(
         raise AssertionError("Detected a non-causal fill")
     return {
         "status": "PASS",
-        "engine": "event-driven-bracket-v1",
+        "engine": "event-driven-bracket-v2",
+        "opening_gap_rule": "adverse_stop_at_open_target_capped_at_limit",
+        "fill_evidence": False,
         "same_bar_rule": "stop_first_conservative",
         "trades": trades,
         "events": [asdict(event) for event in events],

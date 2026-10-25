@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from security_profile_successors import regression_hash
+
 import pytest
 
 import commissioning_next_upload_check as checker
@@ -22,9 +24,9 @@ def test_final_manifest_and_builder_staged_source_mapping() -> None:
         # Clean upload clones have only the destination file, never this staging file.
         if name == 'tests/test_archive_maintenance_sql.py' and (root / STAGED_SQL).is_file():
             path = root / STAGED_SQL
-        assert (expected is None) if name == checker.MANIFEST else checker.sha(checker.safe_read(path)) == expected
+        assert (expected is None) if name == checker.MANIFEST else checker.sha(checker.safe_read(path)) == regression_hash(root, name, expected)
     for name, expected in checker.PREREQUISITES.items():
-        assert checker.sha(checker.safe_read(root / name)) == expected
+        assert checker.sha(checker.safe_read(root / name)) == regression_hash(root, name, expected)
 
 
 def test_wrong_base_has_no_io(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

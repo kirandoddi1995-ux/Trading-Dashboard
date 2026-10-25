@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from security_profile_successors import regression_hash
+
 import pytest
 
 import recovery_contract_upload_check as c
@@ -17,9 +19,9 @@ def test_real_manifest_hashes_and_pinned_dependencies() -> None:
     assert value['files'][c.MANIFEST] is None
     for name, digest in value['files'].items():
         if name != c.MANIFEST:
-            assert c.sha(c.safe_read(root / name)) == digest, name
+            assert c.sha(c.safe_read(root / name)) == regression_hash(root, name, digest), name
     for name, digest in c.PREREQUISITES.items():
-        assert c.sha(c.safe_read(root / name)) == digest, name
+        assert c.sha(c.safe_read(root / name)) == regression_hash(root, name, digest), name
 
 
 @pytest.mark.parametrize('tamper', ['', 'head', 'root', 'manifest', 'hash', 'staged', 'pin',

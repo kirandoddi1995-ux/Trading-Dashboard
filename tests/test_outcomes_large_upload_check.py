@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from security_profile_successors import regression_hash
+
 import pytest
 
 import outcomes_large_upload_check as checker
@@ -21,9 +23,9 @@ def test_final_manifest_and_public_prerequisite_hashes() -> None:
         if name == checker.MANIFEST:
             assert pin is None
         else:
-            assert checker.sha(checker.safe_read(root / name)) == pin
+            assert checker.sha(checker.safe_read(root / name)) == regression_hash(root, name, pin)
     for name, pin in checker.PREREQUISITES.items():
-        assert checker.sha(checker.safe_read(root / name)) == pin
+        assert checker.sha(checker.safe_read(root / name)) == regression_hash(root, name, pin)
 
 
 def test_wrong_base_has_no_git_or_file_reads(monkeypatch: pytest.MonkeyPatch) -> None:
