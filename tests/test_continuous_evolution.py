@@ -26,6 +26,17 @@ from resilience_control_plane import ResilienceControlPlane, ResiliencePolicy, S
 
 NOW = dt.datetime.now(dt.timezone.utc)
 SCHEMA_HASH = "f" * 64
+EV_ARITHMETIC_COMPLETE_AST_SHA256 = "b86c2270d6e893636b6308ccf2e9f4f0d98789e7c1e81c8412209f212a1da01b"
+
+
+def _canonical_complete_ast_dump(node):
+    # Python 3.12 includes empty lists by default; 3.13 requires show_empty=True.
+    # Include empty lists and retain field/list order. Optional None fields keep
+    # the original ast.dump omission rule; source-location attributes stay out.
+    options = {"include_attributes": False}
+    if "show_empty" in inspect.signature(ast.dump).parameters:
+        options["show_empty"] = True
+    return ast.dump(node, **options)
 
 
 def test_shared_ev_arithmetic_is_identical_to_pre_refactor_body():
@@ -33,8 +44,95 @@ def test_shared_ev_arithmetic_is_identical_to_pre_refactor_body():
     # rounding, failures and result fields. Only the evidence validator moves.
     function = ast.parse(inspect.getsource(_execution_outcome_ev)).body[0]
     body = ast.Module(body=function.body[1:], type_ignores=[])
-    digest = hashlib.sha256(ast.dump(body, include_attributes=False).encode()).hexdigest()
-    assert digest == "3292adf9e0c30f88efda33704f07e32bfddfc224795e19d686c1f2287c19612e"
+    digest = hashlib.sha256(_canonical_complete_ast_dump(body).encode()).hexdigest()
+    assert digest == EV_ARITHMETIC_COMPLETE_AST_SHA256
+
+
+@pytest.mark.parametrize("api", ["legacy_empty_lists_default", "explicit_show_empty"])
+def test_complete_ast_pin_is_identical_for_both_dump_api_shapes(api, monkeypatch):
+    function = ast.parse(inspect.getsource(_execution_outcome_ev)).body[0]
+    body = ast.Module(body=function.body[1:], type_ignores=[])
+    native_dump = ast.dump
+    native_options = {"include_attributes": False}
+    if "show_empty" in inspect.signature(native_dump).parameters:
+        native_options["show_empty"] = True
+    calls = []
+
+    def legacy_dump(node, include_attributes=False):
+        calls.append((include_attributes, None))
+        return native_dump(node, **native_options)
+
+    def explicit_dump(node, include_attributes=False, *, show_empty=False):
+        calls.append((include_attributes, show_empty))
+        return native_dump(node, **native_options)
+
+    monkeypatch.setattr(ast, "dump", legacy_dump if api == "legacy_empty_lists_default" else explicit_dump)
+    complete = _canonical_complete_ast_dump(body)
+    assert hashlib.sha256(complete.encode()).hexdigest() == EV_ARITHMETIC_COMPLETE_AST_SHA256
+    assert calls == [(False, None if api == "legacy_empty_lists_default" else True)]
+    assert "keywords=[]" in complete and "orelse=[]" in complete and "type_ignores=[]" in complete
+
+
+@pytest.mark.parametrize("change", [
+    "constant", "operator", "validation", "rounding", "result_key", "result_order",
+    "statement_order", "missing_empty_keywords", "missing_empty_orelse", "populated_empty_keywords",
+])
+def test_complete_ast_pin_rejects_arithmetic_and_structure_mutations(change):
+    function = ast.parse(inspect.getsource(_execution_outcome_ev)).body[0]
+    original = ast.Module(body=function.body[1:], type_ignores=[])
+    assert hashlib.sha256(_canonical_complete_ast_dump(original).encode()).hexdigest() == EV_ARITHMETIC_COMPLETE_AST_SHA256
+    body = copy.deepcopy(original)
+    if change == "constant":
+        tolerance = next(node for node in ast.walk(body)
+                         if isinstance(node, ast.Constant) and type(node.value) is float and node.value == 1e-6)
+        tolerance.value = 1e-5
+    elif change == "operator":
+        conditional = next(node for node in body.body if isinstance(node, ast.Assign)
+                           and any(isinstance(target, ast.Name) and target.id == "conditional" for target in node.targets))
+        assert isinstance(conditional.value, ast.BinOp) and isinstance(conditional.value.op, ast.Sub)
+        conditional.value.op = ast.Add()
+    elif change == "validation":
+        guard = body.body[1]
+        assert isinstance(guard, ast.If) and isinstance(guard.test, ast.UnaryOp)
+        assert isinstance(guard.test.op, ast.Not)
+        guard.test = guard.test.operand
+    elif change == "rounding":
+        precision = next(node for node in ast.walk(body)
+                         if isinstance(node, ast.Constant) and node.value == ".2f")
+        precision.value = ".3f"
+    elif change in {"result_key", "result_order"}:
+        returned = body.body[-1]
+        assert isinstance(returned, ast.Return) and isinstance(returned.value, ast.Dict)
+        fields = returned.value
+        if change == "result_key":
+            key = next(key for key in fields.keys
+                       if isinstance(key, ast.Constant) and key.value == "expected_value_per_order")
+            key.value = "changed_expected_value_per_order"
+        else:
+            fields.keys[0], fields.keys[1] = fields.keys[1], fields.keys[0]
+            fields.values[0], fields.values[1] = fields.values[1], fields.values[0]
+    elif change == "statement_order":
+        assert isinstance(body.body[-3], ast.If) and isinstance(body.body[-2], ast.If)
+        body.body[-3], body.body[-2] = body.body[-2], body.body[-3]
+    elif change in {"missing_empty_keywords", "populated_empty_keywords"}:
+        call = next(node for node in ast.walk(body) if isinstance(node, ast.Call) and node.keywords == [])
+        if change == "missing_empty_keywords":
+            # This mutation collides with [] when a formatter omits empty fields.
+            del call.keywords
+        else:
+            call.keywords.append(ast.keyword(arg="synthetic", value=ast.Constant(value=1)))
+    else:
+        assert change == "missing_empty_orelse"
+        guard = next(node for node in ast.walk(body) if isinstance(node, ast.If) and node.orelse == [])
+        del guard.orelse
+    assert hashlib.sha256(_canonical_complete_ast_dump(body).encode()).hexdigest() != EV_ARITHMETIC_COMPLETE_AST_SHA256
+
+
+def test_complete_ast_pin_ignores_only_source_location_attributes():
+    function = ast.parse(inspect.getsource(_execution_outcome_ev)).body[0]
+    body = ast.Module(body=function.body[1:], type_ignores=[])
+    ast.increment_lineno(body, 100)
+    assert hashlib.sha256(_canonical_complete_ast_dump(body).encode()).hexdigest() == EV_ARITHMETIC_COMPLETE_AST_SHA256
 
 
 def test_non_equity_serialized_ev_result_is_unchanged():

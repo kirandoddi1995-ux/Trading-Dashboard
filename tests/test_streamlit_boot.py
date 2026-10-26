@@ -14,63 +14,92 @@ from equity_runtime_health import RELEASE_FILES
 ROOT = Path(__file__).resolve().parents[1]
 
 PROBE = r'''
-import importlib.abc, importlib.machinery, json, pathlib, platform, sys
+import asyncio, importlib.abc, importlib.machinery, json, pathlib, platform, sys
+from contextlib import contextmanager
 platform.platform()
 platform.processor()
-events = []
-def network(event, args):
-    if event in {'socket.connect', 'socket.getaddrinfo', 'socket.sendto'}:
-        events.append(event)
-        raise RuntimeError('Boot smoke external network forbidden')
-sys.addaudithook(network)
-import matplotlib.font_manager
-def subprocess_guard(event, args):
-    if event in {'subprocess.Popen', 'os.system'}:
-        events.append(event)
-        raise RuntimeError('Boot smoke subprocess forbidden')
-sys.addaudithook(subprocess_guard)
-root = pathlib.Path.cwd()
-local_names = set(json.loads(sys.argv[2]))
-sys.path[:] = [str(root)] + [p for p in sys.path if p and
-    ('site-packages' in pathlib.Path(p).parts or not pathlib.Path(p, 'app.py').exists())]
-class LocalOnly(importlib.abc.MetaPathFinder):
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] not in local_names:
-            return None
-        spec = importlib.machinery.PathFinder.find_spec(fullname, [str(root)] if path is None else path)
-        if spec is None or not spec.origin or not pathlib.Path(spec.origin).resolve().is_relative_to(root):
-            raise ImportError('Boot dependency absent from disposable checkout')
-        return spec
-sys.meta_path.insert(0, LocalOnly())
-from streamlit.testing.v1 import AppTest
-app = AppTest.from_file(str(root/'app.py'), default_timeout=90)
-mode = sys.argv[1]
-if mode == 'login':
-    app.secrets['auth'] = dict(redirect_uri='http://localhost:8501/oauth2callback',
-        cookie_secret='SYNTHETIC_COOKIE', client_id='SYNTHETIC_CLIENT',
-        client_secret='SYNTHETIC_SECRET', server_metadata_url='https://example.invalid/.well-known/openid-configuration')
-else:
-    app.secrets['APP_ENV'] = 'development'
-    app.secrets['APP_AUTH_MODE'] = 'disabled'
-    app.session_state['primary_section'] = 'Settings'
-    app.secrets['EXPECTED_APP_BUILD'] = 'SYNTHETIC_EXPECTED_BUILD'
-    app.secrets['RESILIENCE_POLICY_SHA256'] = 'a' * 64
-    app.secrets['EXPECTED_EQUITY_CODE_SHA256'] = 'b' * 64
-app.run()
-assert not app.exception, str([(item.message, item.stack_trace) for item in app.exception])
-if mode == 'login':
-    assert any(item.label == 'Sign in' for item in app.button), 'OIDC sign-in gate did not render'
-else:
-    assert any(item.value == 'Quant Terminal' for item in app.title), 'Application title missing'
-    assert any(item.label == 'Auto-Refresh Interval' for item in app.select_slider), 'Settings page did not render'
-    diagnostics = [json.loads(item.value)['release_configuration_sources']
-                   for item in app.json if 'release_configuration_sources' in json.loads(item.value)]
-    assert len(diagnostics) == 1, 'Release source diagnostics missing'
-    assert all(item['status'] == 'VALID' and item['source'] == 'STREAMLIT_ROOT'
-               and item['matches_actual'] is False for item in diagnostics[0].values())
-    assert 'SYNTHETIC_EXPECTED_BUILD' not in json.dumps(diagnostics)
-assert not events, 'Boot attempted external I/O'
-print('STREAMLIT_BOOT_VERIFIED')
+
+@contextmanager
+def preallocated_event_loops():
+    # Trusted framework initialization only: Windows event loops use local
+    # wakeup socketpairs. Application connect/DNS/sendto denial stays intact.
+    original_factory = asyncio.new_event_loop
+    unused = []
+    violations = []
+    try:
+        for _ in range(2):
+            unused.append(original_factory())
+        def bounded_factory():
+            if not unused:
+                violations.append('POOL_EXHAUSTED')
+                raise RuntimeError('Boot smoke reserved event loops exhausted')
+            return unused.pop()
+        asyncio.new_event_loop = bounded_factory
+        yield violations
+        if violations:
+            raise RuntimeError('Boot smoke loop pool violation')
+    finally:
+        asyncio.new_event_loop = original_factory
+        # Streamlit owns handed-out loops; close only those never handed out.
+        for loop in unused:
+            loop.close()
+
+# Enter before application I/O guards; always restore/close on failed boot.
+with preallocated_event_loops() as loop_violations:
+    events = []
+    def network(event, args):
+        if event in {'socket.connect', 'socket.getaddrinfo', 'socket.sendto'}:
+            events.append(event)
+            raise RuntimeError('Boot smoke external network forbidden')
+    sys.addaudithook(network)
+    import matplotlib.font_manager
+    def subprocess_guard(event, args):
+        if event in {'subprocess.Popen', 'os.system'}:
+            events.append(event)
+            raise RuntimeError('Boot smoke subprocess forbidden')
+    sys.addaudithook(subprocess_guard)
+    root = pathlib.Path.cwd()
+    local_names = set(json.loads(sys.argv[2]))
+    sys.path[:] = [str(root)] + [p for p in sys.path if p and
+        ('site-packages' in pathlib.Path(p).parts or not pathlib.Path(p, 'app.py').exists())]
+    class LocalOnly(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname.split('.')[0] not in local_names:
+                return None
+            spec = importlib.machinery.PathFinder.find_spec(fullname, [str(root)] if path is None else path)
+            if spec is None or not spec.origin or not pathlib.Path(spec.origin).resolve().is_relative_to(root):
+                raise ImportError('Boot dependency absent from disposable checkout')
+            return spec
+    sys.meta_path.insert(0, LocalOnly())
+    from streamlit.testing.v1 import AppTest
+    app = AppTest.from_file(str(root/'app.py'), default_timeout=90)
+    mode = sys.argv[1]
+    if mode == 'login':
+        app.secrets['auth'] = dict(redirect_uri='http://localhost:8501/oauth2callback',
+            cookie_secret='SYNTHETIC_COOKIE', client_id='SYNTHETIC_CLIENT',
+            client_secret='SYNTHETIC_SECRET', server_metadata_url='https://example.invalid/.well-known/openid-configuration')
+    else:
+        app.secrets['APP_ENV'] = 'development'
+        app.secrets['APP_AUTH_MODE'] = 'disabled'
+        app.session_state['primary_section'] = 'Settings'
+        app.secrets['EXPECTED_APP_BUILD'] = 'SYNTHETIC_EXPECTED_BUILD'
+        app.secrets['RESILIENCE_POLICY_SHA256'] = 'a' * 64
+        app.secrets['EXPECTED_EQUITY_CODE_SHA256'] = 'b' * 64
+    app.run()
+    assert not app.exception, str([(item.message, item.stack_trace) for item in app.exception])
+    if mode == 'login':
+        assert any(item.label == 'Sign in' for item in app.button), 'OIDC sign-in gate did not render'
+    else:
+        assert any(item.value == 'Quant Terminal' for item in app.title), 'Application title missing'
+        assert any(item.label == 'Auto-Refresh Interval' for item in app.select_slider), 'Settings page did not render'
+        diagnostics = [json.loads(item.value)['release_configuration_sources']
+                       for item in app.json if 'release_configuration_sources' in json.loads(item.value)]
+        assert len(diagnostics) == 1, 'Release source diagnostics missing'
+        assert all(item['status'] == 'VALID' and item['source'] == 'STREAMLIT_ROOT'
+                   and item['matches_actual'] is False for item in diagnostics[0].values())
+        assert 'SYNTHETIC_EXPECTED_BUILD' not in json.dumps(diagnostics)
+    assert not events, 'Boot attempted external I/O'
+    print('STREAMLIT_BOOT_VERIFIED')
 '''
 
 
@@ -96,3 +125,36 @@ def test_actual_app_boot_offline(mode, tmp_path):
                              env=env, capture_output=True, text=True, timeout=120, check=False)
     assert process.returncode == 0, process.stderr[-6000:]
     assert 'STREAMLIT_BOOT_VERIFIED' in process.stdout
+
+
+def test_loop_pool_latches_caught_exhaustion_and_closes_unused(monkeypatch):
+    import asyncio
+    from unittest.mock import Mock
+
+    created = []
+
+    def fake_factory():
+        loop = Mock()
+        created.append(loop)
+        return loop
+
+    monkeypatch.setattr(asyncio, 'new_event_loop', fake_factory)
+    namespace = {}
+    exec(PROBE.split('with preallocated_event_loops() as loop_violations:')[0], namespace)
+    with pytest.raises(RuntimeError, match='loop pool violation'):
+        with namespace['preallocated_event_loops']() as violations:
+            asyncio.new_event_loop()
+            asyncio.new_event_loop()
+            try:
+                asyncio.new_event_loop()
+            except RuntimeError:
+                pass
+            assert violations == ['POOL_EXHAUSTED']
+    assert asyncio.new_event_loop is fake_factory
+    assert all(not loop.close.called for loop in created)
+    # Failed boot before either handoff closes exactly the two unused loops.
+    with pytest.raises(ValueError, match='synthetic failure'):
+        with namespace['preallocated_event_loops']():
+            raise ValueError('synthetic failure')
+    assert asyncio.new_event_loop is fake_factory
+    assert all(loop.close.called for loop in created[-2:])

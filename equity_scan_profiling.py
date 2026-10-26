@@ -156,6 +156,35 @@ def profile_controller(function):
     return wrapped
 
 
+class _ObservedLock:
+    """Observe the cache's own lock while preserving both Streamlit protocols."""
+
+    def __init__(self, lock):
+        self.lock = lock
+
+    def __getattr__(self, name):
+        return getattr(self.lock, name)
+
+    def acquire(self, *args, **kwargs):
+        start = time.perf_counter()
+        acquired = self.lock.acquire(*args, **kwargs)
+        if acquired:
+            _record("health_cache_lock_wait", start, time.perf_counter())
+        return acquired
+
+    def release(self):
+        return self.lock.release()
+
+    def __enter__(self):
+        start = time.perf_counter()
+        result = self.lock.__enter__()
+        _record("health_cache_lock_wait", start, time.perf_counter())
+        return result
+
+    def __exit__(self, *args):
+        return self.lock.__exit__(*args)
+
+
 class _ObservedCache:
     """Delegate to the SAME cache and locks; only time actual lock acquisition."""
     def __init__(self, cache):
@@ -164,17 +193,12 @@ class _ObservedCache:
     def __getattr__(self, name):
         return getattr(self.cache, name)
 
-    @contextmanager
     def compute_value_lock(self, key):
-        lock = self.cache.compute_value_lock(key)
-        start = time.perf_counter()
-        with lock:
-            _record("health_cache_lock_wait", start, time.perf_counter())
-            yield
+        return _ObservedLock(self.cache.compute_value_lock(key))
 
 
 def observe_health_cache(cached_function):
-    """Streamlit 1.62 adapter; unsupported internals leave caching untouched.
+    """Streamlit 1.62/1.66 adapter; unsupported internals leave caching untouched.
 
 The original double-checked cache miss and its lock are retained. Cache hits
 have no lock-wait event (not an invented zero). The returned function retains

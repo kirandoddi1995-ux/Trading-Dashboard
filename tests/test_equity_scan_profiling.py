@@ -133,3 +133,59 @@ def test_unsupported_cache_explicit_not_false_zero():
     report = p.snapshot("unsupported")
     assert "health_cache_lock_instrumentation_unavailable" in report["totals"]
     assert "health_cache_lock_wait" not in report["totals"]
+
+
+def test_observed_lock_preserves_acquire_arguments_results_and_exceptions():
+    calls = []
+    error = RuntimeError("synthetic lock failure")
+
+    class Lock:
+        def acquire(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            if kwargs.get("timeout") == -2:
+                raise error
+            return kwargs.get("blocking") is not False
+
+        def release(self):
+            calls.append("release")
+            return "released"
+
+    observed = p._ObservedLock(Lock())
+
+    def body():
+        assert observed.acquire(blocking=False) is False
+        assert observed.acquire(timeout=.1) is True
+        assert observed.release() == "released"
+        with pytest.raises(RuntimeError) as caught:
+            observed.acquire(timeout=-2)
+        assert caught.value is error
+    in_scan(body, "lock-protocol")
+    assert calls == [((), {"blocking": False}), ((), {"timeout": .1}),
+                     "release", ((), {"timeout": -2})]
+    assert p.snapshot("lock-protocol")["totals"]["health_cache_lock_wait"]["count"] == 1
+
+
+def test_observed_lock_preserves_legacy_context_enter_and_exit():
+    error = ValueError("synthetic body")
+    calls = []
+    sentinel = object()
+
+    class ContextLock:
+        def __enter__(self):
+            calls.append("enter")
+            return sentinel
+
+        def __exit__(self, *args):
+            calls.append(args)
+            return False
+
+    def body():
+        with pytest.raises(ValueError) as caught:
+            with p._ObservedLock(ContextLock()) as acquired:
+                assert acquired is sentinel
+                raise error
+        assert caught.value is error
+    in_scan(body, "legacy-lock")
+    assert calls[0] == "enter" and calls[1][0] is ValueError
+    assert calls[1][1] is error
+    assert p.snapshot("legacy-lock")["totals"]["health_cache_lock_wait"]["count"] == 1

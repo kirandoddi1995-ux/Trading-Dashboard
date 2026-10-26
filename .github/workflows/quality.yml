@@ -8,9 +8,13 @@ permissions:
   contents: read
 
 jobs:
-  verify:
+  verify_profiles:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12.15', '3.13.9', '3.13.16']
     env:
       EQUITY_TEST_PGLITE_MODULE: ${{ github.workspace }}/tests/sql-harness/node_modules/@electric-sql/pglite
     steps:
@@ -26,9 +30,10 @@ jobs:
           node -e 'const {PGlite}=require(process.env.EQUITY_TEST_PGLITE_MODULE); (async()=>{const db=new PGlite(); try {await db.waitReady; await db.query("SELECT 1");} finally {await db.close();}})().catch(e=>{console.error(e);process.exitCode=1;});'
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.13'
+          python-version: ${{ matrix.python }}
           cache: pip
-      - run: pip install -r requirements.txt pytest pip-audit
+      - run: python -m pip install 'pip==26.2.2'
+      - run: python -m pip install -r requirements.txt 'pytest==9.1.1' 'pip-audit==2.10.1'
       - name: Install offline research type-check tooling
         run: python -m pip install -r requirements-automation.txt
       - run: python -m pip check
@@ -44,9 +49,21 @@ jobs:
         run: python -c "import research_integrity, automated_development_checks, automated_directional_replay, research_replay_comparison, automation_health, research_input_archive, archived_directional_replay, research_replay_check, export_development_inputs, forward_nifty_producer, forward_nifty_archive, forward_nifty_job, nifty_previous_close, forward_windows_credentials, forward_nifty_schedule"
       # requirements.txt already loads constraints.txt via its first `-c` line.
       - run: python -m pip_audit -r requirements.txt
+      - name: Audit the actual installed verification environment
+        run: python -m pip_audit
       - name: Real Streamlit boot smoke (offline, synthetic configuration)
         run: python -m pytest -q tests/test_streamlit_boot.py
       - run: python -m pytest -q
       - run: python resilience_acceptance.py --game-day
       - run: python deployment_canary.py
       - run: python package_release.py
+
+  verify:
+    runs-on: ubuntu-24.04
+    needs: [verify_profiles]
+    if: ${{ always() }}
+    steps:
+      - name: Require every reviewed Python profile to pass
+        env:
+          PROFILES_RESULT: ${{ needs.verify_profiles.result }}
+        run: test "$PROFILES_RESULT" = success
