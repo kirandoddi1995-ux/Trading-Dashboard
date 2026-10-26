@@ -9859,6 +9859,10 @@ elif selected_tab == "NIFTY Research Lab":
     render_research_lab(st)
 
 elif selected_tab in ("Backtesting", "ML Models", "Automation Reports", "Evidence Assistant"):
+    if selected_tab == "Backtesting":
+        from equity_eod_study_ui import render_equity_eod_study
+        render_equity_eod_study(st)
+        st.caption("The existing generated NIFTY workbench below is a separate uncommissioned demonstration, not the cash-equity study.")
     try:
         from research_workbench_ui import render_workbench
         render_workbench(st, selected_tab)
