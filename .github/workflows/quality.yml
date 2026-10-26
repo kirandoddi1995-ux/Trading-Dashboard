@@ -28,9 +28,16 @@ jobs:
         with:
           python-version: '3.13'
           cache: pip
+      - name: Bootstrap pinned patched installer
+        run: python -m pip install 'pip==26.2.2'
       - run: pip install -r requirements.txt pytest pip-audit
       - name: Install offline research type-check tooling
         run: python -m pip install -r requirements-automation.txt
+      - name: Install pinned equity study type-check tooling
+        run: |
+          python -m venv /tmp/equity-study-typecheck
+          /tmp/equity-study-typecheck/bin/python -m pip install 'pip==26.2.2'
+          /tmp/equity-study-typecheck/bin/python -m pip install -r requirements-equity-study-tools.txt
       - run: python -m pip check
       - run: python environment_preflight.py --strict
       - run: python production_readiness.py --repository-only --strict
@@ -40,10 +47,16 @@ jobs:
         run: python -c "import app"
       - name: Strict type checks for research automation (mandatory)
         run: python -m mypy --config-file mypy-automation.ini --cache-dir /tmp/research-mypy-cache
+      - name: Strict type checks for equity study (mandatory)
+        run: /tmp/equity-study-typecheck/bin/python -m mypy --config-file mypy-equity-study.ini --cache-dir /tmp/equity-study-mypy-cache
       - name: Import offline research foundation (mandatory)
         run: python -c "import research_integrity, automated_development_checks, automated_directional_replay, research_replay_comparison, automation_health, research_input_archive, archived_directional_replay, research_replay_check, export_development_inputs, forward_nifty_producer, forward_nifty_archive, forward_nifty_job, nifty_previous_close, forward_windows_credentials, forward_nifty_schedule"
       # requirements.txt already loads constraints.txt via its first `-c` line.
       - run: python -m pip_audit -r requirements.txt
+      - name: Audit installed application and CI tools (mandatory)
+        run: python -m pip_audit
+      - name: Audit equity study tooling (mandatory)
+        run: python -m pip_audit -r requirements-equity-study-tools.txt
       - name: Real Streamlit boot smoke (offline, synthetic configuration)
         run: python -m pytest -q tests/test_streamlit_boot.py
       - run: python -m pytest -q
