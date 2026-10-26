@@ -43,8 +43,41 @@ def test_workflows_use_reviewed_image_and_node24_actions(path):
     # Do not conceal incompatible actions by opting back into obsolete runtimes.
     assert 'ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION' not in text
     assert 'FORCE_JAVASCRIPT_ACTIONS_TO_NODE24' not in text
-    versions = re.findall(r"python-version:\s*'([^']+)'", text)
-    assert versions and set(versions) == {'3.13'}
+    reviewed_quality_caller = (path.name == 'research-self-check.yml' and re.search(
+        r'^\s*uses:\s*\./\.github/workflows/quality\.yml\s*$',
+        path.read_text(encoding='utf-8'), re.MULTILINE))
+    if path.name == 'quality.yml' or reviewed_quality_caller:
+        # The deployed host is 3.12.15; retain both reviewed 3.13 tool targets.
+        # Include the existing named caller of this exact reusable workflow.
+        # This is not a broad runtime exception for unrelated workflows.
+        targets = re.findall(r"^\s*python-version:\s*(.*?)\s*$", text, re.MULTILINE)
+        matrices = re.findall(r"^\s*python:\s*\[(.*?)\]\s*$", text, re.MULTILINE)
+        assert targets == ['${{ matrix.python }}'] and len(matrices) == 1
+        assert matrices[0] == "'3.12.15', '3.13.9', '3.13.16'"
+        assert 'needs: [verify_profiles]' in text
+        assert 'run: test "$PROFILES_RESULT" = success' in text
+    else:
+        versions = re.findall(r"python-version:\s*'([^']+)'", text)
+        assert versions and set(versions) == {'3.13'}
+
+
+@pytest.mark.parametrize('matrix', ["'3.12.15', '3.13.9'", "'3.12.15', '3.13.9', '3.15'",
+                                  "'3.12.15', '3.13.9', '3.13.16', '3.14'"])
+def test_quality_python_exception_rejects_missing_changed_or_extra_targets(tmp_path, matrix):
+    source = (ROOT / '.github/workflows/quality.yml').read_text(encoding='utf-8')
+    path = tmp_path / 'quality.yml'
+    path.write_text(source.replace("'3.12.15', '3.13.9', '3.13.16'", matrix), encoding='utf-8')
+    with pytest.raises(AssertionError):
+        test_workflows_use_reviewed_image_and_node24_actions(path)
+
+
+def test_reviewed_quality_caller_cannot_hide_a_changed_callee_matrix(tmp_path):
+    source = (ROOT / '.github/workflows/quality.yml').read_text(encoding='utf-8')
+    (tmp_path / 'quality.yml').write_text(source.replace("'3.12.15', '3.13.9', '3.13.16'", "'3.15'"), encoding='utf-8')
+    caller = tmp_path / 'research-self-check.yml'
+    caller.write_text('jobs:\n  verify:\n    uses: ./.github/workflows/quality.yml\n', encoding='utf-8')
+    with pytest.raises(AssertionError):
+        test_workflows_use_reviewed_image_and_node24_actions(caller)
 
 
 def test_sql_harness_runtime_and_locked_install_are_preserved():
