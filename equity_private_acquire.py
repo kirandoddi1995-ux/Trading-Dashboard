@@ -47,6 +47,8 @@ MIN_FREE_BYTES = 512 * 1024 * 1024
 FLAGS = {'training_eligible': False, 'promotion_authorised': False,
          'whole_app_accuracy_verified': False, 'performance_claim_verified': False,
          'custody_verified': False, 'executable_prices_verified': False}
+HTTP_REVIEW_STATUS = {'STUDY_HTTP_401_UNAUTHENTICATED': 401,
+                      'STUDY_HTTP_403_FORBIDDEN': 403}
 SAFE_CODES = frozenset({
     'STUDY_LINKED_PATH_REJECTED', 'STUDY_PRIVATE_ABSOLUTE_ROOT_REQUIRED',
     'STUDY_PARENT_REQUIRED', 'STUDY_CAPTURE_OR_REPOSITORY_ROOT_REJECTED',
@@ -64,6 +66,7 @@ SAFE_CODES = frozenset({
     'STUDY_RUNTIME_PROFILE_REVIEW',
     'STUDY_LOCAL_FREE_SPACE_REVIEW',
     'STUDY_ORIGINAL_OR_ARTIFACT_CHANGED',
+    'STUDY_HTTP_401_UNAUTHENTICATED', 'STUDY_HTTP_403_FORBIDDEN',
 })
 
 
@@ -221,7 +224,8 @@ def _https_get(window: Window, token: str) -> Response:
             return Response(stream.status, raw, stream.headers.get_content_type())
     except HTTPError as exc:
         # Do not decode, print or retain error bodies (which may echo auth input).
-        code = 'STUDY_HTTP_AUTH_REVIEW' if exc.code in (401, 403) else 'STUDY_HTTP_REVIEW'
+        code = {401: 'STUDY_HTTP_401_UNAUTHENTICATED',
+                403: 'STUDY_HTTP_403_FORBIDDEN'}.get(exc.code, 'STUDY_HTTP_REVIEW')
         exc.close()
         raise StudyBlocked(code) from None
 
@@ -413,6 +417,7 @@ def acquire(root: Path, *, token_reader: Callable[[], str] = _hidden_token,
         # Preserve every original and intent. No retry/resume/cleanup is performed.
         failure = {'status': 'BLOCKED', 'code': 'PRIVATE_EQUITY_STUDY_STOP_REVIEW',
                    'stage': stage, 'category': _category(exc),
+                   'http_status': HTTP_REVIEW_STATUS.get(_category(exc)),
                    'request_attempts': attempts, 'originals_retained': len(files),
                    'retry_authorised': False, 'raw_error_printed': False, **FLAGS}
         try:
@@ -470,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
     # Never print rows, prices, file paths, keys, headers, token or exception text.
     print(json.dumps({key: result[key] for key in ('status', 'code', 'stage',
           'request_attempts', 'completed_windows', 'rows', 'retry_authorised',
-          'approval_authority', 'category', 'acquisition_sha256') if key in result}, sort_keys=True))
+          'approval_authority', 'category', 'http_status', 'acquisition_sha256') if key in result}, sort_keys=True))
     return 0 if result['status'] == 'PRIVATE_EQUITY_DATA_AND_SCENARIO_REPORT_NOT_PROMOTION' else 2
 
 
