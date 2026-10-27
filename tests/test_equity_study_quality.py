@@ -46,3 +46,22 @@ def test_audit_cache_filelock_api_roundtrip_remains_compatible(tmp_path):
     assert cache.get("https://example.invalid/synthetic") == b"synthetic bytes"
     cache.delete("https://example.invalid/synthetic")
     assert cache.get("https://example.invalid/synthetic") is None
+
+
+def test_isolated_study_profile_includes_acquisition_imports_at_reviewed_pins():
+    # Constraints restrict versions; they do not install omitted distributions.
+    import ast
+    source = ast.parse((ROOT / "equity_private_acquire.py").read_text(encoding="utf-8"))
+    imports = {alias.name for node in ast.walk(source) if isinstance(node, ast.Import)
+               for alias in node.names}
+    assert {"certifi", "pyarrow", "pyarrow.parquet"} <= imports
+    tools = (ROOT / "requirements-equity-study-tools.txt").read_text(encoding="utf-8")
+    constraints = (ROOT / "constraints.txt").read_text(encoding="utf-8")
+    direct = {line.strip() for line in tools.splitlines()
+              if line.strip() and not line.lstrip().startswith("#")}
+    for requirement in ("certifi==2026.10.23", "pyarrow==24.0.0"):
+        assert requirement in direct
+        assert requirement in constraints.splitlines()
+    assert direct == {"-c constraints.txt", "pip==26.2.2", "mypy==2.4.0",
+                      "pandas-stubs==2.3.3.260113", "types-pytz==2026.5.0.20261006",
+                      "certifi==2026.10.23", "pyarrow==24.0.0"}
