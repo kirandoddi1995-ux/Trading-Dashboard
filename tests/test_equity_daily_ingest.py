@@ -49,6 +49,24 @@ def test_exact_original_binding_sorted_rows_and_no_authority():
     assert result["availability_timestamp"] == "NOT_ESTABLISHED_BY_CANDLE_LABEL"
 
 
+@pytest.mark.parametrize('label', ['00:00:00', '09:15:00'])
+def test_reviewed_daily_labels_are_not_close_availability_timestamps(label):
+    row = candle()
+    row[0] = '2022-01-03T' + label + '+05:30'
+    result = decode(raw([row]))
+    assert result['rows'][0]['provider_timestamp'] == row[0]
+    assert result['rows'][0]['date'] == '2022-01-03'
+    assert result['availability_timestamp'] == 'NOT_ESTABLISHED_BY_CANDLE_LABEL'
+    assert result['data_admission_authorised'] is False
+
+
+def test_close_label_is_not_silently_accepted_as_daily_provider_label():
+    row = candle()
+    row[0] = '2022-01-03T15:30:00+05:30'
+    with pytest.raises(ValueError, match='DAILY_CANDLE_LABEL_UNREVIEWED'):
+        decode(raw([row]))
+
+
 @pytest.mark.parametrize("position,value", [(1, True), (1, "100"), (1, 0), (1, -1), (1, 10**10),
     (2, 99), (3, 106), (4, None), (5, True), (5, -1), (5, 1.5), (5, 10**15), (6, -1)])
 def test_bad_prices_shape_and_integer_types_rejected(position, value):

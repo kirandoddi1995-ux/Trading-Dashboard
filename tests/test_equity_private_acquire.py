@@ -59,6 +59,51 @@ def test_invalid_arguments_do_not_echo_possible_secret(capsys):
     assert json.loads(captured.out)['category'] == 'STUDY_ARGUMENT_REVIEW'
 
 
+@pytest.mark.parametrize('status,category,safe_status', [
+    (401, 'STUDY_HTTP_401_UNAUTHENTICATED', 401),
+    (403, 'STUDY_HTTP_403_FORBIDDEN', 403),
+    (429, 'STUDY_HTTP_REVIEW', None), (500, 'STUDY_HTTP_REVIEW', None)])
+def test_http_rejection_is_classified_without_reading_or_logging_body(
+    tmp_path, monkeypatch, isolated, status, category, safe_status,
+):
+    from urllib.error import HTTPError
+    class Body:
+        closed = False
+        def read(self, *args):
+            pytest.fail('HTTP error body must not be read')
+        def close(self):
+            self.closed = True
+    body = Body()
+    class Opener:
+        def open(self, request, timeout):
+            raise HTTPError('https://example.invalid/' + TOKEN, status, TOKEN,
+                            {'X-Synthetic-Private': TOKEN}, body)
+    monkeypatch.setattr(acq, 'build_opener', lambda *args: Opener())
+    result = acq.acquire(tmp_path / 'failed', token_reader=lambda: TOKEN,
+                         fetch=acq._https_get, pause=lambda _: pytest.fail('retry'))
+    assert result['category'] == category and result['http_status'] == safe_status
+    assert result['request_attempts'] == 1 and result['originals_retained'] == 0
+    assert result['retry_authorised'] is False and body.closed
+    saved = (tmp_path / 'failed' / 'failure.json').read_text()
+    assert TOKEN not in saved and TOKEN not in json.dumps(result)
+    assert json.loads(saved)['http_status'] == safe_status
+
+
+def test_fixed_http_status_reaches_console_without_secret_or_retry(monkeypatch, capsys):
+    # Exercise the reviewed CLI branch even when hosted pytest uses another patch.
+    monkeypatch.setattr(acq.sys, 'version_info', (3, 13, 9))
+    monkeypatch.setattr(acq, 'acquire', lambda root: {'status': 'BLOCKED',
+        'code': 'PRIVATE_EQUITY_STUDY_STOP_REVIEW', 'stage': 'REQUEST',
+        'category': 'STUDY_HTTP_403_FORBIDDEN', 'http_status': 403,
+        'request_attempts': 1, 'retry_authorised': False, 'unprinted_private': TOKEN})
+    assert acq.main(['--output', 'synthetic', '--confirm-private-study']) == 2
+    output = capsys.readouterr()
+    assert TOKEN not in output.out + output.err
+    value = json.loads(output.out)
+    assert value['http_status'] == 403 and value['request_attempts'] == 1
+    assert value['retry_authorised'] is False
+
+
 def test_hidden_prompt_refuses_non_tty_before_read(monkeypatch):
     monkeypatch.setattr(acq.sys, 'stdin', SimpleNamespace(isatty=lambda: False))
     monkeypatch.setattr(acq.getpass, 'getpass', lambda *a: pytest.fail('Must not read'))
