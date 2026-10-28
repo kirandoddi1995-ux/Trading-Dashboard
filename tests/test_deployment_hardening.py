@@ -105,6 +105,41 @@ def test_tensorflow_protobuf_mismatch_is_detected_without_importing_tensorflow()
 def test_release_inputs_pin_auth_and_exclude_tensorflow():
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8").casefold()
     constraints = (ROOT / "constraints.txt").read_text(encoding="utf-8").casefold()
-    assert "authlib==1.8.0" in requirements
+    assert "authlib==1.9.1" in requirements
+    assert "msgpack==1.2.3" in constraints
     assert "protobuf==7.36.0" in constraints
     assert "tensorflow" not in requirements
+
+
+@pytest.mark.parametrize('material', [b'', '', {'kty': 'oct', 'k': ''}])
+def test_authlib_rejects_empty_hmac_material(material):
+    from authlib.jose.rfc7518.oct_key import OctKey
+    with pytest.raises(ValueError, match='empty'):
+        key = OctKey.import_key(material)
+        key.get_op_key('verify')
+
+
+def test_patched_oidc_jose_rejects_wrong_issuer_and_preserves_valid_signature():
+    from authlib.jose import JsonWebToken
+    from authlib.jose.errors import JoseError
+    codec = JsonWebToken(['HS256'])
+    key = b'SYNTHETIC_TEST_MATERIAL_NOT_PRODUCTION_' * 2
+    payload = {'sub': 'synthetic-subject', 'iss': 'https://issuer.example.invalid',
+               'aud': 'synthetic-client'}
+    token = codec.encode({'alg': 'HS256'}, payload, key)
+    claims = codec.decode(token, key, claims_options={
+        'iss': {'essential': True, 'value': payload['iss']},
+        'aud': {'essential': True, 'value': payload['aud']}})
+    claims.validate()
+    assert claims['sub'] == 'synthetic-subject'
+    with pytest.raises(JoseError):
+        codec.decode(token, key, claims_options={
+            'iss': {'essential': True, 'value': 'https://wrong.example.invalid'}}).validate()
+
+
+def test_patched_msgpack_preserves_roundtrip_and_strict_map_key_rejection():
+    import msgpack
+    value = {"kind": "synthetic", "values": [1, 2, 3]}
+    assert msgpack.unpackb(msgpack.packb(value, use_bin_type=True), raw=False) == value
+    with pytest.raises(ValueError, match="map key"):
+        msgpack.unpackb(msgpack.packb({42: b"synthetic"}, use_bin_type=True))

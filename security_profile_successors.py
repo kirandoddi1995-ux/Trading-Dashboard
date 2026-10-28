@@ -13,7 +13,9 @@ from pathlib import Path
 
 BASE = "563665a32e5454633b0c27256072a7249503c520"
 RECORD = "APP_SECURITY_SOURCE_TRANSITIONS.json"
-RECORD_SHA256 = "fad604b72c6b3cddec40fc397a5ebbd4d9d22869529b3ba23c9c036d0b35f5a2"
+PREVIOUS_RECORD = "APP_SECURITY_SOURCE_TRANSITIONS_PRE_AUTHLIB.json"
+PREVIOUS_RECORD_SHA256 = "fad604b72c6b3cddec40fc397a5ebbd4d9d22869529b3ba23c9c036d0b35f5a2"
+RECORD_SHA256 = "3c207fca4ad1917e093c3b67af5e541194249ae477d24befa7da7dad930b36d1"
 
 
 def _sha(raw: bytes) -> str:
@@ -36,6 +38,26 @@ def regression_hash(root: Path, name: str, predecessor: str) -> str:
         raise ValueError("SECURITY_TRANSITION_CONTRACT_INVALID")
     if name not in value["files"]:
         return predecessor
+    if name == 'constraints.txt':
+        # Preserve the prior approved record verbatim; enrol exactly one new
+        # constraints digest, not an ignore/fallback for historical admissions.
+        try:
+            previous_raw = (root / PREVIOUS_RECORD).read_bytes()
+        except OSError:
+            raise ValueError('SECURITY_TRANSITION_PREVIOUS_RECORD_REQUIRED') from None
+        if _sha(previous_raw) != PREVIOUS_RECORD_SHA256:
+            raise ValueError('SECURITY_TRANSITION_PREVIOUS_RECORD_CHANGED')
+        previous = json.loads(previous_raw)
+        if set(previous['files']) != set(value['files']):
+            raise ValueError('SECURITY_TRANSITION_LINEAGE_DIFFERS')
+        for path, old in previous['files'].items():
+            new = value['files'][path]
+            if path == 'constraints.txt':
+                if ({k: v for k, v in old.items() if k != 'successor_raw_sha256'} !=
+                        {k: v for k, v in new.items() if k != 'successor_raw_sha256'}):
+                    raise ValueError('SECURITY_TRANSITION_LINEAGE_DIFFERS')
+            elif new != old:
+                raise ValueError('SECURITY_TRANSITION_LINEAGE_DIFFERS')
     entry = value["files"][name]
     original = base64.b64decode(entry["predecessor_base64"], validate=True)
     if (_sha(original) != entry["predecessor_raw_sha256"]
