@@ -78,6 +78,19 @@ def test_prepare_is_unapproved_and_leaves_legacy_unchanged(context):
         stage.prepare(ctx, COMMIT, roots)
 
 
+def test_requester_successor_pin_does_not_admit_an_old_binding(context):
+    ctx = approved(context)
+    binding = json.loads(ctx.binding.read_text())
+    binding['source_sha256']['equity_private_acquire.py'] = (
+        '2ed9792fb606f5d77ec0856323b085beda788ecf9abf5c094f885c15d524ac81')
+    ctx.binding.write_text(json.dumps(binding))
+    with pytest.raises(stage.StageBlocked, match='BINDING_REVIEW_REQUIRED'):
+        stage.execute(ctx, stage.ACK,
+            token_reader=lambda: pytest.fail('Old binding must not prompt'),
+            fetch=lambda *args: pytest.fail('Old binding must not dispatch'))
+    assert not ctx.state.exists()
+
+
 def test_missing_approval_cannot_read_or_reserve(context, monkeypatch):
     ctx, _ = context
     monkeypatch.setattr(stage, '_context', lambda *a: pytest.fail('admission I/O'))

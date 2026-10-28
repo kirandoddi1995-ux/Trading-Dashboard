@@ -305,6 +305,10 @@ def test_https_uses_pinned_host_tls_no_proxy_no_redirect_and_bounded_read(monkey
     assert result.body == candle(window) and observed['url'] == expected
     assert observed['bound'] == acq.MAX_BYTES + 1 and observed['timeout'] == 20
     assert observed['headers']['Authorization'] == 'Bearer ' + TOKEN
+    assert observed['headers']['User-agent'] == 'TradingDashboard-Personal/1.0'
+    assert observed['headers']['Accept'] == 'application/json'
+    assert observed['headers']['Accept-encoding'] == 'identity'
+    assert set(observed['headers']) == {'Authorization', 'Accept', 'Accept-encoding', 'User-agent'}
     proxy, redirects, tls = observed['handlers']
     assert proxy.proxies == {} and tls._context.check_hostname is True
     assert tls._context.verify_mode == acq.ssl.CERT_REQUIRED
