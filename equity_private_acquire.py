@@ -40,6 +40,7 @@ ISINS = (
 )
 YEARS = (2022, 2023, 2024)
 HOST = 'https://api.upstox.com'
+USER_AGENT = 'TradingDashboard-Personal/1.0'
 MAX_REQUESTS = 36
 MAX_TOTAL_BYTES = MAX_REQUESTS * MAX_BYTES
 TIMEOUT_SECONDS = 20
@@ -213,7 +214,8 @@ def _https_get(window: Window, token: str) -> Response:
     url = (HOST + '/v3/historical-candle/' + quote(window.instrument_key, safe='')
            + '/days/1/' + window.end + '/' + window.start)
     request = Request(url, method='GET', headers={'Authorization': 'Bearer ' + token,
-                      'Accept': 'application/json', 'Accept-Encoding': 'identity'})
+                      'Accept': 'application/json', 'Accept-Encoding': 'identity',
+                      'User-Agent': USER_AGENT})
     try:
         with opener.open(request, timeout=TIMEOUT_SECONDS) as stream:
             if stream.geturl() != url:

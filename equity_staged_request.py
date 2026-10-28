@@ -26,7 +26,7 @@ from equity_daily_ingest import MAX_BYTES, decode_daily
 CAMPAIGN = 'equity-eod-12names-2022-2024-v1'
 ACK = 'I_APPROVE_ONE_STAGED_GET_THREE_AGGREGATE'
 UPSTREAM_BASE = '72fe7952cb3d04d967bf8d72c74214f091619c7e'
-REQUESTER_SHA = '2ed9792fb606f5d77ec0856323b085beda788ecf9abf5c094f885c15d524ac81'
+REQUESTER_SHA = '3992e31ac47809b7d573ee4a4fbbc207f73993478a81daee667d1b1886493274'
 LEGACY_SHA = 'daa8b6461eafe9bbd57d09631b7b128533e9bb45f57095c9cca61fb830acedda'
 SOURCES = ('equity_staged_request.py', 'equity_private_acquire.py', 'equity_daily_ingest.py',
            'equity_eod_pilot.py', 'equity_real_report.py', 'event_backtest.py',
