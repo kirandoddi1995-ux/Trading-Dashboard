@@ -3,7 +3,7 @@
 streamlit==1.66.1
 # Match Streamlit Cloud's Arrow workaround; CI and archives use the same version.
 pyarrow==24.0.0
-Authlib==1.8.0
+Authlib==1.9.1
 streamlit-autorefresh==1.0.1
 upstox-python-sdk==2.29.0
 pandas==2.3.3
