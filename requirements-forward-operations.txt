@@ -7,7 +7,7 @@ cffi==2.1.1
 pycparser==3.0
 google-auth==2.57.0
 pyasn1_modules==0.4.2
-pyasn1==0.6.4
+pyasn1==0.6.5
 numpy==2.4.6
 pandas==2.3.3
 python-dateutil==2.9.0.post0
