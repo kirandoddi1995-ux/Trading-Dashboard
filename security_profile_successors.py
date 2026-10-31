@@ -15,7 +15,9 @@ BASE = "563665a32e5454633b0c27256072a7249503c520"
 RECORD = "APP_SECURITY_SOURCE_TRANSITIONS.json"
 PREVIOUS_RECORD = "APP_SECURITY_SOURCE_TRANSITIONS_PRE_AUTHLIB.json"
 PREVIOUS_RECORD_SHA256 = "fad604b72c6b3cddec40fc397a5ebbd4d9d22869529b3ba23c9c036d0b35f5a2"
-RECORD_SHA256 = "3c207fca4ad1917e093c3b67af5e541194249ae477d24befa7da7dad930b36d1"
+PYASN1_PREVIOUS_RECORD = "APP_SECURITY_SOURCE_TRANSITIONS_PRE_PYASN1.json"
+PYASN1_PREVIOUS_RECORD_SHA256 = "3c207fca4ad1917e093c3b67af5e541194249ae477d24befa7da7dad930b36d1"
+RECORD_SHA256 = '84ba96fe008b64b1b7a9a616118217ecc97b07755ce66862a4755cb6ccbb4d52'
 
 
 def _sha(raw: bytes) -> str:
@@ -39,6 +41,17 @@ def regression_hash(root: Path, name: str, predecessor: str) -> str:
     if name not in value["files"]:
         return predecessor
     if name == 'constraints.txt':
+        # The pyasn1 patch extends the exact approved chain; no old-byte fallback.
+        try:
+            pyasn1_previous_raw = (root / PYASN1_PREVIOUS_RECORD).read_bytes()
+        except OSError:
+            raise ValueError('SECURITY_TRANSITION_PYASN1_PREVIOUS_RECORD_REQUIRED') from None
+        if _sha(pyasn1_previous_raw) != PYASN1_PREVIOUS_RECORD_SHA256:
+            raise ValueError('SECURITY_TRANSITION_PYASN1_PREVIOUS_RECORD_CHANGED')
+        expected = json.loads(pyasn1_previous_raw)
+        expected['files']['constraints.txt']['successor_raw_sha256'] = value['files']['constraints.txt']['successor_raw_sha256']
+        if expected != value:
+            raise ValueError('SECURITY_TRANSITION_LINEAGE_DIFFERS')
         # Preserve the prior approved record verbatim; enrol exactly one new
         # constraints digest, not an ignore/fallback for historical admissions.
         try:

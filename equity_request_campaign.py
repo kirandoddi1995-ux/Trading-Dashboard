@@ -20,6 +20,7 @@ from typing import Any, Callable
 import equity_staged_request as old
 import equity_private_acquire as acq
 from equity_staged_request import Context, StageBlocked
+from equity_daily_ingest import MAX_BYTES, decode_daily
 
 FORMAT = 'equity-staged-campaign-v2'
 NAME = 'equity_request_campaign.py'
@@ -39,9 +40,15 @@ def _source(ctx: Context) -> dict[str, str]:
 
 
 def _history(ctx: Context, roots: list[Path]) -> dict[str, Any]:
-    if len(roots) != 2 or roots[0] == roots[1]:
+    if len(roots) != 2:
         raise StageBlocked('LEGACY_REVIEW_REQUIRED')
-    previous = [old.predecessor(ctx, root) for root in roots]
+    # Validate the supplied spelling BEFORE resolving: links/traversal stay rejected.
+    for root in roots:
+        old._path(root)
+    canonical = sorted((root.resolve(strict=True) for root in roots), key=str)
+    if canonical[0] == canonical[1]:
+        raise StageBlocked('LEGACY_REVIEW_REQUIRED')
+    previous = [old.predecessor(ctx, root) for root in canonical]
     if previous[0]['sidecar_sha256']['intent.json'] == previous[1]['sidecar_sha256']['intent.json']:
         raise StageBlocked('LEGACY_REVIEW_REQUIRED')
     # An observation, not an invented provider receipt or retained third body.
@@ -67,7 +74,16 @@ def _checked_history(ctx: Context, value: Any) -> dict[str, Any]:
     return actual
 
 
-def _existing(ctx: Context, history: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+def _require_absent(path: Path) -> None:
+    old._path(path)
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return
+    raise StageBlocked('INCOMPLETE_OR_FAILED_STAGE_NO_RETRY')
+
+
+def _existing(ctx: Context, history: dict[str, Any], *, active_stage: int | None = None) -> tuple[list[dict[str, Any]], str]:
     if not ctx.state.exists():
         return [], 'ABSENT'
     old._path(ctx.state)
@@ -88,6 +104,14 @@ def _existing(ctx: Context, history: dict[str, Any]) -> tuple[list[dict[str, Any
     stage_count = 0
     for number in range(1, len(acq.windows()) + 1):
         path = ctx.state / f'stage-{number:02d}'
+        if number == active_stage:
+            # Only the caller's already-exclusive current claim may be incomplete.
+            old._path(path)
+            if not path.is_dir():
+                raise StageBlocked('CAMPAIGN_STATE_REVIEW_REQUIRED')
+            _require_absent(path / 'complete')
+            _require_absent(path / 'failure.json')
+            continue
         if not path.exists():
             missing = True
             continue
@@ -107,6 +131,23 @@ def _existing(ctx: Context, history: dict[str, Any]) -> tuple[list[dict[str, Any
             result, result_sha = old._read(path / 'result.json')
         except FileNotFoundError:
             raise StageBlocked('INCOMPLETE_OR_FAILED_STAGE_NO_RETRY') from None
+        commit = reservation.get('execution_commit')
+        if type(commit) is not str or re.fullmatch('[0-9a-f]{40}', commit) is None:
+            raise StageBlocked('CAMPAIGN_STATE_REVIEW_REQUIRED')
+        approved, approved_sha = old._read(ctx.approval_parent / f'campaign-stage-{number:02d}-{commit}.json')
+        if (reservation.get('binding_sha256') != approved_sha
+                or approved.get('execution_commit') != commit
+                or approved.get('format') != FORMAT or approved.get('campaign') != old.CAMPAIGN
+                or approved.get('approval_granted') is not False or approved.get('retry_authorised') is not False
+                or old._canonical(approved.get('history')) != old._canonical(history)
+                or any(reservation.get(key) != approved.get(key) for key in (
+                    'stage_number', 'stage_allowance', 'prior_consumed_requests',
+                    'stage_cumulative_maximum', 'previous_state_sha256', 'windows', 'source_sha256'))
+                or reservation.get('credentials_saved') is not False
+                or type(reservation.get('runtime_versions')) is not dict
+                or reservation['runtime_versions'] != result.get('runtime_versions')
+                or reservation.get('user_agent') != acq.USER_AGENT):
+            raise StageBlocked('CAMPAIGN_STATE_REVIEW_REQUIRED')
         count = reservation.get('stage_allowance')
         remaining = len(acq.windows()) - len(retained)
         if (type(count) is not int or not 1 <= count <= remaining
@@ -151,7 +192,7 @@ def _existing(ctx: Context, history: dict[str, Any]) -> tuple[list[dict[str, Any
                     or item.get('input_origin') not in
                     ('NATIVE_TLS_NOT_PROVIDER_SIGNATURE', 'INJECTED_SYNTHETIC_NOT_MARKET_EVIDENCE')):
                 raise StageBlocked('CAMPAIGN_STATE_REVIEW_REQUIRED')
-            for key, name, bound in (('original', window.filename, acq.MAX_BYTES),
+            for key, name, bound in (('original', window.filename, MAX_BYTES),
                     ('decoded', f'{window.ordinal:03d}-decoded.json', 8 * 1024 * 1024)):
                 identity = item.get(key)
                 if (type(identity) is not dict or set(identity) != {'name', 'bytes', 'sha256'}
@@ -159,6 +200,14 @@ def _existing(ctx: Context, history: dict[str, Any]) -> tuple[list[dict[str, Any
                         or not 0 < identity['bytes'] <= bound):
                     raise StageBlocked('CAMPAIGN_STATE_REVIEW_REQUIRED')
                 acq._verify_files(path, [identity])
+            original_bytes = (path / item['original']['name']).read_bytes()
+            decoded = decode_daily(original_bytes, instrument_key=window.instrument_key,
+                start=window.start, end=window.end)
+            dates = [row['date'] for row in decoded['rows']]
+            if ((path / item['decoded']['name']).read_bytes() != old._canonical(decoded)
+                    or item['rows'] != decoded['row_count']
+                    or item['first_date'] != min(dates) or item['last_date'] != max(dates)):
+                raise StageBlocked('CAMPAIGN_STATE_REVIEW_REQUIRED')
             retained.append(item)
         reports = result.get('reports')
         if type(reports) is not list or len(reports) != 2:
@@ -169,11 +218,15 @@ def _existing(ctx: Context, history: dict[str, Any]) -> tuple[list[dict[str, Any
                     or not 0 < identity['bytes'] <= 65536):
                 raise StageBlocked('CAMPAIGN_STATE_REVIEW_REQUIRED')
         acq._verify_files(path, reports)
+        coverage = _coverage(retained)
+        if ((path / 'coverage.json').read_bytes() != old._canonical(coverage)
+                or (path / 'coverage.html').read_bytes() != _coverage_html(coverage)):
+            raise StageBlocked('CAMPAIGN_STATE_REVIEW_REQUIRED')
         chain.extend([reservation_sha, result_sha])
         stage_count += 1
-    if not stage_count:
+    if not stage_count and active_stage != 1:
         raise StageBlocked('PARTIAL_CAMPAIGN_INITIALIZATION_NO_RETRY')
-    return retained, old._hash(old._canonical(chain))
+    return retained, old._hash(old._canonical(chain)) if stage_count else 'ABSENT'
 
 
 def _binding_path(ctx: Context, number: int) -> Path:
@@ -237,6 +290,11 @@ def _coverage(items: list[dict[str, Any]]) -> dict[str, Any]:
         'baseline_evaluation': 'INSUFFICIENT_COHORT_INPUTS_AND_SOURCE_RECONCILIATION', **FLAGS}
 
 
+def _coverage_html(coverage: dict[str, Any]) -> bytes:
+    return ('<!doctype html><meta charset="utf-8"><title>Private equity coverage</title><h1>Coverage only — no accuracy claim</h1><pre>'
+        + html.escape(json.dumps(coverage, indent=2)) + '</pre>').encode()
+
+
 def execute(ctx: Context, number: int, ack: str, *,
             token_reader: Callable[[], str] = acq._hidden_token,
             fetch: Callable[[acq.Window, str], acq.Response] = acq._https_get,
@@ -282,7 +340,8 @@ def execute(ctx: Context, number: int, ack: str, *,
     claim = ctx.state / f'stage-{number:02d}'
     origin = ('NATIVE_TLS_NOT_PROVIDER_SIGNATURE' if fetch is acq._https_get
               else 'INJECTED_SYNTHETIC_NOT_MARKET_EVIDENCE')
-    reservation = {'format': FORMAT, 'stage_number': number, 'binding_sha256': digest,
+    reservation = {'format': FORMAT, 'execution_commit': ctx.reviewed_commit,
+        'stage_number': number, 'binding_sha256': digest,
         'stage_allowance': allowance, 'prior_consumed_requests': binding['prior_consumed_requests'],
         'stage_cumulative_maximum': binding['stage_cumulative_maximum'],
         'previous_state_sha256': state_sha, 'windows': binding['windows'],
@@ -305,6 +364,14 @@ def execute(ctx: Context, number: int, ack: str, *,
             observed_status = None
             if sources != _source(ctx):
                 raise StageBlocked('SOURCE_REVIEW_REQUIRED')
+            # Hidden input/rate pauses may take time: recheck approval and the
+            # completed prefix before EACH dispatch, without reusing the claim.
+            latest_binding, latest_digest = old._read(_binding_path(ctx, number))
+            if (latest_digest != digest or old._canonical(latest_binding) != old._canonical(binding)
+                    or old._canonical(_checked_history(ctx, binding['history'])) != old._canonical(history)
+                    or _existing(ctx, history, active_stage=number) != (retained, state_sha)
+                    or old._read(claim / 'reservation.json')[1] != reservation_sha):
+                raise StageBlocked('SOURCE_REVIEW_REQUIRED')
             if shutil.disk_usage(claim).free < acq.MIN_FREE_BYTES:
                 raise StageBlocked('LOCAL_SPACE_REVIEW_REQUIRED')
             acq._write(claim, f'{window.ordinal:03d}-intent.json', old._canonical(window._asdict()))
@@ -315,11 +382,11 @@ def execute(ctx: Context, number: int, ack: str, *,
             phase = 'RESPONSE_CHECK'
             if response.status != 200 or response.content_type.lower().split(';')[0].strip() != 'application/json':
                 raise acq.StudyBlocked('STUDY_RESPONSE_REVIEW')
-            if type(response.body) is not bytes or not 0 < len(response.body) <= acq.MAX_BYTES:
+            if type(response.body) is not bytes or not 0 < len(response.body) <= MAX_BYTES:
                 raise acq.StudyBlocked('STUDY_RESPONSE_BYTES_BOUND')
             acq._secret_screen(response.body, token)
             phase = 'DECODE'
-            decoded = old.decode_daily(response.body, instrument_key=window.instrument_key,
+            decoded = decode_daily(response.body, instrument_key=window.instrument_key,
                 start=window.start, end=window.end)
             if sources != _source(ctx):
                 raise StageBlocked('SOURCE_REVIEW_REQUIRED')
@@ -337,8 +404,7 @@ def execute(ctx: Context, number: int, ack: str, *,
         phase = 'COVERAGE_REPORT'
         coverage = _coverage(retained + current)
         reports = [acq._write(claim, 'coverage.json', old._canonical(coverage)),
-            acq._write(claim, 'coverage.html', ('<!doctype html><meta charset="utf-8"><title>Private equity coverage</title><h1>Coverage only — no accuracy claim</h1><pre>'
-                + html.escape(json.dumps(coverage, indent=2)) + '</pre>').encode())]
+            acq._write(claim, 'coverage.html', _coverage_html(coverage))]
         for item in current:
             acq._verify_files(claim, [item['original'], item['decoded']])
         result = {'status': 'CAMPAIGN_STAGE_RETAINED_NOT_DATA_ADMISSION',
@@ -346,11 +412,28 @@ def execute(ctx: Context, number: int, ack: str, *,
             'prior_consumed_requests': binding['prior_consumed_requests'],
             'known_cumulative_attempts': binding['prior_consumed_requests'] + attempts,
             'stage_allowance': allowance, 'stage_number': number, 'retained': current,
+            'runtime_versions': profile,
             'input_origin': origin,
             'retained_windows_total': len(retained) + len(current), 'reports': reports,
             'reservation_held': True, 'retry_authorised': False, **FLAGS}
         acq._write(claim, 'result.json', old._canonical(result))
-        (claim / 'complete').mkdir()  # Local commit marker, only after all data/result write acknowledgements.
+        # Publication can succeed even if mkdir's acknowledgement raises. Resolve
+        # that ambiguity by readback, never by repeating a request or deleting state.
+        marker = claim / 'complete'
+        _require_absent(marker)
+        _require_absent(claim / 'failure.json')
+        try:
+            marker.mkdir()
+        except OSError:
+            old._path(marker)
+            _require_absent(claim / 'failure.json')
+            if (not marker.is_dir() or next(marker.iterdir(), None) is not None
+                    or old._read(claim / 'result.json')[1] != old._hash(old._canonical(result))):
+                raise
+        old._path(marker)
+        _require_absent(claim / 'failure.json')
+        if not marker.is_dir() or next(marker.iterdir(), None) is not None:
+            raise StageBlocked('CAMPAIGN_STATE_REVIEW_REQUIRED')
         return result
     except (Exception, KeyboardInterrupt) as exc:
         category = str(exc) if isinstance(exc, StageBlocked) else acq._category(exc)

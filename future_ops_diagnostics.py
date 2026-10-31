@@ -21,7 +21,7 @@ IMPORT_DISTRIBUTIONS = {
 # Direct imports plus their publicly pinned runtime dependencies and Windows zone data.
 PINS = {
     'cryptography': '50.0.1', 'cffi': '2.1.1', 'pycparser': '3.0',
-    'google-auth': '2.57.0', 'pyasn1_modules': '0.4.2', 'pyasn1': '0.6.4',
+    'google-auth': '2.57.0', 'pyasn1_modules': '0.4.2', 'pyasn1': '0.6.5',
     'numpy': '2.4.6', 'pandas': '2.3.3', 'python-dateutil': '2.9.0.post0',
     'six': '1.17.0', 'pytz': '2026.3.post1', 'tzdata': '2026.3',
     'pyarrow': '24.0.0', 'requests': '2.34.2', 'urllib3': '2.8.0',
