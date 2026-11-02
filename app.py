@@ -9852,6 +9852,9 @@ elif selected_tab == "Equities Screener & Risk":
 # ==========================================
 elif selected_tab == "Evidence Readiness":
     st.subheader("Model Evidence Readiness")
+    with st.expander("Equity study coverage (2022-2024 pilot)", expanded=True):
+        from equity_coverage_view import render_coverage
+        render_coverage(st)
     st.caption(
         "Read-only counts from immutable individual decision/outcome records. "
         "This page cannot train, promote, activate, size, or place a trade."
