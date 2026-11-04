@@ -1,6 +1,10 @@
-"""Separate bounded archive job. Deletion is held pending custody commissioning.
+"""Separate bounded archive job. Deletion requires a restore proof from this same run.
 
 Only explicit source tables are allowlisted. No source locks during network I/O.
+Recommissioned 4 Nov 2026 (ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md): the
+unconditional hold of 17 Oct is replaced by archive_restore_check.prove(), which
+re-reads the Drive copies and proves they restore into the live tables before any
+source row may be deleted. Flags and environment variables still cannot unlock it.
 """
 from __future__ import annotations
 
@@ -12,6 +16,8 @@ import os
 
 import psycopg
 
+import archive_restore_check as restore_check
+
 from drive_archive import ArchiveError, DriveArchive, RELATIONS, SPECS, credentials, upload_verified
 
 ROLE = 'quant_archive_worker'
@@ -19,13 +25,27 @@ UTC = dt.timezone.utc
 HOT_RETENTION_DAYS = 14  # Eligibility below additionally protects live dependencies.
 
 
-def require_commissioned_delete() -> None:
-    """No env/CLI boolean can establish independent custody or matching restore.
+GROWING_TABLES = ('market_quotes', 'scanner_observations', 'universe_membership_versions',
+                  'universe_membership')
+_ACTIVE_PROOF: restore_check.RestoreProof | None = None
 
-    A future reviewed implementation must validate real generation-bound evidence.
-    Historical algorithm tests replace this denial only within disposable fixtures.
+
+def activate_restore_proof(proof: restore_check.RestoreProof) -> None:
+    """Accept only a passing proof object produced by archive_restore_check.prove()."""
+    global _ACTIVE_PROOF
+    if not isinstance(proof, restore_check.RestoreProof) or not proof.valid_now():
+        raise ArchiveError('ARCHIVE_RESTORE_PROOF_FAILED')
+    _ACTIVE_PROOF = proof
+
+
+def require_commissioned_delete() -> None:
+    """No env/CLI boolean can establish custody or restore; only a passing proof can.
+
+    The proof must come from archive_restore_check.prove() in this process, cover every
+    recorded batch, contain no failure and be younger than PROOF_MAX_AGE_SECONDS.
     """
-    raise ArchiveError('AUTHENTICATED_CUSTODY_AND_RESTORE_NOT_COMMISSIONED')
+    if _ACTIVE_PROOF is None or not _ACTIVE_PROOF.valid_now():
+        raise ArchiveError('AUTHENTICATED_CUSTODY_AND_RESTORE_NOT_COMMISSIONED')
 
 
 def batch_size_for(table, requested=None):
@@ -200,7 +220,7 @@ class ArchiveRepository:
             return [row[0] for row in rows]
 
     def acknowledge(self, manifest, texts, cutoff, delete):
-        """Verification records are atomic; deletion commissioning is held.
+        """Verification records are atomic; deletion needs an active restore proof.
 
         A completed manifest is never reused to authorize unrelated source data.
         Unknown outcomes require read-only reconciliation, never automatic retry.
@@ -254,6 +274,7 @@ class ArchiveRepository:
             count = conn.execute(f"""WITH removed AS (
                 DELETE FROM {RELATIONS[table]} s USING verified_archive_rows v
                 WHERE {key_match} AND to_jsonb(s)=v.original AND {condition}
+                  AND to_jsonb(jsonb_populate_record(NULL::{RELATIONS[table]}, v.original))=v.original
                 RETURNING 1) SELECT count(*) FROM removed""", {'cutoff': cutoff}).fetchone()[0]
             conn.execute("""UPDATE quant_app.archive_manifests
                 SET completed_at=clock_timestamp(),
@@ -284,8 +305,8 @@ def build_drive_credentials():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Verified Drive archival, isolated from scans')
-    parser.add_argument('--mode', choices=('preview', 'export', 'delete'), default='preview')
-    parser.add_argument('--table', choices=tuple(SPECS), default='mf_nav')
+    parser.add_argument('--mode', choices=('preview', 'export', 'restore-check', 'delete'), default='preview')
+    parser.add_argument('--table', choices=(*SPECS, 'growing'), default='mf_nav')
     parser.add_argument('--nav-cutoff', type=dt.date.fromisoformat,
                         help='Manual one-time NAV cleanup only; normal policy is 14 days')
     parser.add_argument('--batch-size', type=int, default=None,
@@ -294,36 +315,57 @@ def main(argv=None):
     args = parser.parse_args(argv)
     drive = None
     try:
-        args.batch_size = batch_size_for(args.table, args.batch_size)
+        tables = GROWING_TABLES if args.table == 'growing' else (args.table,)
+        if args.table == 'growing' and args.mode not in ('preview', 'delete'):
+            raise ArchiveError('GROWING_PRESET_PREVIEW_OR_DELETE_ONLY')
+        sizes = {table: batch_size_for(table, args.batch_size) for table in tables}
         if not 1 <= args.max_batches <= 200:
             raise ArchiveError('INVALID_BATCH_LIMIT')
         deleting = args.mode == 'delete'
         if deleting and os.environ.get('ARCHIVE_DELETE_ENABLED') != 'true':
             raise ArchiveError('DELETION_NOT_ENABLED')
-        if deleting:
-            require_commissioned_delete()
-        cutoff = cutoff_for(args.table, dt.datetime.now(UTC).date(), args.nav_cutoff)
+        today = dt.datetime.now(UTC).date()
+        cutoffs = {table: cutoff_for(table, today, args.nav_cutoff) for table in tables}
         repo = ArchiveRepository(os.environ.get('ARCHIVE_DATABASE_URL'))
         repo.check()
-        count = repo.preview(args.table, cutoff)
-        print(json.dumps({'mode': args.mode, 'table': args.table, 'cutoff': str(cutoff),
-                          'eligible': count}), flush=True)
+        for table in tables:
+            print(json.dumps({'mode': args.mode, 'table': table, 'cutoff': str(cutoffs[table]),
+                              'eligible': repo.preview(table, cutoffs[table])}), flush=True)
         if args.mode == 'preview':
             return 0
         creds = build_drive_credentials()
         drive = DriveArchive(creds, os.environ.get('DRIVE_ARCHIVE_FOLDER_ID', ''))
-        drive.check_folder()
-        for _ in range(args.max_batches):
-            result = run_batch(repo, drive, args.table, cutoff, args.batch_size, deleting)
-            print('ARCHIVE_BATCH ' + json.dumps(result), flush=True)
-            # Export-only verifies one batch as a deployment smoke test. Do not
-            # repeatedly select it or pretend the whole table has been archived.
-            if not deleting or result['selected'] == 0:
-                break
-            if result['retained']:
-                raise ArchiveError('SOURCE_CHANGED_OR_ALREADY_REMOVED_REVIEW_REQUIRED')
-        remaining = repo.preview(args.table, cutoff)
-        print(json.dumps({'status': 'SUCCESS', 'eligible_remaining': remaining}), flush=True)
+        if args.mode != 'restore-check':
+            drive.check_folder()  # Writers need canAddChildren; the read-only check does not.
+        if args.mode == 'restore-check' or deleting:
+            proof = restore_check.prove(repo, drive, today=today, everything=args.mode == 'restore-check',
+                                        progress=lambda item: print('RESTORE_PROGRESS ' + json.dumps(item), flush=True))
+            print('RESTORE_PROOF ' + json.dumps(proof.summary()), flush=True)
+            if not proof.valid_now():
+                raise ArchiveError('ARCHIVE_RESTORE_PROOF_FAILED')
+            if args.mode == 'restore-check':
+                print(json.dumps({'status': 'SUCCESS', 'restore_proof': 'PASSED'}), flush=True)
+                return 0
+            activate_restore_proof(proof)
+        for table in tables:
+            for _ in range(args.max_batches):
+                if deleting:
+                    # The proof may be minutes old: re-list Drive immediately before each batch.
+                    restore_check.recheck_presence(repo, drive)
+                result = run_batch(repo, drive, table, cutoffs[table], sizes[table], deleting)
+                print('ARCHIVE_BATCH ' + json.dumps({'table': table, **result}), flush=True)
+                # Export-only verifies one batch as a deployment smoke test. Do not
+                # repeatedly select it or pretend the whole table has been archived.
+                if not deleting or result['selected'] == 0:
+                    break
+                if result['retained']:
+                    raise ArchiveError('SOURCE_CHANGED_OR_ALREADY_REMOVED_REVIEW_REQUIRED')
+            print(json.dumps({'status': 'TABLE_DONE', 'table': table,
+                              'eligible_remaining': repo.preview(table, cutoffs[table])}), flush=True)
+        if deleting:
+            # Includes tonight's new batches: a copy lost right after deletion fails loudly.
+            restore_check.recheck_presence(repo, drive)
+        print(json.dumps({'status': 'SUCCESS'}), flush=True)
         return 0
     except Exception as exc:
         # Never emit HTTP/provider text, token JSON, database URLs or raw rows.

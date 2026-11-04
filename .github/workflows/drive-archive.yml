@@ -1,18 +1,18 @@
-name: Verified Drive archive (scheduled hold; manual preview or export)
+name: Verified Drive archive (nightly restore-proven retention when enabled)
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Read-only preview or explicitly publish one verified batch (no deletion)
+        description: preview / export one batch / restore-check (read-only, every batch) / delete (restore proof first)
         type: choice
         default: preview
-        options: [preview, export]
+        options: [preview, export, restore-check, delete]
       table:
         description: Approved source table
         type: choice
         default: mf_nav
-        options: [mf_nav, market_quotes, universe_membership_versions, scanner_observations, equity_research.outcomes, universe_membership]
+        options: [mf_nav, market_quotes, universe_membership_versions, scanner_observations, equity_research.outcomes, universe_membership, growing]
       nav_cutoff:
         description: Optional one-time NAV cutoff YYYY-MM-DD (blank = 14 days)
         type: string
@@ -22,7 +22,7 @@ on:
         type: string
         default: ''
       max_batches:
-        description: Manual batch bound 1–200 (export verifies at most one batch; deletion held)
+        description: Batch bound 1–200 per table (export verifies at most one batch)
         type: string
         default: '1'
   schedule:
@@ -37,17 +37,20 @@ concurrency:
 
 jobs:
   scheduled-hold:
-    if: github.event_name == 'schedule' && vars.ARCHIVE_ENABLED == 'true'
+    # Nightly retention runs only when the owner sets ARCHIVE_NIGHTLY_DELETE=true
+    # after a passing manual restore-check. Otherwise the schedule stays a no-I/O hold.
+    if: github.event_name == 'schedule' && vars.ARCHIVE_ENABLED == 'true' && vars.ARCHIVE_NIGHTLY_DELETE != 'true'
     runs-on: ubuntu-24.04
     steps:
       - name: Report commissioning hold without credentials or source IO
         run: >-
           python -c "import json; print(json.dumps({'status':'ARCHIVE_SCHEDULE_HELD_NO_IO','custody_commissioned':False,'database_connections':0,'drive_requests':0,'source_deletes':0}))"
   archive:
-    # Publication is a separate explicit owner operation, not scheduled custody.
-    if: github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'schedule' && vars.ARCHIVE_ENABLED == 'true' && vars.ARCHIVE_NIGHTLY_DELETE == 'true')
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
         with:
@@ -67,6 +70,7 @@ jobs:
           DRIVE_ARCHIVE_FOLDER_ID: ${{ secrets.DRIVE_ARCHIVE_FOLDER_ID }}
           ARCHIVE_DELETE_ENABLED: ${{ vars.ARCHIVE_DELETE_ENABLED }}
           EVENT_NAME: ${{ github.event_name }}
+          NIGHTLY_DELETE: ${{ vars.ARCHIVE_NIGHTLY_DELETE }}
           REQUESTED_MODE: ${{ inputs.mode }}
           REQUESTED_TABLE: ${{ inputs.table }}
           NAV_CUTOFF: ${{ inputs.nav_cutoff }}
@@ -78,6 +82,12 @@ jobs:
           python - <<'PY'
           import os
           import json
+          if os.environ['EVENT_NAME'] == 'schedule':
+              if os.environ.get('NIGHTLY_DELETE') != 'true':
+                  print(json.dumps({'status': 'ARCHIVE_SCHEDULE_HELD_NO_IO', 'database_connections': 0, 'source_deletes': 0}))
+                  raise SystemExit(0)
+              from archive_maintenance import main
+              raise SystemExit(main(['--mode', 'delete', '--table', 'growing', '--max-batches', '100']))
           if os.environ['EVENT_NAME'] != 'workflow_dispatch':
               print(json.dumps({'status': 'ARCHIVE_SCHEDULE_HELD_NO_IO', 'database_connections': 0, 'source_deletes': 0}))
               raise SystemExit(0)
