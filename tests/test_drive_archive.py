@@ -29,8 +29,9 @@ def legacy_algorithm_only(monkeypatch):
     monkeypatch.setattr(maintenance, 'require_commissioned_delete', lambda: None)
     passing = maintenance.restore_check.RestoreProof(manifests=0, presence_verified=0, deep_batches=0,
                                                      deep_rows=0, exact_rows=0, added_column_rows=0,
-                                                     failures=())
+                                                     failures=(), issuer=maintenance.restore_check._ISSUER)
     monkeypatch.setattr(maintenance.restore_check, 'prove', lambda *args, **kwargs: passing)
+    monkeypatch.setattr(maintenance.restore_check, 'recheck_presence', lambda repo, drive: 0)
 
 
 def nav(code='A', value=Decimal('1.123456789123456789')):

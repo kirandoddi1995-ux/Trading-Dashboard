@@ -24,7 +24,7 @@ def no_active_proof(monkeypatch):
 
 def proof(**changes):
     values = dict(manifests=3, presence_verified=3, deep_batches=1, deep_rows=10, exact_rows=10,
-                  added_column_rows=0, failures=())
+                  added_column_rows=0, failures=(), issuer=restore_check._ISSUER)
     values.update(changes)
     return restore_check.RestoreProof(**values)
 
@@ -76,7 +76,8 @@ def test_cli_restore_check_is_read_only_and_reports(monkeypatch, capsys):
     repo.preview.return_value = 0
     monkeypatch.setattr(maintenance, 'ArchiveRepository', lambda url: repo)
     monkeypatch.setattr(maintenance, 'build_drive_credentials', Mock())
-    monkeypatch.setattr(maintenance, 'DriveArchive', Mock())
+    drive = Mock()
+    monkeypatch.setattr(maintenance, 'DriveArchive', Mock(return_value=drive))
     seen = {}
     monkeypatch.setattr(restore_check, 'prove', lambda *args, **kwargs: seen.update(kwargs) or proof())
     batch = Mock(side_effect=AssertionError('NO_BATCH'))
@@ -84,9 +85,45 @@ def test_cli_restore_check_is_read_only_and_reports(monkeypatch, capsys):
     assert maintenance.main(['--mode', 'restore-check', '--table', 'market_quotes']) == 0
     assert seen['everything'] is True
     assert '"restore_proof": "PASSED"' in capsys.readouterr().out
+    drive.check_folder.assert_not_called()  # read-only: no write capability required
     batch.assert_not_called()
     repo.acknowledge.assert_not_called()
     assert maintenance._ACTIVE_PROOF is None
+
+
+def test_hand_built_proof_never_unlocks_deletion():
+    # A passing-looking proof not issued by prove() is rejected (CodeAnt finding, PR #71).
+    forged = restore_check.RestoreProof(manifests=0, presence_verified=0, deep_batches=0, deep_rows=0,
+                                        exact_rows=0, added_column_rows=0, failures=())
+    assert not forged.valid_now()
+    with pytest.raises(ArchiveError, match='ARCHIVE_RESTORE_PROOF_FAILED'):
+        maintenance.activate_restore_proof(forged)
+    with pytest.raises(ArchiveError, match='AUTHENTICATED_CUSTODY_AND_RESTORE_NOT_COMMISSIONED'):
+        maintenance.require_commissioned_delete()
+
+
+def test_presence_is_rechecked_before_every_deleting_batch(monkeypatch, capsys):
+    monkeypatch.setenv('ARCHIVE_DELETE_ENABLED', 'true')
+    repo = Mock()
+    repo.preview.return_value = 5
+    monkeypatch.setattr(maintenance, 'ArchiveRepository', lambda url: repo)
+    monkeypatch.setattr(maintenance, 'build_drive_credentials', Mock())
+    monkeypatch.setattr(maintenance, 'DriveArchive', Mock())
+    monkeypatch.setattr(restore_check, 'prove', lambda *args, **kwargs: proof())
+    calls = []
+
+    def recheck(repo, drive):
+        calls.append('recheck')
+        if calls.count('recheck') == 2:
+            raise ArchiveError('ARCHIVE_PRESENCE_CHANGED_SINCE_PROOF')
+        return 3
+    monkeypatch.setattr(restore_check, 'recheck_presence', recheck)
+    batch = Mock(side_effect=lambda *args: calls.append('batch') or
+                 {'selected': 1, 'verified': 1, 'deleted': 1, 'retained': 0})
+    monkeypatch.setattr(maintenance, 'run_batch', batch)
+    assert maintenance.main(['--mode', 'delete', '--table', 'market_quotes', '--max-batches', '5']) == 1
+    assert calls == ['recheck', 'batch', 'recheck']
+    assert 'ARCHIVE_PRESENCE_CHANGED_SINCE_PROOF' in capsys.readouterr().out
 
 
 def test_proof_activation_rules(monkeypatch):

@@ -234,3 +234,13 @@ def test_batch_without_drive_checksum_is_deep_checked_tonight(monkeypatch):
     assert proof.valid_now()
     assert target['batch_id'] in checked
     assert restore_check.presence_failures(target, listing) == []
+
+
+def test_recheck_presence_catches_a_file_trashed_after_the_proof(monkeypatch):
+    drive = ListedDrive()
+    manifests = fixture_batches(drive)
+    monkeypatch.setattr(restore_check, 'load_manifests', lambda repo: manifests)
+    assert restore_check.recheck_presence(object(), drive) == len(manifests)
+    del drive.data[manifests[3]['drive_file_id']]  # trashed files leave the untrashed listing
+    with pytest.raises(ArchiveError, match='ARCHIVE_PRESENCE_CHANGED_SINCE_PROOF'):
+        restore_check.recheck_presence(object(), drive)

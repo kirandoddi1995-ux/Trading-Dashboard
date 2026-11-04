@@ -35,7 +35,16 @@ The owner chose to restart the Drive archive (4 Nov), so this change supplies th
   id from the archived rows, compare the archived manifest file, and load every row into the live
   row type in a read-only transaction. Rows must come back identical, or identical apart from
   columns added later (null). Any failure blocks all deletion that night and fails the job.
-- `restore-check` mode does the deep restore for every batch.
+- `restore-check` mode does the deep restore for every batch, without needing write access to the folder.
+- The proof object carries a private issuer mark that only `prove()` sets; a hand-built proof is rejected.
+- Immediately before every deletion batch, and once more after the last one, the folder is listed again
+  and every recorded batch must still be present and unchanged; otherwise deletion stops at once.
+
+## Review findings addressed (CodeAnt, PR #71, first commit)
+
+1. Hand-built `RestoreProof` could unlock deletion → proofs now need the issuer mark from `prove()`.
+2. A file trashed after the proof (6-hour window) → fresh presence recheck before every batch and after the run.
+3. Read-only restore-check required folder write capability → `check_folder()` now only runs for writing modes.
 
 ## Activation order
 

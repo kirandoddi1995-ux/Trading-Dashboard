@@ -15,6 +15,8 @@ Deletion of hot rows is allowed only after this proof passes in the same process
 
 `restore-check` mode deep-checks every batch. Any failure blocks deletion; the
 proof object is created only here, never from a flag or environment variable.
+Before every deletion batch, recheck_presence() repeats step 1 against a fresh
+listing, so a file trashed or changed after the proof stops deletion at once.
 """
 from __future__ import annotations
 
@@ -49,6 +51,9 @@ SELECT count(*) FILTER (WHERE r = j) AS exact_rows,
 FROM y"""
 
 
+_ISSUER = object()  # Only prove() holds this; a hand-built proof is rejected.
+
+
 @dataclass(frozen=True)
 class RestoreProof:
     manifests: int
@@ -59,9 +64,10 @@ class RestoreProof:
     added_column_rows: int
     failures: tuple[str, ...]
     created: float = field(default_factory=time.monotonic)
+    issuer: object = field(default=None, repr=False, compare=False)
 
     def valid_now(self) -> bool:
-        return (not self.failures and self.presence_verified == self.manifests
+        return (self.issuer is _ISSUER and not self.failures and self.presence_verified == self.manifests
                 and time.monotonic() - self.created < PROOF_MAX_AGE_SECONDS)
 
     def summary(self) -> dict[str, Any]:
@@ -210,4 +216,14 @@ def prove(repo, drive, *, today: dt.date, everything: bool = False,
             progress({'deep_checked': index, 'deep_total': len(deep), 'failures': len(failures)})
     return RestoreProof(manifests=len(manifests), presence_verified=present, deep_batches=len(deep),
                         deep_rows=deep_rows, exact_rows=exact, added_column_rows=added,
-                        failures=tuple(failures))
+                        failures=tuple(failures), issuer=_ISSUER)
+
+
+def recheck_presence(repo, drive) -> int:
+    """Fresh listing of every recorded batch; raise on any missing, trashed or changed file."""
+    manifests = load_manifests(repo)
+    listing = list_folder(drive)
+    for manifest in manifests:
+        if presence_failures(manifest, listing):
+            raise ArchiveError('ARCHIVE_PRESENCE_CHANGED_SINCE_PROOF')
+    return len(manifests)

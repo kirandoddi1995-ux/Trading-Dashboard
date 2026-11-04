@@ -335,7 +335,8 @@ def main(argv=None):
             return 0
         creds = build_drive_credentials()
         drive = DriveArchive(creds, os.environ.get('DRIVE_ARCHIVE_FOLDER_ID', ''))
-        drive.check_folder()
+        if args.mode != 'restore-check':
+            drive.check_folder()  # Writers need canAddChildren; the read-only check does not.
         if args.mode == 'restore-check' or deleting:
             proof = restore_check.prove(repo, drive, today=today, everything=args.mode == 'restore-check',
                                         progress=lambda item: print('RESTORE_PROGRESS ' + json.dumps(item), flush=True))
@@ -348,6 +349,9 @@ def main(argv=None):
             activate_restore_proof(proof)
         for table in tables:
             for _ in range(args.max_batches):
+                if deleting:
+                    # The proof may be minutes old: re-list Drive immediately before each batch.
+                    restore_check.recheck_presence(repo, drive)
                 result = run_batch(repo, drive, table, cutoffs[table], sizes[table], deleting)
                 print('ARCHIVE_BATCH ' + json.dumps({'table': table, **result}), flush=True)
                 # Export-only verifies one batch as a deployment smoke test. Do not
@@ -358,6 +362,9 @@ def main(argv=None):
                     raise ArchiveError('SOURCE_CHANGED_OR_ALREADY_REMOVED_REVIEW_REQUIRED')
             print(json.dumps({'status': 'TABLE_DONE', 'table': table,
                               'eligible_remaining': repo.preview(table, cutoffs[table])}), flush=True)
+        if deleting:
+            # Includes tonight's new batches: a copy lost right after deletion fails loudly.
+            restore_check.recheck_presence(repo, drive)
         print(json.dumps({'status': 'SUCCESS'}), flush=True)
         return 0
     except Exception as exc:
