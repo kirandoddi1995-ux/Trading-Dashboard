@@ -24,7 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def legacy_algorithm_only(monkeypatch):
     """Disposable SQL algorithm rehearsal only; does not commission deletion."""
     monkeypatch.setattr('archive_maintenance.require_commissioned_delete', lambda context=None: None)
-    monkeypatch.setattr('archive_restore_check.confirm_custody', lambda drive, manifest: None)
+    monkeypatch.setattr('archive_restore_check.confirm_custody', lambda drive, manifest, **kwargs: None)
+    monkeypatch.setattr('archive_restore_check.valid_custody', lambda custody, manifest: True)
 
 
 pytestmark = pytest.mark.skipif(not os.environ.get('EQUITY_TEST_PGLITE_MODULE'),

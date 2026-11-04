@@ -209,9 +209,11 @@ class DriveArchive:
     def close(self):
         self.session.close()
 
-    def request(self, method, url, **kwargs):
-        response = self.session.request(method, url, timeout=(10, 90),
-                                        allow_redirects=False, **kwargs)
+    def request(self, method, url, quick=False, **kwargs):
+        # quick: calls made while database locks are held get a hard overall deadline.
+        extra = {'max_allowed_time': 10} if quick else {}
+        response = self.session.request(method, url, timeout=(3, 7) if quick else (10, 90),
+                                        allow_redirects=False, **extra, **kwargs)
         if not 200 <= response.status_code < 300:
             response.close()
             raise ArchiveError('DRIVE_HTTP_' + str(response.status_code))
@@ -229,7 +231,7 @@ class DriveArchive:
         """files.get metadata: a trashed file still downloads, so custody needs this too."""
         if not re.fullmatch(r'[A-Za-z0-9_-]+', file_id):
             raise ArchiveError('INVALID_DRIVE_FILE_ID')
-        with self.request('GET', f'{API}/{file_id}',
+        with self.request('GET', f'{API}/{file_id}', quick=True,
                           params={'fields': 'id,trashed,appProperties'}) as response:
             return response.json()
 

@@ -218,6 +218,8 @@ def rehearse_insert(repo, table: str, texts: list[str]) -> int:
                 f'WITH put AS (INSERT INTO restore_rehearsal SELECT (jsonb_populate_record('
                 f'NULL::{relation}, j)).* FROM unnest(%(rows)s::jsonb[]) AS j RETURNING 1) '
                 'SELECT count(*) FROM put', {'rows': texts}).fetchone()[0]
+            # Deferred constraints would otherwise be skipped by the rollback below.
+            conn.execute('SET CONSTRAINTS ALL IMMEDIATE')
             raise _RolledBack  # leaving the transaction by exception rolls everything back
     except _RolledBack:
         pass
@@ -230,11 +232,12 @@ def rehearse_insert(repo, table: str, texts: list[str]) -> int:
     return inserted
 
 
-def confirm_custody(drive, manifest: dict[str, Any]) -> None:
-    """Fresh proof that both copies of one just-uploaded batch exist, are untrashed and unchanged.
+def confirm_custody(drive, manifest: dict[str, Any], *, check_bytes: bool = True) -> None:
+    """Fresh proof that both files of one just-uploaded batch exist, are untrashed and unchanged.
 
     Takes the upload record (batch_id, source_table, rows, sha256, drive_file_id, drive_manifest_id).
-    Run inside the deleting transaction, immediately before the DELETE statement.
+    check_bytes=False is the quick form used while database locks are held: identity and trashed
+    flag only. The byte comparison runs before any lock is taken (see run_batch).
     """
     batch = manifest['batch_id']
     manifest_bytes = expected_manifest_bytes(batch, manifest['source_table'], manifest['rows'],
@@ -242,13 +245,33 @@ def confirm_custody(drive, manifest: dict[str, Any]) -> None:
     for key, kind in (('drive_file_id', 'data'), ('drive_manifest_id', 'manifest')):
         try:
             meta = drive.metadata(manifest[key])
-            raw = drive.download(manifest[key])
+            raw = drive.download(manifest[key]) if check_bytes else None
         except ArchiveError:
             raise ArchiveError('ARCHIVE_CUSTODY_LOST') from None
-        wanted = digest(raw) == manifest['sha256'] if kind == 'data' else raw == manifest_bytes
+        wanted = (not check_bytes or (digest(raw) == manifest['sha256'] if kind == 'data'
+                                      else raw == manifest_bytes))
         if (meta.get('trashed') or (meta.get('appProperties') or {}) != {'batch': batch, 'kind': kind}
                 or not wanted):
             raise ArchiveError('ARCHIVE_CUSTODY_LOST')
+
+
+class CustodyCheck:
+    """The only custody callback acknowledge() accepts: bound to one batch, one database and folder."""
+
+    def __init__(self, repo, drive, manifest: dict[str, Any]):
+        self.context = context_key(repo, drive)
+        self.batch_id = manifest['batch_id']
+        self.sha256 = manifest['sha256']
+        self._drive = drive
+        self._manifest = dict(manifest)
+
+    def __call__(self) -> None:
+        confirm_custody(self._drive, self._manifest, check_bytes=False)
+
+
+def valid_custody(custody: Any, manifest: dict[str, Any]) -> bool:
+    return (isinstance(custody, CustodyCheck) and custody.batch_id == manifest['batch_id']
+            and custody.sha256 == manifest['sha256'])
 
 
 def _row_key(table: str, text: str) -> tuple[str, str]:
@@ -267,27 +290,32 @@ def prove(repo, drive, *, today: dt.date, everything: bool = False,
         problems = presence_failures(manifest, listing)
         failures.extend(problems)
         present += not problems
-        checksum = (listing.get(manifest['drive_manifest_id']) or {}).get('sha256Checksum')
-        if checksum is not None:
-            pins[manifest['drive_manifest_id']] = checksum
+    # Every manifest file is read and matched to its database record, so a pin is never taken
+    # from bytes nobody has checked (a corrupt unsampled manifest cannot become the baseline).
+    for manifest in manifests:
+        label = manifest['batch_id'][:12]
+        try:
+            raw_manifest = drive.download(manifest['drive_manifest_id'])
+            stated = (listing.get(manifest['drive_manifest_id']) or {}).get('sha256Checksum')
+            if not manifest_matches(raw_manifest, manifest) or (
+                    stated is not None and stated != digest(raw_manifest)):
+                raise ArchiveError('ARCHIVE_MANIFEST_FILE_MISMATCH')
+            pins[manifest['drive_manifest_id']] = digest(raw_manifest)
+        except ArchiveError as error:
+            failures.append(f'{label}:{error}')
+        except Exception as error:  # noqa: BLE001
+            failures.append(f'{label}:{type(error).__name__}')
     deep = select_deep(manifests, today, everything)
     chosen = {manifest['batch_id'] for manifest in deep}
     # Anything whose bytes Drive cannot vouch for is downloaded and compared tonight.
     deep += [manifest for manifest in manifests if manifest['batch_id'] not in chosen
-             and ((listing.get(manifest['drive_file_id']) or {}).get('sha256Checksum') is None
-                  or (listing.get(manifest['drive_manifest_id']) or {}).get('sha256Checksum') is None)]
+             and (listing.get(manifest['drive_file_id']) or {}).get('sha256Checksum') is None]
     deep_rows = exact = added = 0
     seen_keys: dict[tuple[str, tuple[str, ...]], str] = {}
     for index, manifest in enumerate(deep, 1):
         label = manifest['batch_id'][:12]
         try:
             texts = archived_rows(drive.download(manifest['drive_file_id']), manifest)
-            raw_manifest = drive.download(manifest['drive_manifest_id'])
-            if not manifest_matches(raw_manifest, manifest):
-                raise ArchiveError('ARCHIVE_MANIFEST_FILE_MISMATCH')
-            pins.setdefault(manifest['drive_manifest_id'], digest(raw_manifest))
-            if pins[manifest['drive_manifest_id']] != digest(raw_manifest):
-                raise ArchiveError('ARCHIVE_MANIFEST_FILE_MISMATCH')
             same, later_null, total = restore_counts(repo, manifest['source_table'], texts)
             if total != len(texts) or same + later_null != total:
                 raise ArchiveError('ARCHIVE_ROWS_NOT_RESTORABLE')

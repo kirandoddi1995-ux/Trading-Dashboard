@@ -219,12 +219,21 @@ def test_sql_delete_keeps_rows_that_would_not_restore_exactly(pg):
     pg.execute('SET ROLE quant_archive_worker')
     repo = ArchiveRepository('postgres://test-only')
     cutoff = dt.date(2026, 9, 13)
-    manifest, texts = upload_verified(ListedDrive(), 'mf_nav', repo.select('mf_nav', cutoff, 10))
+    drive = ListedDrive()
+    manifest, texts = upload_verified(drive, 'mf_nav', repo.select('mf_nav', cutoff, 10))
     pg.execute('RESET ROLE')
     pg.execute('ALTER TABLE quant_app.mf_nav ADD COLUMN later_note text DEFAULT \'x\'')
     pg.execute('SET ROLE quant_archive_worker')
     # to_jsonb(s) now differs from the archive, and so would the restore: nothing is deleted.
-    assert repo.acknowledge(manifest, texts, cutoff, True, custody=lambda: None) == 0
+    custody = maintenance.restore_check.CustodyCheck(repo, drive, manifest)
+    proof = restore_check.RestoreProof(manifests=0, presence_verified=0, deep_batches=0, deep_rows=0,
+                                       exact_rows=0, added_column_rows=0, failures=(),
+                                       issuer=restore_check._ISSUER, context=custody.context)
+    maintenance.activate_restore_proof(proof)
+    try:
+        assert repo.acknowledge(manifest, texts, cutoff, True, custody=custody) == 0
+    finally:
+        maintenance._ACTIVE_PROOF = None
     assert pg.execute('SELECT count(*) FROM quant_app.mf_nav').fetchone()[0] == 2
 
 

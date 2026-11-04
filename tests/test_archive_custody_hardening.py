@@ -11,7 +11,7 @@ import pytest
 import archive_maintenance as maintenance
 import archive_restore_check as restore_check
 from archive_maintenance import ArchiveRepository
-from drive_archive import ArchiveError, digest, exact_json, upload_verified
+from drive_archive import ArchiveError, exact_json, upload_verified
 import test_archive_maintenance_sql as sql_harness
 from test_archive_restore_check import ListedDrive, UTC, _prove, archive, fixture_batches
 from test_drive_archive import nav
@@ -121,25 +121,67 @@ def test_sql_acknowledge_refuses_to_delete_without_or_after_a_failing_custody_ch
     pg.execute('SET ROLE quant_archive_worker')
     repo = ArchiveRepository('postgres://test-only')
     cutoff = dt.date(2026, 9, 13)
-    manifest, texts = upload_verified(ListedDrive(), 'mf_nav', repo.select('mf_nav', cutoff, 10))
+    drive = ListedDrive()
+    manifest, texts = upload_verified(drive, 'mf_nav', repo.select('mf_nav', cutoff, 10))
+    context = restore_check.context_key(repo, drive)
     proof = restore_check.RestoreProof(manifests=0, presence_verified=0, deep_batches=0, deep_rows=0,
                                        exact_rows=0, added_column_rows=0, failures=(),
-                                       issuer=restore_check._ISSUER)
+                                       issuer=restore_check._ISSUER, context=context)
     maintenance.activate_restore_proof(proof)
     try:
+        # Neither nothing nor an arbitrary callable is custody evidence.
         with pytest.raises(ArchiveError, match='CUSTODY_CHECK_REQUIRED'):
             repo.acknowledge(manifest, texts, cutoff, True)
-
-        def lost():
-            raise ArchiveError('ARCHIVE_CUSTODY_LOST')
+        with pytest.raises(ArchiveError, match='CUSTODY_CHECK_REQUIRED'):
+            repo.acknowledge(manifest, texts, cutoff, True, custody=lambda: None)
+        # A genuine check for another batch is refused.
+        other, _ = upload_verified(drive, 'mf_nav', [exact_json(nav('Z'))])
+        with pytest.raises(ArchiveError, match='CUSTODY_CHECK_REQUIRED'):
+            repo.acknowledge(manifest, texts, cutoff, True,
+                             custody=restore_check.CustodyCheck(repo, drive, other))
+        # A check made for another database or folder cannot use this proof.
+        elsewhere = ListedDrive()
+        elsewhere.folder_id = 'other-folder'
+        with pytest.raises(ArchiveError, match='AUTHENTICATED_CUSTODY_AND_RESTORE_NOT_COMMISSIONED'):
+            repo.acknowledge(manifest, texts, cutoff, True,
+                             custody=restore_check.CustodyCheck(repo, elsewhere, manifest))
+        # A copy trashed before the DELETE stops it and rolls back the manifest record too.
+        drive.trashed.add(manifest['drive_file_id'])
         with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
-            repo.acknowledge(manifest, texts, cutoff, True, custody=lost)
+            repo.acknowledge(manifest, texts, cutoff, True,
+                             custody=restore_check.CustodyCheck(repo, drive, manifest))
         assert pg.execute('SELECT count(*) FROM quant_app.mf_nav').fetchone()[0] == 2
-        # The failed attempt rolled back: no manifest was recorded either.
         assert pg.execute('SELECT count(*) FROM quant_app.archive_manifests').fetchone()[0] == 0
-        assert repo.acknowledge(manifest, texts, cutoff, True, custody=lambda: None) == 1
+        drive.trashed.clear()
+        assert repo.acknowledge(manifest, texts, cutoff, True,
+                                custody=restore_check.CustodyCheck(repo, drive, manifest)) == 1
     finally:
         maintenance._ACTIVE_PROOF = None
+
+
+def test_run_batch_checks_bytes_before_locks_and_only_the_quick_form_runs_under_locks(monkeypatch):
+    drive = ListedDrive()
+    manifest, _ = upload_verified(drive, 'mf_nav', [exact_json(nav())])
+    changed = drive.data[manifest['drive_manifest_id']]
+    drive.data[manifest['drive_manifest_id']] = (changed[0] + b' ', 'manifest')
+    with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
+        restore_check.confirm_custody(drive, manifest)  # full form, used before any lock
+    restore_check.confirm_custody(drive, manifest, check_bytes=False)  # quick form: identity and trash only
+    drive.trashed.add(manifest['drive_file_id'])
+    with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
+        restore_check.confirm_custody(drive, manifest, check_bytes=False)
+
+
+def test_a_corrupt_unsampled_manifest_cannot_become_the_pinned_baseline(monkeypatch):
+    drive = ListedDrive()
+    manifests = fixture_batches(drive)
+    today = dt.date(2026, 11, 4)
+    chosen = {m['batch_id'] for m in restore_check.select_deep(manifests, today, False)}
+    victim = next(m for m in manifests if m['batch_id'] not in chosen)
+    drive.data[victim['drive_manifest_id']] = (b'{}', 'manifest')
+    proof = _prove(monkeypatch, drive, manifests, everything=False)
+    assert not proof.valid_now()
+    assert any(item.endswith('ARCHIVE_MANIFEST_FILE_MISMATCH') for item in proof.failures)
 
 
 # Finding 3: "rows convert back" is not "rows insert back".
@@ -166,6 +208,22 @@ def test_sql_insert_rehearsal_catches_what_the_conversion_check_accepts(pg):
         restore_check.rehearse_insert(repo, 'mf_nav', [texts[0], other])
     # Nothing was written to the real table by any rehearsal.
     assert pg.execute('SELECT count(*) FROM quant_app.mf_nav').fetchone()[0] == 1
+
+
+@needs_sql
+def test_sql_rehearsal_checks_deferred_constraints_before_rolling_back(pg):
+    sql_harness.insert_nav(pg, 'A', '2026-08-01')
+    pg.execute('ALTER TABLE quant_app.mf_nav ADD CONSTRAINT one_name UNIQUE (scheme_name) '
+               'DEFERRABLE INITIALLY DEFERRED')
+    pg.execute('SET ROLE quant_archive_worker')
+    repo = ArchiveRepository('postgres://test-only')
+    first = pg.execute('SELECT to_jsonb(s)::text FROM quant_app.mf_nav s').fetchone()[0]
+    # Distinct primary key, same value in the deferred-unique column: only a forced check sees it.
+    second = first.replace('"scheme_code": "A"', '"scheme_code": "B"')
+    assert second != first
+    assert restore_check.rehearse_insert(repo, 'mf_nav', [first]) == 1
+    with pytest.raises(ArchiveError, match='ARCHIVE_ROWS_NOT_INSERTABLE'):
+        restore_check.rehearse_insert(repo, 'mf_nav', [first, second])
 
 
 def test_prove_runs_the_insert_rehearsal_and_fails_closed(monkeypatch):

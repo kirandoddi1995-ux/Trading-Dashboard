@@ -22,7 +22,7 @@ RECORD_SHA256 = '84ba96fe008b64b1b7a9a616118217ecc97b07755ce66862a4755cb6ccbb4d5
 # Each entry maps one exact pinned predecessor to one exact current file; the record
 # itself is pinned here, so editing it requires a reviewed code change too.
 SUPERSESSIONS = "SOURCE_SUPERSESSIONS.json"
-SUPERSESSIONS_SHA256 = "efcbc60326b14baafafa279d0639118b1d21bedcdfde2c72892f48ef8e2df9f5"
+SUPERSESSIONS_SHA256 = "e9d0786f3ac016b52e2237becc7533bc67f1737f32acf352689f2535d637417d"
 
 
 def _sha(raw: bytes) -> str:

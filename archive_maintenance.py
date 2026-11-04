@@ -231,14 +231,18 @@ class ArchiveRepository:
         Unknown outcomes require read-only reconciliation, never automatic retry.
         """
         if delete:
-            require_commissioned_delete()
-            if not callable(custody):
+            require_commissioned_delete()  # No active proof: denied before anything else.
+            if not restore_check.valid_custody(custody, manifest):
                 raise ArchiveError('CUSTODY_CHECK_REQUIRED')
+            # The proof must have been made for the same database and folder as this batch's check.
+            require_commissioned_delete(getattr(custody, 'context', None))
         table = manifest['source_table']
         condition = predicate(table)
         with self.connection() as conn:
             # Transaction-scoped serialization; safe with Supabase session pooler.
             conn.execute('SELECT pg_advisory_xact_lock(71429051)')
+            # The custody callback talks to Drive while locks are held: bound the idle wait.
+            conn.execute("SET LOCAL idle_in_transaction_session_timeout = '30s'")
             values = (manifest['batch_id'], table, manifest['rows'], manifest['sha256'],
                       manifest['drive_file_id'], manifest['drive_manifest_id'])
             conn.execute("""INSERT INTO quant_app.archive_manifests
@@ -298,7 +302,11 @@ def run_batch(repo, drive, table, cutoff, limit=1000, delete=False):
     if not texts:
         return {'selected': 0, 'verified': 0, 'deleted': 0, 'retained': 0}
     manifest, verified = upload_verified(drive, table, texts)
-    custody = (lambda: restore_check.confirm_custody(drive, manifest)) if delete else None
+    custody = None
+    if delete:
+        # Full byte comparison before any database lock; only the quick form runs under locks.
+        restore_check.confirm_custody(drive, manifest)
+        custody = restore_check.CustodyCheck(repo, drive, manifest)
     deleted = repo.acknowledge(manifest, verified, cutoff, delete, custody=custody)
     return {'selected': len(texts), 'verified': len(verified), 'deleted': deleted,
             'retained': len(texts) - deleted, 'batch_id': manifest['batch_id']}

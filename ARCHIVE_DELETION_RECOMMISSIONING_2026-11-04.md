@@ -18,26 +18,39 @@ deletion was paused (`ARCHIVE_NIGHTLY_DELETE=false`) until this is merged and in
 | Deep check (rotating 1/7 plus last 8 days; `restore-check` = all) | The bytes download, re-hash, recompute the content-addressed batch id, and every row converts back to the live row type | That rows would insert (next row) |
 | **Insert rehearsal** (new) | Every row inserts into an empty temporary copy of the live table (defaults, CHECK and NOT NULL, unique indexes), then rolls back | Foreign keys, triggers, row-level security, or a restore into a real disposable database |
 | **Cross-batch key check** (new, full mode only) | No key is archived twice with different content | Anything nightly (it needs every batch) |
-| Custody (new, per batch, inside the delete transaction) | This batch's data and manifest files are untrashed, carry their identity, and still match their exact bytes, checked immediately before the DELETE | An immutable lease: Drive can change after the check; the final recheck then fails the job loudly |
+| Custody (new, per batch) | Before any lock: this batch's data and manifest files are untrashed, carry their identity and match their exact bytes. Inside the delete transaction, right before the DELETE: identity and trashed flag again (quick form, hard 10 s deadline, 30 s idle-in-transaction bound) | An immutable lease: Drive can change after the check, and one batch is one copy (two files, not two copies); the final recheck then fails the job loudly but cannot restore lost bytes |
 
 "Converts back" is not "restores". A full restore drill into a disposable database remains open.
 Drive is still the only copy; a second independent copy is the real answer to that risk.
 
 ## What changed from PR #71
 
-1. `recheck_presence(repo, drive, proof)` now compares file bytes, not only identity:
-   data files Drive gives no checksum for are downloaded and held to the database checksum;
-   manifest files are held to the checksum pinned at proof time (or, for batches recorded after
-   the proof, to the exact bytes their record implies; downloaded when Drive reports no checksum).
-2. A batch uploaded in the same run is confirmed again (`confirm_custody`, includes Drive's
-   trashed flag, because trashed files still download) inside the deleting transaction, after the
-   locks and right before the DELETE. If it fails, nothing is recorded or deleted. `acknowledge`
-   refuses to delete without this check.
-3. `rehearse_insert` and the cross-batch key check join the deep check.
-4. A proof carries a context (database and folder fingerprint) and `run_batch` requires it to match.
+1. `recheck_presence(repo, drive, proof)` now compares file bytes, not only identity: data files
+   Drive gives no checksum for are downloaded and held to the database checksum. `prove()` now reads
+   every manifest file and matches it to its database record before pinning its checksum, so a
+   corrupt, unsampled manifest cannot become the trusted baseline (second review). Batches recorded
+   after the proof are held to the exact bytes their record implies.
+2. Custody of a batch uploaded in the run is confirmed twice: full bytes before any lock, and the
+   quick identity/trashed form inside the deleting transaction. `acknowledge` accepts only a
+   `CustodyCheck` object bound to that batch, database and folder, and re-checks the proof context
+   itself, so a direct caller cannot pass a lambda or a proof for another database (second review).
+3. `rehearse_insert` forces deferred constraints immediate before it rolls back (second review) and
+   joins the deep check, with the cross-batch key check (full mode only).
+4. A proof carries a context (database and folder fingerprint).
 5. `manifest_record()` is the single definition of the manifest file.
 
-## Still open (not fixed here)
+## Still open (not fixed here; nightly deletion stays paused)
+
+The second independent review (ChatGPT, 4 Nov, evening) recommends keeping nightly deletion paused
+until an independently readback-verified second copy exists. The findings above close its four code
+items; these remain:
+
+- **No second independent copy.** Drive is the only copy; an alert cannot recreate lost bytes.
+- Nightly mode cannot see cross-batch conflicts that full mode finds; a clean full check does not
+  qualify later batches (needs incremental conflict qualification and a version policy).
+- The insert rehearsal runs temporary DDL on the production connection and does not exercise
+  foreign keys, triggers, row-level security, identity columns, or cold-reader parity.
+- Lock-duration behaviour with concurrent writers is not tested on native PostgreSQL (PGlite only).
 
 - Rotation uses the calendar day, not each batch's last successful deep check, so a run of failed
   nights delays a batch's turn. The nightly proof reports `deep_batches`; a periodic full
@@ -45,6 +58,7 @@ Drive is still the only copy; a second independent copy is the real answer to th
 - Monitoring beyond GitHub's failed-run emails (missing runs, unexpected deletion counts).
 - Second independent copy of the archive; full disposable-database restore drill.
 - A failed job can still contain deletions committed earlier in the same run.
+- Successful-check age tracking per batch and independently delivered alerts.
 
 ## Activation order
 
@@ -53,4 +67,4 @@ Drive is still the only copy; a second independent copy is the real answer to th
    new insert rehearsal and the cross-batch key check on every batch. A real finding here is a
    finding about the archive, not a reason to loosen the check.
 3. One supervised `delete` run (table `growing`, small max batches).
-4. Only then set `ARCHIVE_NIGHTLY_DELETE=true` again.
+4. Only then, and only with an independent copy in place, set `ARCHIVE_NIGHTLY_DELETE=true` again.
