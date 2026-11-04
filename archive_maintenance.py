@@ -38,13 +38,14 @@ def activate_restore_proof(proof: restore_check.RestoreProof) -> None:
     _ACTIVE_PROOF = proof
 
 
-def require_commissioned_delete() -> None:
+def require_commissioned_delete(context: str | None = None) -> None:
     """No env/CLI boolean can establish custody or restore; only a passing proof can.
 
     The proof must come from archive_restore_check.prove() in this process, cover every
-    recorded batch, contain no failure and be younger than PROOF_MAX_AGE_SECONDS.
+    recorded batch, contain no failure, be younger than PROOF_MAX_AGE_SECONDS and, when a
+    context is given, have been made for that same database and Drive folder.
     """
-    if _ACTIVE_PROOF is None or not _ACTIVE_PROOF.valid_now():
+    if _ACTIVE_PROOF is None or not _ACTIVE_PROOF.valid_now(context):
         raise ArchiveError('AUTHENTICATED_CUSTODY_AND_RESTORE_NOT_COMMISSIONED')
 
 
@@ -219,14 +220,20 @@ class ArchiveRepository:
                                 {'cutoff': cutoff, 'limit': limit}).fetchall()
             return [row[0] for row in rows]
 
-    def acknowledge(self, manifest, texts, cutoff, delete):
+    def acknowledge(self, manifest, texts, cutoff, delete, custody=None):
         """Verification records are atomic; deletion needs an active restore proof.
+
+        A deleting call must also pass `custody`, a callable that re-confirms this batch's Drive
+        copies. It runs inside the transaction, after the locks and immediately before the
+        DELETE; if it raises, nothing is recorded or deleted.
 
         A completed manifest is never reused to authorize unrelated source data.
         Unknown outcomes require read-only reconciliation, never automatic retry.
         """
         if delete:
             require_commissioned_delete()
+            if not callable(custody):
+                raise ArchiveError('CUSTODY_CHECK_REQUIRED')
         table = manifest['source_table']
         condition = predicate(table)
         with self.connection() as conn:
@@ -271,6 +278,7 @@ class ArchiveRepository:
                 # Stage verified rows before blocking scanner/universe writers.
                 # Recheck dependencies and exact payloads under these locks below.
                 conn.execute('SELECT quant_app.lock_canonical_archive_dependencies()')
+            custody()  # Fresh Drive check of this batch's two copies, right before the DELETE.
             count = conn.execute(f"""WITH removed AS (
                 DELETE FROM {RELATIONS[table]} s USING verified_archive_rows v
                 WHERE {key_match} AND to_jsonb(s)=v.original AND {condition}
@@ -285,12 +293,13 @@ class ArchiveRepository:
 
 def run_batch(repo, drive, table, cutoff, limit=1000, delete=False):
     if delete:
-        require_commissioned_delete()
+        require_commissioned_delete(restore_check.context_key(repo, drive))
     texts = repo.select(table, cutoff, limit)
     if not texts:
         return {'selected': 0, 'verified': 0, 'deleted': 0, 'retained': 0}
     manifest, verified = upload_verified(drive, table, texts)
-    deleted = repo.acknowledge(manifest, verified, cutoff, delete)
+    custody = (lambda: restore_check.confirm_custody(drive, manifest)) if delete else None
+    deleted = repo.acknowledge(manifest, verified, cutoff, delete, custody=custody)
     return {'selected': len(texts), 'verified': len(verified), 'deleted': deleted,
             'retained': len(texts) - deleted, 'batch_id': manifest['batch_id']}
 
@@ -351,7 +360,7 @@ def main(argv=None):
             for _ in range(args.max_batches):
                 if deleting:
                     # The proof may be minutes old: re-list Drive immediately before each batch.
-                    restore_check.recheck_presence(repo, drive)
+                    restore_check.recheck_presence(repo, drive, proof)
                 result = run_batch(repo, drive, table, cutoffs[table], sizes[table], deleting)
                 print('ARCHIVE_BATCH ' + json.dumps({'table': table, **result}), flush=True)
                 # Export-only verifies one batch as a deployment smoke test. Do not
@@ -364,7 +373,7 @@ def main(argv=None):
                               'eligible_remaining': repo.preview(table, cutoffs[table])}), flush=True)
         if deleting:
             # Includes tonight's new batches: a copy lost right after deletion fails loudly.
-            restore_check.recheck_presence(repo, drive)
+            restore_check.recheck_presence(repo, drive, proof)
         print(json.dumps({'status': 'SUCCESS'}), flush=True)
         return 0
     except Exception as exc:

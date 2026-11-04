@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import datetime as dt
 from decimal import Decimal
+import hashlib
 import io
 import json
 import time
@@ -30,7 +31,8 @@ from typing import Any
 
 import pyarrow.parquet as pq
 
-from drive_archive import API, FORMAT_VERSION, KEYS, RELATIONS, SPECS, ArchiveError, digest, exact_json
+from drive_archive import (API, FORMAT_VERSION, KEYS, RELATIONS, SPECS, ArchiveError, digest, exact_json,
+                           manifest_record)
 
 DEEP_RECENT_DAYS = 8
 DEEP_ROTATION = 7
@@ -54,6 +56,12 @@ FROM y"""
 _ISSUER = object()  # Only prove() holds this; a hand-built proof is rejected.
 
 
+def context_key(repo, drive) -> str:
+    """Identity of the database and Drive folder a proof was made for (never printed)."""
+    text = f"{getattr(repo, 'url', '')}|{getattr(drive, 'folder_id', '')}"
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 @dataclass(frozen=True)
 class RestoreProof:
     manifests: int
@@ -65,10 +73,14 @@ class RestoreProof:
     failures: tuple[str, ...]
     created: float = field(default_factory=time.monotonic)
     issuer: object = field(default=None, repr=False, compare=False)
+    context: str = field(default='', repr=False)
+    # Manifest file id -> sha256 of the bytes seen at proof time; later rechecks must still match.
+    manifest_pins: dict = field(default_factory=dict, repr=False, compare=False)
 
-    def valid_now(self) -> bool:
+    def valid_now(self, context: str | None = None) -> bool:
         return (self.issuer is _ISSUER and not self.failures and self.presence_verified == self.manifests
-                and time.monotonic() - self.created < PROOF_MAX_AGE_SECONDS)
+                and time.monotonic() - self.created < PROOF_MAX_AGE_SECONDS
+                and (context is None or self.context == context))
 
     def summary(self) -> dict[str, Any]:
         return {'manifests': self.manifests, 'presence_verified': self.presence_verified,
@@ -181,30 +193,110 @@ def select_deep(manifests: list[dict[str, Any]], today: dt.date, everything: boo
             if index % DEEP_ROTATION == turn or (m['verified_at'] is not None and m['verified_at'] >= recent)]
 
 
+def expected_manifest_bytes(batch_id: str, table: str, rows: int, sha: str, data_id: str) -> bytes:
+    return exact_json(manifest_record(batch_id, table, rows, sha, data_id)).encode()
+
+
+class _RolledBack(Exception):
+    pass
+
+
+def rehearse_insert(repo, table: str, texts: list[str]) -> int:
+    """Insert the archived rows into an empty temporary copy of the live table, then roll back.
+
+    The copy carries the live defaults, CHECK/NOT NULL constraints and unique indexes, so a row
+    or a pair of versions the live table would refuse is found here. Nothing persists. Foreign
+    keys, triggers and row-level security are NOT exercised; a full disposable-database restore
+    drill remains the only proof of those.
+    """
+    relation = RELATIONS[table]
+    try:
+        with repo.connection() as conn:
+            conn.execute(f'CREATE TEMP TABLE restore_rehearsal (LIKE {relation} INCLUDING DEFAULTS '
+                         'INCLUDING CONSTRAINTS INCLUDING INDEXES) ON COMMIT DROP')
+            inserted = conn.execute(
+                f'WITH put AS (INSERT INTO restore_rehearsal SELECT (jsonb_populate_record('
+                f'NULL::{relation}, j)).* FROM unnest(%(rows)s::jsonb[]) AS j RETURNING 1) '
+                'SELECT count(*) FROM put', {'rows': texts}).fetchone()[0]
+            raise _RolledBack  # leaving the transaction by exception rolls everything back
+    except _RolledBack:
+        pass
+    except ArchiveError:
+        raise
+    except Exception:  # noqa: BLE001 - any refusal means the rows would not come back
+        raise ArchiveError('ARCHIVE_ROWS_NOT_INSERTABLE') from None
+    if inserted != len(texts):
+        raise ArchiveError('ARCHIVE_ROWS_NOT_INSERTABLE')
+    return inserted
+
+
+def confirm_custody(drive, manifest: dict[str, Any]) -> None:
+    """Fresh proof that both copies of one just-uploaded batch exist, are untrashed and unchanged.
+
+    Takes the upload record (batch_id, source_table, rows, sha256, drive_file_id, drive_manifest_id).
+    Run inside the deleting transaction, immediately before the DELETE statement.
+    """
+    batch = manifest['batch_id']
+    manifest_bytes = expected_manifest_bytes(batch, manifest['source_table'], manifest['rows'],
+                                             manifest['sha256'], manifest['drive_file_id'])
+    for key, kind in (('drive_file_id', 'data'), ('drive_manifest_id', 'manifest')):
+        try:
+            meta = drive.metadata(manifest[key])
+            raw = drive.download(manifest[key])
+        except ArchiveError:
+            raise ArchiveError('ARCHIVE_CUSTODY_LOST') from None
+        wanted = digest(raw) == manifest['sha256'] if kind == 'data' else raw == manifest_bytes
+        if (meta.get('trashed') or (meta.get('appProperties') or {}) != {'batch': batch, 'kind': kind}
+                or not wanted):
+            raise ArchiveError('ARCHIVE_CUSTODY_LOST')
+
+
+def _row_key(table: str, text: str) -> tuple[str, str]:
+    row = json.loads(text, parse_float=Decimal)
+    return tuple(str(row.get(name)) for name in KEYS[table]), hashlib.sha256(text.encode()).hexdigest()
+
+
 def prove(repo, drive, *, today: dt.date, everything: bool = False,
           progress: Any = None) -> RestoreProof:
     manifests = load_manifests(repo)
     listing = list_folder(drive)
     failures: list[str] = []
     present = 0
+    pins: dict[str, str] = {}
     for manifest in manifests:
         problems = presence_failures(manifest, listing)
         failures.extend(problems)
         present += not problems
+        checksum = (listing.get(manifest['drive_manifest_id']) or {}).get('sha256Checksum')
+        if checksum is not None:
+            pins[manifest['drive_manifest_id']] = checksum
     deep = select_deep(manifests, today, everything)
     chosen = {manifest['batch_id'] for manifest in deep}
+    # Anything whose bytes Drive cannot vouch for is downloaded and compared tonight.
     deep += [manifest for manifest in manifests if manifest['batch_id'] not in chosen
-             and (listing.get(manifest['drive_file_id']) or {}).get('sha256Checksum') is None]
+             and ((listing.get(manifest['drive_file_id']) or {}).get('sha256Checksum') is None
+                  or (listing.get(manifest['drive_manifest_id']) or {}).get('sha256Checksum') is None)]
     deep_rows = exact = added = 0
+    seen_keys: dict[tuple[str, tuple[str, ...]], str] = {}
     for index, manifest in enumerate(deep, 1):
         label = manifest['batch_id'][:12]
         try:
             texts = archived_rows(drive.download(manifest['drive_file_id']), manifest)
-            if not manifest_matches(drive.download(manifest['drive_manifest_id']), manifest):
+            raw_manifest = drive.download(manifest['drive_manifest_id'])
+            if not manifest_matches(raw_manifest, manifest):
+                raise ArchiveError('ARCHIVE_MANIFEST_FILE_MISMATCH')
+            pins.setdefault(manifest['drive_manifest_id'], digest(raw_manifest))
+            if pins[manifest['drive_manifest_id']] != digest(raw_manifest):
                 raise ArchiveError('ARCHIVE_MANIFEST_FILE_MISMATCH')
             same, later_null, total = restore_counts(repo, manifest['source_table'], texts)
             if total != len(texts) or same + later_null != total:
                 raise ArchiveError('ARCHIVE_ROWS_NOT_RESTORABLE')
+            rehearse_insert(repo, manifest['source_table'], texts)
+            if everything:
+                for text in texts:
+                    key, fingerprint = _row_key(manifest['source_table'], text)
+                    if seen_keys.setdefault((manifest['source_table'], key), fingerprint) != fingerprint:
+                        raise ArchiveError('CROSS_BATCH_KEY_CONFLICT')
             deep_rows += total
             exact += same
             added += later_null
@@ -216,14 +308,38 @@ def prove(repo, drive, *, today: dt.date, everything: bool = False,
             progress({'deep_checked': index, 'deep_total': len(deep), 'failures': len(failures)})
     return RestoreProof(manifests=len(manifests), presence_verified=present, deep_batches=len(deep),
                         deep_rows=deep_rows, exact_rows=exact, added_column_rows=added,
-                        failures=tuple(failures), issuer=_ISSUER)
+                        failures=tuple(failures), issuer=_ISSUER, context=context_key(repo, drive),
+                        manifest_pins=pins)
 
 
-def recheck_presence(repo, drive) -> int:
-    """Fresh listing of every recorded batch; raise on any missing, trashed or changed file."""
+def recheck_presence(repo, drive, proof: RestoreProof) -> int:
+    """Fresh listing of every recorded batch against what the proof saw; raise on any difference.
+
+    Data files are held to the database checksum, downloaded when Drive reports none. Manifest
+    files are held to the checksum pinned at proof time, or for batches recorded since the
+    proof to the exact bytes their record implies (downloaded when Drive reports no checksum).
+    """
     manifests = load_manifests(repo)
     listing = list_folder(drive)
     for manifest in manifests:
         if presence_failures(manifest, listing):
+            raise ArchiveError('ARCHIVE_PRESENCE_CHANGED_SINCE_PROOF')
+        data_item = listing[manifest['drive_file_id']]
+        record_item = listing[manifest['drive_manifest_id']]
+        pinned = proof.manifest_pins.get(manifest['drive_manifest_id'])
+        if pinned is None:
+            pinned = digest(expected_manifest_bytes(manifest['batch_id'], manifest['source_table'],
+                                                    manifest['row_count'], manifest['file_sha256'],
+                                                    manifest['drive_file_id']))
+        try:
+            if data_item.get('sha256Checksum') is None and digest(
+                    drive.download(manifest['drive_file_id'])) != manifest['file_sha256']:
+                raise ArchiveError('ARCHIVE_PRESENCE_CHANGED_SINCE_PROOF')
+            seen = record_item.get('sha256Checksum')
+            if seen is None:
+                seen = digest(drive.download(manifest['drive_manifest_id']))
+        except ArchiveError:
+            raise ArchiveError('ARCHIVE_PRESENCE_CHANGED_SINCE_PROOF') from None
+        if seen != pinned:
             raise ArchiveError('ARCHIVE_PRESENCE_CHANGED_SINCE_PROOF')
     return len(manifests)
