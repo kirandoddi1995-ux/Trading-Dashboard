@@ -32,7 +32,7 @@ def legacy_algorithm_only(monkeypatch):
                                                      failures=(), issuer=maintenance.restore_check._ISSUER)
     monkeypatch.setattr(maintenance.restore_check, 'prove', lambda *args, **kwargs: passing)
     monkeypatch.setattr(maintenance.restore_check, 'recheck_presence', lambda repo, drive, proof=None: 0)
-    monkeypatch.setattr(maintenance.restore_check, 'confirm_custody', lambda drive, manifest, **kwargs: None)
+    monkeypatch.setattr(maintenance.restore_check, 'confirm_custody', lambda drive, manifest, **kwargs: {'data': 'r', 'manifest': 'r'})
 
 
 def nav(code='A', value=Decimal('1.123456789123456789')):

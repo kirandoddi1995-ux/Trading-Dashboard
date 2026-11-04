@@ -18,7 +18,8 @@ import psycopg
 
 import archive_restore_check as restore_check
 
-from drive_archive import ArchiveError, DriveArchive, RELATIONS, SPECS, credentials, upload_verified
+from drive_archive import (ArchiveError, DriveArchive, RELATIONS, SPECS, batch_identity, credentials,
+                           upload_verified)
 
 ROLE = 'quant_archive_worker'
 UTC = dt.timezone.utc
@@ -234,8 +235,19 @@ class ArchiveRepository:
             require_commissioned_delete()  # No active proof: denied before anything else.
             if not restore_check.valid_custody(custody, manifest):
                 raise ArchiveError('CUSTODY_CHECK_REQUIRED')
-            # The proof must have been made for the same database and folder as this batch's check.
-            require_commissioned_delete(getattr(custody, 'context', None))
+            # This repository (the receiver), the custody check and the proof must all name the same
+            # database and Drive folder; the custody object's own claim is not enough.
+            receiver = restore_check.context_key(self, custody.drive)
+            if receiver != custody.context:
+                raise ArchiveError('AUTHENTICATED_CUSTODY_AND_RESTORE_NOT_COMMISSIONED')
+            require_commissioned_delete(receiver)
+            # The rows deleted must be exactly the verified batch: recompute its content-addressed
+            # identity from a snapshot, and delete only that snapshot.
+            texts = tuple(texts)
+            batch_id, rows = batch_identity(manifest['source_table'], texts)
+            if (batch_id != manifest['batch_id'] or len(rows) != manifest['rows']
+                    or len(texts) != len(rows)):
+                raise ArchiveError('ROWS_NOT_THE_VERIFIED_BATCH')
         table = manifest['source_table']
         condition = predicate(table)
         with self.connection() as conn:
@@ -306,12 +318,23 @@ def run_batch(repo, drive, table, cutoff, limit=1000, delete=False):
     manifest, verified = upload_verified(drive, table, texts)
     custody = None
     if delete:
-        # Full byte comparison before any database lock; only the quick form runs under locks.
-        restore_check.confirm_custody(drive, manifest)
+        # Building the check runs the full byte comparison and pins revision ids before any
+        # database lock; only the quick form runs under locks.
         custody = restore_check.CustodyCheck(repo, drive, manifest)
     deleted = repo.acknowledge(manifest, verified, cutoff, delete, custody=custody)
-    return {'selected': len(texts), 'verified': len(verified), 'deleted': deleted,
-            'retained': len(texts) - deleted, 'batch_id': manifest['batch_id']}
+    result = {'selected': len(texts), 'verified': len(verified), 'deleted': deleted,
+              'retained': len(texts) - deleted, 'batch_id': manifest['batch_id']}
+    if not delete:
+        # Non-deleting probe on real Drive: would the full check and the under-lock quick check
+        # pass for this batch? Reported in the log only; nothing is deleted either way.
+        try:
+            restore_check.CustodyCheck(repo, drive, manifest)()
+            result['custody_probe'] = 'ok'
+        except ArchiveError as error:
+            result['custody_probe'] = str(error)
+        except Exception as error:  # a probe must never break an export; the log shows the type
+            result['custody_probe'] = 'PROBE_ERROR_' + type(error).__name__
+    return result
 
 
 def build_drive_credentials():

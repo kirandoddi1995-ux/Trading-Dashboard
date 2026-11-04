@@ -142,39 +142,44 @@ def test_sql_acknowledge_refuses_to_delete_without_or_after_a_failing_custody_ch
         # A check made for another database or folder cannot use this proof.
         elsewhere = ListedDrive()
         elsewhere.folder_id = 'other-folder'
+        elsewhere.data, elsewhere.properties = drive.data, drive.properties
         with pytest.raises(ArchiveError, match='AUTHENTICATED_CUSTODY_AND_RESTORE_NOT_COMMISSIONED'):
             repo.acknowledge(manifest, texts, cutoff, True,
                              custody=restore_check.CustodyCheck(repo, elsewhere, manifest))
-        # A copy trashed before the DELETE stops it and rolls back the manifest record too.
+        # A copy trashed after the full check but before the DELETE stops it inside the transaction
+        # and rolls back the manifest record too.
+        custody = restore_check.CustodyCheck(repo, drive, manifest)
         drive.trashed.add(manifest['drive_file_id'])
         with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
-            repo.acknowledge(manifest, texts, cutoff, True,
-                             custody=restore_check.CustodyCheck(repo, drive, manifest))
+            repo.acknowledge(manifest, texts, cutoff, True, custody=custody)
         assert pg.execute('SELECT count(*) FROM quant_app.mf_nav').fetchone()[0] == 2
         assert pg.execute('SELECT count(*) FROM quant_app.archive_manifests').fetchone()[0] == 0
+        # Building a check runs the full byte check, so a trashed copy cannot even get one.
+        with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
+            restore_check.CustodyCheck(repo, drive, manifest)
         drive.trashed.clear()
-        assert repo.acknowledge(manifest, texts, cutoff, True,
-                                custody=restore_check.CustodyCheck(repo, drive, manifest)) == 1
+        assert repo.acknowledge(manifest, texts, cutoff, True, custody=custody) == 1
     finally:
         maintenance._ACTIVE_PROOF = None
 
 
-def test_run_batch_checks_bytes_before_locks_and_only_the_quick_form_runs_under_locks(monkeypatch):
+def test_full_check_pins_revisions_and_the_quick_form_needs_them_unchanged():
     drive = ListedDrive()
     manifest, _ = upload_verified(drive, 'mf_nav', [exact_json(nav())])
-    changed = drive.data[manifest['drive_manifest_id']]
-    drive.data[manifest['drive_manifest_id']] = (changed[0] + b' ', 'manifest')
+    record = manifest['drive_manifest_id']
+    changed = drive.data[record]
+    drive.data[record] = (changed[0] + b' ', 'manifest')
     with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
         restore_check.confirm_custody(drive, manifest)  # full form, used before any lock
-    # The quick form (used under locks) now compares Drive's own checksum, so replaced contents
-    # are caught too; it does not download.
-    with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
+    drive.data[record] = changed
+    revisions = restore_check.confirm_custody(drive, manifest)
+    assert set(revisions) == {'data', 'manifest'} and all(revisions.values())
+    restore_check.confirm_custody(drive, manifest, check_bytes=False, revisions=revisions)
+    with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):  # no pins: fail closed
         restore_check.confirm_custody(drive, manifest, check_bytes=False)
-    drive.data[manifest['drive_manifest_id']] = changed
-    restore_check.confirm_custody(drive, manifest, check_bytes=False)
     drive.trashed.add(manifest['drive_file_id'])
     with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
-        restore_check.confirm_custody(drive, manifest, check_bytes=False)
+        restore_check.confirm_custody(drive, manifest, check_bytes=False, revisions=revisions)
 
 
 def test_a_corrupt_unsampled_manifest_cannot_become_the_pinned_baseline(monkeypatch):
@@ -281,21 +286,204 @@ def test_a_proof_cannot_authorize_deletion_for_another_database_or_folder():
         maintenance._ACTIVE_PROOF = None
 
 
-def test_quick_custody_catches_replaced_data_and_missing_checksum_fails_closed():
+def test_quick_custody_catches_replaced_content_even_when_drive_reports_no_checksum():
     drive = ListedDrive()
     manifest, _ = upload_verified(drive, 'mf_nav', [exact_json(nav())])
-    restore_check.confirm_custody(drive, manifest, check_bytes=False)
-    original = drive.data[manifest['drive_file_id']]
-    drive.data[manifest['drive_file_id']] = (original[0] + b'\n', original[1])  # replaced after the full check
+    revisions = restore_check.confirm_custody(drive, manifest)
+    # Drive may omit sha256 (rclone docs; our own prove() handles it). An unchanged file must still
+    # pass, or a supervised delete of a batch uploaded seconds earlier would refuse every time.
+    drive.no_checksum.update(drive.data)
+    restore_check.confirm_custody(drive, manifest, check_bytes=False, revisions=revisions)
+    data = manifest['drive_file_id']
+    original = drive.data[data]
+    drive.data[data] = (original[0] + b'\n', original[1])  # replaced after the full check
     with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
-        restore_check.confirm_custody(drive, manifest, check_bytes=False)
-    drive.data[manifest['drive_file_id']] = original
-    drive.no_checksum.add(manifest['drive_file_id'])  # cannot be confirmed cheaply: do not delete
+        restore_check.confirm_custody(drive, manifest, check_bytes=False, revisions=revisions)
+    drive.data[data] = original
+    drive.no_checksum.clear()
+    drive.data[data] = (original[0] + b'\n', original[1])  # a checksum Drive does report must match
+    revisions_now = {**revisions, 'data': drive.metadata(data)['headRevisionId']}
     with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
-        restore_check.confirm_custody(drive, manifest, check_bytes=False)
+        restore_check.confirm_custody(drive, manifest, check_bytes=False, revisions=revisions_now)
+    drive.data[data] = original
+    drive.no_revision.add(data)  # no revision id to compare: fail closed, in both forms
+    with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
+        restore_check.confirm_custody(drive, manifest, check_bytes=False, revisions=revisions)
+    with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
+        restore_check.confirm_custody(drive, manifest)
 
 
 def test_the_database_lock_wait_is_bounded_before_the_advisory_lock():
+    """Source-order check only (PGlite stubs the advisory lock); behaviour is tested below."""
     import inspect
     source = inspect.getsource(ArchiveRepository.acknowledge)
     assert source.index("SET LOCAL lock_timeout") < source.index('pg_advisory_xact_lock')
+
+
+@needs_sql
+def test_sql_lock_timeout_is_in_force_inside_the_deleting_transaction_only(pg):
+    sql_harness.insert_nav(pg, 'A', '2026-08-01')
+    sql_harness.insert_nav(pg, 'A', '2026-08-02')
+    pg.execute('SET ROLE quant_archive_worker')
+    repo = ArchiveRepository('postgres://test-only')
+    cutoff = dt.date(2026, 9, 13)
+    drive = ListedDrive()
+    manifest, texts = upload_verified(drive, 'mf_nav', repo.select('mf_nav', cutoff, 10))
+    seen = []
+
+    class Recording(restore_check.CustodyCheck):
+        def __call__(self):
+            seen.append(pg.execute('SHOW lock_timeout').fetchone()[0])
+            super().__call__()
+
+    custody = Recording(repo, drive, manifest)
+    proof = restore_check.RestoreProof(manifests=0, presence_verified=0, deep_batches=0, deep_rows=0,
+                                       exact_rows=0, added_column_rows=0, failures=(),
+                                       issuer=restore_check._ISSUER, context=custody.context)
+    maintenance.activate_restore_proof(proof)
+    try:
+        assert repo.acknowledge(manifest, texts, cutoff, True, custody=custody) == 1
+    finally:
+        maintenance._ACTIVE_PROOF = None
+    assert seen == ['15s']  # also bounds FOR UPDATE, dependency locks and the DELETE's row locks
+    assert pg.execute('SHOW lock_timeout').fetchone()[0] == '0'  # SET LOCAL ended with the transaction
+
+
+def test_export_run_probes_custody_on_real_drive_without_deleting(monkeypatch):
+    """A non-deleting export run reports whether the under-lock check would pass on real Drive."""
+    class Repo:
+        url = 'postgres://x'
+
+        def select(self, table, cutoff, limit):
+            return [exact_json(nav())]
+
+        def acknowledge(self, manifest, texts, cutoff, delete, custody=None):
+            assert delete is False and custody is None
+            return 0
+    drive = ListedDrive()
+    result = maintenance.run_batch(Repo(), drive, 'mf_nav', dt.date(2026, 9, 13))
+    assert result['deleted'] == 0 and result['custody_probe'] == 'ok'
+    drive.no_revision.update(drive.data)  # what a delete would meet if Drive gave no revision ids
+    result = maintenance.run_batch(Repo(), drive, 'mf_nav', dt.date(2026, 9, 13))
+    assert result['deleted'] == 0 and result['custody_probe'] == 'ARCHIVE_CUSTODY_LOST'
+
+
+# ---- Round 3 (independent review of 8401eaa): deletion-boundary binding ----
+
+def _sql_setup(pg):
+    sql_harness.insert_nav(pg, 'A', '2026-08-01')
+    sql_harness.insert_nav(pg, 'A', '2026-08-02')
+    pg.execute('SET ROLE quant_archive_worker')
+    repo = ArchiveRepository('postgres://test-only')
+    cutoff = dt.date(2026, 9, 13)
+    drive = ListedDrive()
+    manifest, texts = upload_verified(drive, 'mf_nav', repo.select('mf_nav', cutoff, 10))
+    return repo, cutoff, drive, manifest, texts
+
+
+def _activate(context):
+    maintenance.activate_restore_proof(restore_check.RestoreProof(
+        manifests=0, presence_verified=0, deep_batches=0, deep_rows=0, exact_rows=0,
+        added_column_rows=0, failures=(), issuer=restore_check._ISSUER, context=context))
+
+
+def _nav_rows(pg):
+    return pg.execute('SELECT count(*) FROM quant_app.mf_nav').fetchone()[0]
+
+
+@needs_sql
+def test_sql_rows_outside_the_verified_batch_are_never_deleted(pg):
+    repo, cutoff, drive, _, texts_a = _sql_setup(pg)
+    manifest_z, _ = upload_verified(drive, 'mf_nav', [exact_json(nav('Z'))])  # archive holds only Z
+    custody = restore_check.CustodyCheck(repo, drive, manifest_z)
+    _activate(custody.context)
+    try:
+        with pytest.raises(ArchiveError, match='ROWS_NOT_THE_VERIFIED_BATCH'):
+            repo.acknowledge(manifest_z, texts_a, cutoff, True, custody=custody)
+    finally:
+        maintenance._ACTIVE_PROOF = None
+    assert _nav_rows(pg) == 2
+
+
+@needs_sql
+def test_sql_custody_for_one_database_cannot_authorize_deletion_through_another(pg):
+    repo, cutoff, drive, manifest, texts = _sql_setup(pg)
+    custody = restore_check.CustodyCheck(repo, drive, manifest)
+    _activate(custody.context)
+    other = ArchiveRepository('postgres://another-database')  # same harness engine, other identity
+    try:
+        with pytest.raises(ArchiveError, match='AUTHENTICATED_CUSTODY_AND_RESTORE_NOT_COMMISSIONED'):
+            other.acknowledge(manifest, texts, cutoff, True, custody=custody)
+    finally:
+        maintenance._ACTIVE_PROOF = None
+    assert _nav_rows(pg) == 2
+
+
+@needs_sql
+def test_sql_custody_must_match_every_field_of_the_deletion_manifest(pg):
+    repo, cutoff, drive, manifest, texts = _sql_setup(pg)
+    custody = restore_check.CustodyCheck(repo, drive, manifest)
+    _activate(custody.context)
+    try:
+        for field, value in (('drive_file_id', 'nonexistent'), ('drive_manifest_id', 'nonexistent'),
+                             ('source_table', 'market_quotes')):
+            with pytest.raises(ArchiveError, match='CUSTODY_CHECK_REQUIRED'):
+                repo.acknowledge({**manifest, field: value}, texts, cutoff, True, custody=custody)
+        # An object that skipped the full check (constructor bypassed) is not custody evidence.
+        forged = object.__new__(restore_check.CustodyCheck)
+        forged.__dict__.update({k: v for k, v in custody.__dict__.items() if k != '_revisions'})
+        with pytest.raises(ArchiveError, match='CUSTODY_CHECK_REQUIRED'):
+            repo.acknowledge(manifest, texts, cutoff, True, custody=forged)
+        assert pg.execute('SELECT count(*) FROM quant_app.archive_manifests').fetchone()[0] == 0
+        assert repo.acknowledge(manifest, texts, cutoff, True, custody=custody) == 1
+    finally:
+        maintenance._ACTIVE_PROOF = None
+
+
+@needs_sql
+def test_sql_run_batch_stops_when_content_is_replaced_after_the_full_check(pg):
+    """Real run_batch + PGlite: replacement between the full check and the DELETE, no Drive checksum."""
+    repo, cutoff, drive, _, _ = _sql_setup(pg)
+    _activate(restore_check.context_key(repo, drive))
+    real_acknowledge = repo.acknowledge
+
+    def replaced_then_acknowledge(manifest, texts, cutoff, delete, custody=None):
+        body, kind = drive.data[manifest['drive_file_id']]
+        drive.data[manifest['drive_file_id']] = (body + b'x', kind)
+        drive.no_checksum.update(drive.data)
+        return real_acknowledge(manifest, texts, cutoff, delete, custody=custody)
+
+    repo.acknowledge = replaced_then_acknowledge
+    try:
+        with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
+            maintenance.run_batch(repo, drive, 'mf_nav', cutoff, delete=True)
+    finally:
+        maintenance._ACTIVE_PROOF = None
+    assert _nav_rows(pg) == 2
+    assert pg.execute('SELECT count(*) FROM quant_app.archive_manifests').fetchone()[0] == 0
+
+
+def test_run_batch_runs_the_full_check_before_acknowledge_and_no_download_under_locks(monkeypatch):
+    drive = ListedDrive()
+    downloads = []
+    real_download = drive.download
+    drive.download = lambda file_id: downloads.append(file_id) or real_download(file_id)
+    seen = {}
+
+    class Repo:
+        url = 'postgres://x'
+
+        def select(self, table, cutoff, limit):
+            return [exact_json(nav())]
+
+        def acknowledge(self, manifest, texts, cutoff, delete, custody=None):
+            seen['before'] = list(downloads)
+            custody()
+            seen['during'] = downloads[len(seen['before']):]
+            return len(texts)
+    monkeypatch.setattr(maintenance, 'require_commissioned_delete', lambda context=None: None)
+    result = maintenance.run_batch(Repo(), drive, 'mf_nav', dt.date(2026, 9, 13), delete=True)
+    manifest_files = {result['batch_id']}
+    assert result['deleted'] == 1 and manifest_files
+    # upload_verified reads each file back once; the full custody check reads both again.
+    assert len(seen['before']) == 4 and seen['during'] == []

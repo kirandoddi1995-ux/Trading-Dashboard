@@ -232,47 +232,86 @@ def rehearse_insert(repo, table: str, texts: list[str]) -> int:
     return inserted
 
 
-def confirm_custody(drive, manifest: dict[str, Any], *, check_bytes: bool = True) -> None:
+def confirm_custody(drive, manifest: dict[str, Any], *, check_bytes: bool = True,
+                    revisions: dict[str, str] | None = None) -> dict[str, str]:
     """Fresh proof that both files of one just-uploaded batch exist, are untrashed and unchanged.
 
     Takes the upload record (batch_id, source_table, rows, sha256, drive_file_id, drive_manifest_id).
-    check_bytes=False is the quick form used while database locks are held: identity, trashed flag and
-    Drive's own sha256 (a missing checksum fails closed). The full download runs before any lock.
+    Full form (before any lock): reads each file's metadata, then downloads and compares its exact
+    bytes, and returns each file's Drive head revision id. Quick form (check_bytes=False, under
+    locks): needs those revision ids and requires them unchanged, plus identity, the trashed flag and
+    Drive's sha256 wherever Drive reports one. A revision id exists for every binary file from upload
+    and changes whenever content is replaced; sha256 may be missing, so it is not relied on alone.
+    Missing pins or a missing revision id fail closed.
     """
     batch = manifest['batch_id']
     manifest_bytes = expected_manifest_bytes(batch, manifest['source_table'], manifest['rows'],
                                              manifest['sha256'], manifest['drive_file_id'])
+    if not check_bytes and not (isinstance(revisions, dict)
+                                and all(revisions.get(kind) for kind in ('data', 'manifest'))):
+        raise ArchiveError('ARCHIVE_CUSTODY_LOST')
+    seen: dict[str, str] = {}
     for key, kind in (('drive_file_id', 'data'), ('drive_manifest_id', 'manifest')):
         try:
-            meta = drive.metadata(manifest[key])
+            meta = drive.metadata(manifest[key])  # metadata first: a later replacement moves the revision
             raw = drive.download(manifest[key]) if check_bytes else None
         except ArchiveError:
             raise ArchiveError('ARCHIVE_CUSTODY_LOST') from None
         expected = manifest['sha256'] if kind == 'data' else digest(manifest_bytes)
-        wanted = (digest(raw) == manifest['sha256'] if kind == 'data' else raw == manifest_bytes) \
-            if check_bytes else meta.get('sha256Checksum') == expected  # quick: Drive's own checksum
-        if (meta.get('trashed') or (meta.get('appProperties') or {}) != {'batch': batch, 'kind': kind}
-                or not wanted):
+        revision = meta.get('headRevisionId')
+        if check_bytes:
+            wanted = digest(raw) == manifest['sha256'] if kind == 'data' else raw == manifest_bytes
+        else:
+            wanted = revision == revisions[kind]
+        checksum = meta.get('sha256Checksum')
+        if (not revision or meta.get('trashed') or not wanted
+                or (meta.get('appProperties') or {}) != {'batch': batch, 'kind': kind}
+                or (checksum is not None and checksum != expected)):
             raise ArchiveError('ARCHIVE_CUSTODY_LOST')
+        seen[kind] = revision
+    return seen
+
+
+CUSTODY_FIELDS = ('batch_id', 'source_table', 'rows', 'sha256', 'drive_file_id', 'drive_manifest_id')
+
+
+def manifest_identity(manifest: dict[str, Any]) -> tuple:
+    """Every field of an upload record that a deletion relies on, in a fixed order."""
+    return tuple(manifest[field] for field in CUSTODY_FIELDS)
 
 
 class CustodyCheck:
-    """The only custody callback acknowledge() accepts: bound to one batch, one database and folder."""
+    """The only custody callback acknowledge() accepts: bound to one complete upload record, one
+    database and one Drive folder.
+
+    Building one runs the full byte check and pins both files' revision ids, so no check can exist
+    without that comparison; calling it runs the quick form against those pins.
+    """
 
     def __init__(self, repo, drive, manifest: dict[str, Any]):
         self.context = context_key(repo, drive)
-        self.batch_id = manifest['batch_id']
-        self.sha256 = manifest['sha256']
+        self.identity = manifest_identity(manifest)
         self._drive = drive
-        self._manifest = dict(manifest)
+        self._manifest = dict(zip(CUSTODY_FIELDS, self.identity))
+        self._revisions = confirm_custody(drive, self._manifest)
+
+    @property
+    def drive(self):
+        return self._drive
 
     def __call__(self) -> None:
-        confirm_custody(self._drive, self._manifest, check_bytes=False)
+        confirm_custody(self._drive, self._manifest, check_bytes=False, revisions=self._revisions)
 
 
 def valid_custody(custody: Any, manifest: dict[str, Any]) -> bool:
-    return (isinstance(custody, CustodyCheck) and custody.batch_id == manifest['batch_id']
-            and custody.sha256 == manifest['sha256'])
+    """A completed full check (pinned revisions) for exactly this upload record, field by field."""
+    revisions = getattr(custody, '_revisions', None)
+    try:
+        same = custody.identity == manifest_identity(manifest)
+    except (AttributeError, KeyError):
+        return False
+    return (isinstance(custody, CustodyCheck) and same and isinstance(revisions, dict)
+            and all(revisions.get(kind) for kind in ('data', 'manifest')))
 
 
 def _row_key(table: str, text: str) -> tuple[str, str]:

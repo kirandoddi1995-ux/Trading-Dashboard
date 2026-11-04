@@ -210,7 +210,10 @@ class DriveArchive:
         self.session.close()
 
     def request(self, method, url, quick=False, **kwargs):
-        # quick: calls made while database locks are held get a hard overall deadline.
+        # quick: calls made while database locks are held. Connect 3 s / read 7 s socket timeouts;
+        # google-auth checks max_allowed_time only after a request returns, so this is NOT a hard
+        # total deadline. The hard bounds are server-side: lock_timeout and
+        # idle_in_transaction_session_timeout end the transaction, and nothing is deleted.
         extra = {'max_allowed_time': 10} if quick else {}
         response = self.session.request(method, url, timeout=(3, 7) if quick else (10, 90),
                                         allow_redirects=False, **extra, **kwargs)
@@ -232,7 +235,7 @@ class DriveArchive:
         if not re.fullmatch(r'[A-Za-z0-9_-]+', file_id):
             raise ArchiveError('INVALID_DRIVE_FILE_ID')
         with self.request('GET', f'{API}/{file_id}', quick=True,
-                          params={'fields': 'id,trashed,appProperties,sha256Checksum,size'}) as response:
+                          params={'fields': 'id,trashed,appProperties,sha256Checksum,headRevisionId,size'}) as response:
             return response.json()
 
     def download(self, file_id):

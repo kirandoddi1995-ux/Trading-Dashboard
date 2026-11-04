@@ -18,7 +18,7 @@ deletion was paused (`ARCHIVE_NIGHTLY_DELETE=false`) until this is merged and in
 | Deep check (rotating 1/7 plus last 8 days; `restore-check` = all) | The bytes download, re-hash, recompute the content-addressed batch id, and every row converts back to the live row type | That rows would insert (next row) |
 | **Insert rehearsal** (new) | Every row inserts into an empty temporary copy of the live table (defaults, CHECK and NOT NULL, unique indexes), then rolls back | Foreign keys, triggers, row-level security, or a restore into a real disposable database |
 | **Cross-batch key check** (new, full mode only) | No key is archived twice with different content | Anything nightly (it needs every batch) |
-| Custody (new, per batch) | Before any lock: this batch's data and manifest files are untrashed, carry their identity and match their exact bytes. Inside the delete transaction, right before the DELETE: identity and trashed flag again (quick form, hard 10 s deadline, 30 s idle-in-transaction bound) | An immutable lease: Drive can change after the check, and one batch is one copy (two files, not two copies); the final recheck then fails the job loudly but cannot restore lost bytes |
+| Custody (new, per batch) | Before any lock (building the `CustodyCheck`): this batch's data and manifest files are untrashed, carry their identity, match their exact bytes, and their Drive head revision ids are pinned. Inside the delete transaction, right before the DELETE (quick form; Drive calls have 3 s connect / 7 s read socket timeouts, which are not a hard total deadline because google-auth checks `max_allowed_time` only after a request returns; the hard bounds are the server-side 30 s idle-in-transaction and 15 s lock timeouts, which abort the transaction): identity, trashed flag, revision ids unchanged, and Drive's sha256 wherever Drive reports one. A missing revision id or missing pins fail closed. Lock waits bounded by `lock_timeout` 15 s (applies to the advisory lock, `FOR UPDATE`, dependency locks and the DELETE's row locks); idle-in-transaction bounded at 30 s | An immutable lease: Drive can change after the check, and one batch is one copy (two files, not two copies); the final recheck then fails the job loudly but cannot restore lost bytes. That real Drive returns `headRevisionId` for our files is not yet observed: an `export` run now logs `custody_probe` per batch to show it without deleting |
 
 "Converts back" is not "restores". A full restore drill into a disposable database remains open.
 Drive is still the only copy; a second independent copy is the real answer to that risk.
@@ -39,7 +39,65 @@ Drive is still the only copy; a second independent copy is the real answer to th
 4. A proof carries a context (database and folder fingerprint).
 5. `manifest_record()` is the single definition of the manifest file.
 
+### Since 8401eaa (own adversarial review, 5 Nov)
+
+6. The under-lock quick check ignored file contents: a file replaced after the full byte check
+   passed. It now compares pinned Drive revision ids (and Drive's sha256 where reported). Revision
+   ids, not sha256, are the primary signal, because Drive may omit sha256 (rclone Drive docs) and a
+   sha256-only rule could refuse every same-run delete before the storage deadline.
+7. Lock waits were unbounded. `SET LOCAL lock_timeout = '15s'` now precedes the advisory lock;
+   a SQL-harness test shows it in force inside the deleting transaction and gone after it.
+8. `CustodyCheck` can only be built through the full byte check (its constructor runs it).
+9. `export` mode logs a non-deleting `custody_probe` for each batch, so real Drive behaviour is
+   observed before any delete depends on it.
+10. Comparison with published practice: see project note
+    `research_2026-11-05_backup_verification_before_delete.md` (AWS REL09-BP04, PostgreSQL
+    retention workflow, Kestra verified archive, GitLab 2017 postmortem, Drive API docs).
+
+### Round 3 independent review of 8401eaa (ChatGPT, 5 Nov) — blockers closed here
+
+Each was reproduced with a failing test first (tests/test_archive_custody_hardening.py, PGlite):
+
+11. **Rows not bound to the verified batch.** Custody for an archive of row Z let `acknowledge()`
+    delete row A. Now `acknowledge()` snapshots the texts, recomputes `batch_identity` and the row
+    count from that snapshot, requires them to equal the manifest, and deletes only that snapshot
+    (`ROWS_NOT_THE_VERIFIED_BATCH`).
+12. **Receiver context.** A genuine check for database A authorised deletion through repository B.
+    Now the context is derived from the receiving repository and the check's own Drive transport and
+    must equal both the check's context and the proof's.
+13. **Partial manifest binding.** Substituted Drive file ids passed. Now the check is bound to all six
+    fields of the upload record, and only a check that completed the full byte check (pinned
+    revisions) is accepted; a constructor-bypassed object is refused.
+14. **Final check missed content changes** — already closed by items 6-8 above (found independently
+    by own review); now also reproduced through real `run_batch()` with Drive reporting no checksum.
+15. **Ordering test did not call `run_batch()`.** Renamed; a real ordering test now shows the full
+    check (both files read) happens before `acknowledge()` and no download happens under locks.
+16. **Wording.** The 10 s Drive limit is not a hard deadline (google-auth checks `max_allowed_time`
+    after a request returns); the hard bounds are the server-side timeouts. The NAV "lossless restore"
+    test runs on PGlite, not a native PostgreSQL server, and covers one synthetic path only.
+17. **Copy verifier.** A count could certify an empty folder or the wrong set of batches; malformed
+    manifests were accepted. `verify_local_archive_copy.py` now qualifies a copy only against a frozen
+    inventory (exact batch ids, counts, hashes) whose sha256 is supplied separately (the anchor); each
+    manifest must be the exact expected bytes; files outside the inventory fail; a path inside a known
+    cloud-sync folder is refused. `--self-check-only` reports `SELF_CONSISTENT_ONLY` with
+    `deletion_authority: false`. Physical independence (separate disk) remains the owner's evidence.
+    A fingerprint mode (`--expect-batches N --expect-set-sha256 HASH`) avoids moving an inventory
+    file: N and HASH come from `INVENTORY_SET_SQL`, run read-only on the database at copy time; a
+    PGlite test shows that SQL and the verifier's rebuild agree byte for byte.
+
 ## Still open (not fixed here; nightly deletion stays paused)
+
+- **Per-generation preservation.** A one-time disk copy does not protect batches uploaded later.
+  Nightly deletion must not return until each new batch is independently preserved and verified
+  before its source rows are pruned (review round 3).
+- **Storage deadline.** If prerequisites are not ready before collectors reach their stop, reduce
+  growth through the existing collector policy rather than weakening preservation checks (owner's
+  decision).
+
+- **No real restore drill** into a disposable database with application queries (AWS REL09-BP04).
+  A free GitHub Actions job with a PostgreSQL service container can do it.
+- **No cooling-off period**: a batch is deleted in the run that uploads it. Published workflows wait,
+  then re-verify, before deleting.
 
 The second independent review (ChatGPT, 4 Nov, evening) recommends keeping nightly deletion paused
 until an independently readback-verified second copy exists. The findings above close its four code
