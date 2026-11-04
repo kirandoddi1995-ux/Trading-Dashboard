@@ -30,6 +30,7 @@ class ListedDrive(MemoryDrive):
         self.trashed = set()
         self.no_checksum = set()
         self.no_revision = set()
+        self.moved = set()
 
     def metadata(self, file_id):
         """Drive files.get metadata; a vanished file is a 404."""
@@ -38,6 +39,7 @@ class ListedDrive(MemoryDrive):
         body = self.data[file_id][0]
         # Drive gives every binary file a head revision id that changes when content is replaced.
         return {'id': file_id, 'trashed': file_id in self.trashed,
+                'parents': [] if file_id in self.moved else [self.folder_id],
                 'appProperties': self.properties[file_id],
                 'sha256Checksum': None if file_id in self.no_checksum else digest(body),
                 'headRevisionId': None if file_id in self.no_revision else 'rev-' + digest(body)[:16],

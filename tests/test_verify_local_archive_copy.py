@@ -231,3 +231,29 @@ def test_database_fingerprint_sql_equals_the_verifier_fingerprint(tmp_path):
         db.send({'close': True})
         db.process.communicate(timeout=15)
     assert count == 4 and fingerprint == _fingerprint(manifests.values())
+
+
+# ---- CodeAnt review of PR #72 ----
+
+@pytest.mark.parametrize('link', ['file', 'directory'])
+def test_links_to_files_outside_the_copy_do_not_count(tmp_path, capsys, link):
+    drive, manifests = _drive_with('AB')
+    outside = tmp_path / 'outside'
+    _write_copy(outside, drive)
+    copy = tmp_path / 'copy'
+    copy.mkdir()
+    if link == 'file':
+        for item in (outside / 'sub').iterdir():
+            (copy / item.name).symlink_to(item)
+    else:
+        (copy / 'sub').symlink_to(outside / 'sub', target_is_directory=True)
+    code, out = _run_fp(capsys, copy, 2, _fingerprint(manifests.values()))
+    assert code == 1 and out['status'] == 'COPY_DOES_NOT_MATCH_INVENTORY'
+
+
+def test_oversized_files_are_refused_without_reading_them(tmp_path, capsys, monkeypatch):
+    drive, manifests = _drive_with('A')
+    _write_copy(tmp_path / 'copy', drive)
+    monkeypatch.setattr(verify, 'MAX_BYTES', 10)
+    code, out = _run_fp(capsys, tmp_path / 'copy', 1, _fingerprint(manifests.values()))
+    assert code == 1 and any('FILE_TOO_LARGE' in f for f in out['first_failures'])

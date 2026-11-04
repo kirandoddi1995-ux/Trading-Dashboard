@@ -18,7 +18,7 @@
       {
         "predecessor_legacy_sha256": "47bae109d49a43408fbe2cd3176a974d49e997442ddf1f1f9adcb8161caea38f",
         "reason": "ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md",
-        "successor_raw_sha256": "7f60464952f1da9393eb11d51ba1091abb6be0db4149f93b02346733c0ec7899"
+        "successor_raw_sha256": "26bfa344f125ac0989bd0d260fb98c0cac2e95ec7bba47c3b50cf180b6d5fa02"
       }
     ],
     "tests/test_archive_commissioning_hold.py": [

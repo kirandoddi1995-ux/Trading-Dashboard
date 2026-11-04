@@ -239,8 +239,8 @@ def confirm_custody(drive, manifest: dict[str, Any], *, check_bytes: bool = True
     Takes the upload record (batch_id, source_table, rows, sha256, drive_file_id, drive_manifest_id).
     Full form (before any lock): reads each file's metadata, then downloads and compares its exact
     bytes, and returns each file's Drive head revision id. Quick form (check_bytes=False, under
-    locks): needs those revision ids and requires them unchanged, plus identity, the trashed flag and
-    Drive's sha256 wherever Drive reports one. A revision id exists for every binary file from upload
+    locks): needs those revision ids and requires them unchanged, plus identity, the trashed flag,
+    membership of the archive folder and Drive's sha256 wherever Drive reports one. A revision id exists for every binary file from upload
     and changes whenever content is replaced; sha256 may be missing, so it is not relied on alone.
     Missing pins or a missing revision id fail closed.
     """
@@ -264,7 +264,9 @@ def confirm_custody(drive, manifest: dict[str, Any], *, check_bytes: bool = True
         else:
             wanted = revision == revisions[kind]
         checksum = meta.get('sha256Checksum')
+        folder = getattr(drive, 'folder_id', None)
         if (not revision or meta.get('trashed') or not wanted
+                or not folder or folder not in (meta.get('parents') or ())
                 or (meta.get('appProperties') or {}) != {'batch': batch, 'kind': kind}
                 or (checksum is not None and checksum != expected)):
             raise ArchiveError('ARCHIVE_CUSTODY_LOST')
@@ -337,8 +339,12 @@ def prove(repo, drive, *, today: dt.date, everything: bool = False,
         try:
             raw_manifest = drive.download(manifest['drive_manifest_id'])
             stated = (listing.get(manifest['drive_manifest_id']) or {}).get('sha256Checksum')
-            if not manifest_matches(raw_manifest, manifest) or (
-                    stated is not None and stated != digest(raw_manifest)):
+            # Exact bytes, not identity fields only: altered types, encoding or extra fields in a
+            # manifest must never become the pinned baseline (CodeAnt review of PR #72).
+            exact = expected_manifest_bytes(manifest['batch_id'], manifest['source_table'],
+                                            manifest['row_count'], manifest['file_sha256'],
+                                            manifest['drive_file_id'])
+            if raw_manifest != exact or (stated is not None and stated != digest(raw_manifest)):
                 raise ArchiveError('ARCHIVE_MANIFEST_FILE_MISMATCH')
             pins[manifest['drive_manifest_id']] = digest(raw_manifest)
         except ArchiveError as error:

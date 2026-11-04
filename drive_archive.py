@@ -235,7 +235,7 @@ class DriveArchive:
         if not re.fullmatch(r'[A-Za-z0-9_-]+', file_id):
             raise ArchiveError('INVALID_DRIVE_FILE_ID')
         with self.request('GET', f'{API}/{file_id}', quick=True,
-                          params={'fields': 'id,trashed,appProperties,sha256Checksum,headRevisionId,size'}) as response:
+                          params={'fields': 'id,trashed,parents,appProperties,sha256Checksum,headRevisionId,size'}) as response:
             return response.json()
 
     def download(self, file_id):

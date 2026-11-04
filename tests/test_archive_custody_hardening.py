@@ -487,3 +487,36 @@ def test_run_batch_runs_the_full_check_before_acknowledge_and_no_download_under_
     assert result['deleted'] == 1 and manifest_files
     # upload_verified reads each file back once; the full custody check reads both again.
     assert len(seen['before']) == 4 and seen['during'] == []
+
+
+# ---- CodeAnt review of PR #72 (e5f402a) ----
+
+@pytest.mark.parametrize('change', ['postgres_types', 'numeric_encoding', 'extra_field'])
+def test_a_manifest_matching_only_identity_fields_cannot_become_the_baseline(monkeypatch, change):
+    import json as _json
+    drive = ListedDrive()
+    manifests = fixture_batches(drive)
+    victim = manifests[0]
+    record = _json.loads(drive.data[victim['drive_manifest_id']][0])
+    if change == 'postgres_types':
+        record['postgres_types'] = {**record['postgres_types'], 'nav': 'text'}
+    elif change == 'numeric_encoding':
+        record['numeric_encoding'] = 'float'
+    else:
+        record['note'] = 'x'
+    drive.data[victim['drive_manifest_id']] = (exact_json(record).encode(), 'manifest')
+    assert restore_check.manifest_matches(drive.data[victim['drive_manifest_id']][0], victim)  # old rule
+    proof = _prove(monkeypatch, drive, manifests)
+    assert not proof.valid_now()
+    assert any(item.endswith('ARCHIVE_MANIFEST_FILE_MISMATCH') for item in proof.failures)
+
+
+def test_custody_refuses_a_file_moved_out_of_the_archive_folder():
+    drive = ListedDrive()
+    manifest, _ = upload_verified(drive, 'mf_nav', [exact_json(nav())])
+    revisions = restore_check.confirm_custody(drive, manifest)
+    drive.moved.add(manifest['drive_manifest_id'])  # moved after the full check
+    with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
+        restore_check.confirm_custody(drive, manifest, check_bytes=False, revisions=revisions)
+    with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
+        restore_check.confirm_custody(drive, manifest)

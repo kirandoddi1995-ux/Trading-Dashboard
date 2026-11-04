@@ -36,7 +36,7 @@ import sys
 from typing import Any
 
 from archive_restore_check import archived_rows, expected_manifest_bytes
-from drive_archive import ArchiveError, SPECS
+from drive_archive import MAX_BYTES, ArchiveError, SPECS
 
 INVENTORY_FORMAT = 'archive-inventory-v1'
 ENTRY_FIELDS = frozenset({'batch_id', 'source_table', 'row_count', 'file_sha256', 'drive_file_id',
@@ -113,15 +113,38 @@ def load_inventory(raw: bytes) -> list[dict[str, Any]]:
     return batches
 
 
-def _index(folder: Path) -> tuple[dict[str, list[Path]], dict[str, list[Path]]]:
+MAX_MANIFEST_BYTES = 1024 * 1024
+
+
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        return path.resolve(strict=True).is_relative_to(root)
+    except (OSError, RuntimeError):
+        return False
+
+
+def _index(folder: Path) -> tuple[dict[str, list[Path]], dict[str, list[Path]], list[str]]:
+    """Archive files physically under FOLDER. Links (symlinks, junctions, or anything resolving
+    outside FOLDER) are never counted as part of the copy; they are recorded as failures."""
+    root = folder.resolve()
     manifests: dict[str, list[Path]] = {}
     data: dict[str, list[Path]] = {}
+    links: list[str] = []
     for path in sorted(folder.rglob('*')):
-        if path.is_file() and path.name.endswith('.manifest.json'):
-            manifests.setdefault(path.name, []).append(path)
-        elif path.is_file() and path.name.endswith('.parquet'):
-            data.setdefault(path.name, []).append(path)
-    return manifests, data
+        if not path.name.endswith(('.manifest.json', '.parquet')):
+            if path.is_symlink() or getattr(path, 'is_junction', lambda: False)():
+                links.append(path.name)
+            continue
+        if path.is_symlink() or not _inside(path, root) or not path.is_file():
+            links.append(path.name)
+            continue
+        target = manifests if path.name.endswith('.manifest.json') else data
+        target.setdefault(path.name, []).append(path)
+    return manifests, data, links
+
+
+def _link_failures(links: list[str]) -> list[str]:
+    return [f'{name[:40]}:LINK_NOT_ALLOWED' for name in links]
 
 
 def _check_batch(entry: dict[str, Any], manifests, data) -> str | None:
@@ -132,6 +155,9 @@ def _check_batch(entry: dict[str, Any], manifests, data) -> str | None:
         return 'MISSING'
     if len(manifest_files) > 1 or len(data_files) > 1:
         return 'DUPLICATE_FILE'
+    if (manifest_files[0].stat().st_size > MAX_MANIFEST_BYTES
+            or data_files[0].stat().st_size > MAX_BYTES):
+        return 'FILE_TOO_LARGE'  # checked before reading anything into memory
     expected = expected_manifest_bytes(entry['batch_id'], entry['source_table'], entry['row_count'],
                                        entry['file_sha256'], entry['drive_file_id'])
     if manifest_files[0].read_bytes() != expected:
@@ -148,7 +174,7 @@ def _check_batch(entry: dict[str, Any], manifests, data) -> str | None:
 
 
 def verify_against_inventory(folder: Path, batches: list[dict[str, Any]]) -> dict[str, Any]:
-    manifests, data = _index(folder)
+    manifests, data, links = _index(folder)
     failures, matched, missing = [], 0, 0
     expected_names = set()
     for entry in batches:
@@ -163,21 +189,23 @@ def verify_against_inventory(folder: Path, batches: list[dict[str, Any]]) -> dic
     extra_files = (set(manifests) | set(data)) - expected_names
     extras = sorted({name.removesuffix('.manifest.json').removesuffix('.parquet') for name in extra_files})
     failures.extend(f'{stem[:40]}:NOT_IN_INVENTORY' for stem in extras)
+    failures.extend(_link_failures(links))
     return {'inventory_batches': len(batches), 'matched': matched, 'missing': missing,
             'not_in_inventory': len(extras), 'failures': failures}
 
 
 def self_check(folder: Path) -> dict[str, Any]:
     """Each manifest is the exact bytes its own fields imply and its data file matches it."""
-    manifests, data = _index(folder)
+    manifests, data, links = _index(folder)
     failures, consistent, entries = [], 0, []
     for name, paths in manifests.items():
         label = name[:40]
         try:
             if len(paths) > 1:
                 raise ArchiveError('DUPLICATE_FILE')
-            raw = paths[0].read_bytes()
-            record = json.loads(raw, object_pairs_hook=_unique)
+            if paths[0].stat().st_size > MAX_MANIFEST_BYTES:
+                raise ArchiveError('FILE_TOO_LARGE')
+            record = json.loads(paths[0].read_bytes(), object_pairs_hook=_unique)
             entry = {'batch_id': record['batch_id'], 'source_table': record['source_table'],
                      'row_count': record['rows'], 'file_sha256': record['sha256'],
                      'drive_file_id': record['drive_file_id'], 'drive_manifest_id': 'self-check'}
@@ -195,6 +223,7 @@ def self_check(folder: Path) -> dict[str, Any]:
     used = {name.removesuffix('.manifest.json') + '.parquet' for name in manifests}
     orphans = sorted(set(data) - used)
     failures.extend(f'{name[:40]}:DATA_WITHOUT_MANIFEST' for name in orphans)
+    failures.extend(_link_failures(links))
     if not manifests:
         failures.append('EMPTY_FOLDER')
     return {'manifests': len(manifests), 'consistent': consistent, 'failures': failures,

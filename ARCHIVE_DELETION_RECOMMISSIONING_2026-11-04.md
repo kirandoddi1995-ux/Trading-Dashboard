@@ -85,6 +85,21 @@ Each was reproduced with a failing test first (tests/test_archive_custody_harden
     file: N and HASH come from `INVENTORY_SET_SQL`, run read-only on the database at copy time; a
     PGlite test shows that SQL and the verifier's rebuild agree byte for byte.
 
+### CodeAnt review of PR #72 (e5f402a) — each reproduced first
+
+18. `prove()` pinned a manifest that matched identity fields only; altered `postgres_types`,
+    `numeric_encoding` or extra fields became the baseline. Now the manifest must be the exact bytes
+    its database record implies. Not yet observed on real Drive: if any older manifest differs in
+    bytes, `restore-check` now fails closed for it, and that is investigated, not loosened.
+19. The custody check ignored folder membership; a file moved out of the archive folder passed.
+    Both forms now require the archive folder in the file's `parents`.
+20. The copy verifier followed links; links to files outside the copy counted. Links, junctions and
+    anything resolving outside the folder are now failures. Files over the archive size limit are
+    refused before being read.
+21. Not changed: delete mode does not run the cross-batch key check (it needs every batch read,
+    about an hour). It stays an activation gate: a full `restore-check` must pass before any
+    supervised delete, and nightly deletion stays off.
+
 ## Still open (not fixed here; nightly deletion stays paused)
 
 - **Per-generation preservation.** A one-time disk copy does not protect batches uploaded later.
