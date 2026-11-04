@@ -133,3 +133,32 @@ def test_pyasn1_previous_constraints_and_extra_drift_are_not_fallbacks(pyasn1_tr
     predecessor = json.loads((root / s.RECORD).read_bytes())['files']['constraints.txt']['predecessor_raw_sha256']
     with pytest.raises(ValueError, match='^SECURITY_TRANSITION_CURRENT_BYTES_DIFFER$'):
         s.regression_hash(root, 'constraints.txt', predecessor)
+
+
+def test_reviewed_supersessions_map_exact_pins_to_exact_current_bytes():
+    root = Path(__file__).resolve().parents[1]
+    raw = (root / s.SUPERSESSIONS).read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == s.SUPERSESSIONS_SHA256
+    value = json.loads(raw)
+    assert value["files"]
+    for name, entries in value["files"].items():
+        for entry in entries:
+            assert s.regression_hash(root, name, entry["predecessor_legacy_sha256"]) == s._legacy_sha((root / name).read_bytes())
+            assert (root / entry["reason"]).is_file()
+        # Any other historical pin for the same file stays the historical pin.
+        assert s.regression_hash(root, name, "0" * 64) == "0" * 64
+
+
+@pytest.mark.parametrize("change", ["record", "current"])
+def test_supersession_tampering_is_refused(tmp_path, change):
+    root = Path(__file__).resolve().parents[1]
+    for name in (s.RECORD, s.PREVIOUS_RECORD, s.PYASN1_PREVIOUS_RECORD, "constraints.txt"):
+        (tmp_path / name).write_bytes((root / name).read_bytes())
+    raw = (root / s.SUPERSESSIONS).read_bytes()
+    (tmp_path / s.SUPERSESSIONS).write_bytes(raw + b" " if change == "record" else raw)
+    name, entries = next(iter(json.loads(raw)["files"].items()))
+    (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / name).write_bytes(b"changed" if change == "current" else (root / name).read_bytes())
+    code = {"record": "SOURCE_SUPERSESSIONS_RECORD_CHANGED", "current": "SOURCE_SUPERSESSION_CURRENT_BYTES_DIFFER"}[change]
+    with pytest.raises(ValueError, match="^" + code + "$"):
+        s.regression_hash(tmp_path, name, entries[0]["predecessor_legacy_sha256"])

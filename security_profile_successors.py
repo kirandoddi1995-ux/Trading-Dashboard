@@ -18,6 +18,11 @@ PREVIOUS_RECORD_SHA256 = "fad604b72c6b3cddec40fc397a5ebbd4d9d22869529b3ba23c9c03
 PYASN1_PREVIOUS_RECORD = "APP_SECURITY_SOURCE_TRANSITIONS_PRE_PYASN1.json"
 PYASN1_PREVIOUS_RECORD_SHA256 = "3c207fca4ad1917e093c3b67af5e541194249ae477d24befa7da7dad930b36d1"
 RECORD_SHA256 = '84ba96fe008b64b1b7a9a616118217ecc97b07755ce66862a4755cb6ccbb4d52'
+# Reviewed source changes after historical upload packages (not security patches).
+# Each entry maps one exact pinned predecessor to one exact current file; the record
+# itself is pinned here, so editing it requires a reviewed code change too.
+SUPERSESSIONS = "SOURCE_SUPERSESSIONS.json"
+SUPERSESSIONS_SHA256 = "9b5a23f4849d3a48df45016fc510bae4e7c4e01966256504abad80868c2a3433"
 
 
 def _sha(raw: bytes) -> str:
@@ -39,7 +44,7 @@ def regression_hash(root: Path, name: str, predecessor: str) -> str:
             or value["base"] != BASE or value["purpose"] != "REGRESSION_ONLY_NOT_UPLOAD_ADMISSION"):
         raise ValueError("SECURITY_TRANSITION_CONTRACT_INVALID")
     if name not in value["files"]:
-        return predecessor
+        return _superseded(root, name, predecessor)
     if name == 'constraints.txt':
         # The pyasn1 patch extends the exact approved chain; no old-byte fallback.
         try:
@@ -80,3 +85,24 @@ def regression_hash(root: Path, name: str, predecessor: str) -> str:
     if _sha(current) != entry["successor_raw_sha256"]:
         raise ValueError("SECURITY_TRANSITION_CURRENT_BYTES_DIFFER")
     return _legacy_sha(current)
+
+
+def _superseded(root: Path, name: str, predecessor: str) -> str:
+    """Current digest for an exact reviewed supersession, else the historical pin."""
+    try:
+        raw = (root / SUPERSESSIONS).read_bytes()
+    except OSError:
+        return predecessor
+    if _sha(raw) != SUPERSESSIONS_SHA256:
+        raise ValueError("SOURCE_SUPERSESSIONS_RECORD_CHANGED")
+    value = json.loads(raw)
+    if (set(value) != {"format", "purpose", "files"} or value["format"] != "source-supersessions-v1"
+            or value["purpose"] != "REGRESSION_ONLY_NOT_UPLOAD_ADMISSION"):
+        raise ValueError("SOURCE_SUPERSESSIONS_CONTRACT_INVALID")
+    for entry in value["files"].get(name, []):
+        if entry["predecessor_legacy_sha256"] == predecessor:
+            current = (root / name).read_bytes()
+            if _sha(current) != entry["successor_raw_sha256"]:
+                raise ValueError("SOURCE_SUPERSESSION_CURRENT_BYTES_DIFFER")
+            return _legacy_sha(current)
+    return predecessor

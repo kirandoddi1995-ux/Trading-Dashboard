@@ -1,0 +1,34 @@
+{
+  "files": {
+    ".github/workflows/drive-archive.yml": [
+      {
+        "predecessor_legacy_sha256": "5cc2b4dfc8751315e406285d26b7c2a65281102dad30a7042d66c727c6a2c138",
+        "reason": "ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md",
+        "successor_raw_sha256": "88fbd83c4e09ef00cb0f18c690d6f9827bf2794a2f2a64c3ae35ea1729cd41ad"
+      }
+    ],
+    "archive_maintenance.py": [
+      {
+        "predecessor_legacy_sha256": "7715add8c1c9893a875dc54db75110aa3be5d17f9b6f6ae6aec20bbce6baf46f",
+        "reason": "ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md",
+        "successor_raw_sha256": "b373a1a348abe8d11571dfe88b001a5cf521b498227e7bb4d20cd45c3358610f"
+      }
+    ],
+    "tests/test_archive_commissioning_hold.py": [
+      {
+        "predecessor_legacy_sha256": "8ea61e76bd842279790dd8dcb0db10d20f8c7ffbeffa4e2fc7e3f46cf5be13c7",
+        "reason": "ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md",
+        "successor_raw_sha256": "feeabfb6696f4c8af134fdbaa7a941b3a45d9ad89922cdc9ff2ba288cc5d8386"
+      }
+    ],
+    "tests/test_drive_archive.py": [
+      {
+        "predecessor_legacy_sha256": "dcaeb0056b5b34dc81a235779f260e4e13feb3fc82cfdd0b8b4e56a2d1ae20d2",
+        "reason": "ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md",
+        "successor_raw_sha256": "e51b3d26111c5f7cded9641c370b9bd9591734be24779fd5594ce90fc2c6f100"
+      }
+    ]
+  },
+  "format": "source-supersessions-v1",
+  "purpose": "REGRESSION_ONLY_NOT_UPLOAD_ADMISSION"
+}

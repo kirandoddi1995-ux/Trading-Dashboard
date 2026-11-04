@@ -1,4 +1,9 @@
-"""Production denial is NOT monkeypatched here. No hosted/archive IO allowed."""
+"""Production gate is NOT monkeypatched here. No hosted/archive IO allowed.
+
+Since 4 Nov 2026 deletion is possible only with a passing restore proof produced by
+archive_restore_check.prove() in the same process (ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md).
+Flags and environment variables still never unlock it.
+"""
 import datetime as dt
 import os
 from pathlib import Path
@@ -8,12 +13,25 @@ from unittest.mock import Mock
 import pytest
 
 import archive_maintenance as maintenance
+import archive_restore_check as restore_check
 from drive_archive import ArchiveError, SPECS
 
 
-@pytest.mark.parametrize('flag', [None, 'false', 'true', 'TRUE'])
+@pytest.fixture(autouse=True)
+def no_active_proof(monkeypatch):
+    monkeypatch.setattr(maintenance, '_ACTIVE_PROOF', None)
+
+
+def proof(**changes):
+    values = dict(manifests=3, presence_verified=3, deep_batches=1, deep_rows=10, exact_rows=10,
+                  added_column_rows=0, failures=())
+    values.update(changes)
+    return restore_check.RestoreProof(**values)
+
+
+@pytest.mark.parametrize('flag', [None, 'false', 'TRUE'])
 @pytest.mark.parametrize('table', tuple(SPECS))
-def test_cli_delete_never_reaches_database_or_credentials(monkeypatch, capsys, flag, table):
+def test_cli_delete_without_owner_flag_never_reaches_database_or_credentials(monkeypatch, capsys, flag, table):
     if flag is None:
         monkeypatch.delenv('ARCHIVE_DELETE_ENABLED', raising=False)
     else:
@@ -28,11 +46,62 @@ def test_cli_delete_never_reaches_database_or_credentials(monkeypatch, capsys, f
     if table == 'mf_nav':
         args += ['--nav-cutoff', '2026-10-04']
     assert maintenance.main(args) == 1
-    output = capsys.readouterr().out
-    assert ('AUTHENTICATED_CUSTODY_AND_RESTORE_NOT_COMMISSIONED' if flag == 'true' else 'DELETION_NOT_ENABLED') in output
+    assert 'DELETION_NOT_ENABLED' in capsys.readouterr().out
     repository.assert_not_called()
     credentials.assert_not_called()
     drive.assert_not_called()
+
+
+@pytest.mark.parametrize('failing', [proof(failures=('abc:DATA_FILE_CHECKSUM',)), proof(presence_verified=2)])
+def test_cli_delete_with_failing_restore_proof_never_selects_or_deletes(monkeypatch, capsys, failing):
+    monkeypatch.setenv('ARCHIVE_DELETE_ENABLED', 'true')
+    repo = Mock()
+    repo.preview.return_value = 5
+    monkeypatch.setattr(maintenance, 'ArchiveRepository', lambda url: repo)
+    monkeypatch.setattr(maintenance, 'build_drive_credentials', Mock())
+    monkeypatch.setattr(maintenance, 'DriveArchive', Mock())
+    monkeypatch.setattr(restore_check, 'prove', lambda *args, **kwargs: failing)
+    batch = Mock(side_effect=AssertionError('NO_BATCH'))
+    monkeypatch.setattr(maintenance, 'run_batch', batch)
+    assert maintenance.main(['--mode', 'delete', '--table', 'growing']) == 1
+    assert 'ARCHIVE_RESTORE_PROOF_FAILED' in capsys.readouterr().out
+    batch.assert_not_called()
+    repo.select.assert_not_called()
+    repo.acknowledge.assert_not_called()
+    assert maintenance._ACTIVE_PROOF is None
+
+
+def test_cli_restore_check_is_read_only_and_reports(monkeypatch, capsys):
+    repo = Mock()
+    repo.preview.return_value = 0
+    monkeypatch.setattr(maintenance, 'ArchiveRepository', lambda url: repo)
+    monkeypatch.setattr(maintenance, 'build_drive_credentials', Mock())
+    monkeypatch.setattr(maintenance, 'DriveArchive', Mock())
+    seen = {}
+    monkeypatch.setattr(restore_check, 'prove', lambda *args, **kwargs: seen.update(kwargs) or proof())
+    batch = Mock(side_effect=AssertionError('NO_BATCH'))
+    monkeypatch.setattr(maintenance, 'run_batch', batch)
+    assert maintenance.main(['--mode', 'restore-check', '--table', 'market_quotes']) == 0
+    assert seen['everything'] is True
+    assert '"restore_proof": "PASSED"' in capsys.readouterr().out
+    batch.assert_not_called()
+    repo.acknowledge.assert_not_called()
+    assert maintenance._ACTIVE_PROOF is None
+
+
+def test_proof_activation_rules(monkeypatch):
+    with pytest.raises(ArchiveError, match='ARCHIVE_RESTORE_PROOF_FAILED'):
+        maintenance.activate_restore_proof(proof(failures=('x:DATA_FILE_MISSING',)))
+    with pytest.raises(ArchiveError, match='ARCHIVE_RESTORE_PROOF_FAILED'):
+        maintenance.activate_restore_proof({'manifests': 3, 'failures': []})
+    stale = proof()
+    monkeypatch.setattr(restore_check.time, 'monotonic', lambda: stale.created + restore_check.PROOF_MAX_AGE_SECONDS + 1)
+    with pytest.raises(ArchiveError, match='ARCHIVE_RESTORE_PROOF_FAILED'):
+        maintenance.activate_restore_proof(stale)
+    monkeypatch.undo()
+    monkeypatch.setattr(maintenance, '_ACTIVE_PROOF', None)
+    maintenance.activate_restore_proof(proof())
+    maintenance.require_commissioned_delete()
 
 
 @pytest.mark.parametrize('table', tuple(SPECS))
@@ -59,11 +128,17 @@ def test_repository_denial_precedes_transaction_or_manifest(monkeypatch):
     connection.assert_not_called()
 
 
-def test_actual_scheduled_launcher_is_hold_without_archive_import(monkeypatch, capsys):
+def _launcher():
     source = (Path(__file__).resolve().parents[1] / '.github/workflows/drive-archive.yml').read_text()
     script = textwrap.dedent(source.split("python - <<'PY'\n", 1)[1].rsplit('          PY', 1)[0])
+    return source, script
+
+
+def test_actual_scheduled_launcher_holds_without_nightly_owner_variable(monkeypatch, capsys):
+    source, script = _launcher()
     monkeypatch.setenv('EVENT_NAME', 'schedule')
     monkeypatch.setenv('ARCHIVE_DELETE_ENABLED', 'true')
+    monkeypatch.delenv('NIGHTLY_DELETE', raising=False)
     main = Mock(side_effect=AssertionError('NO_ARCHIVE_MAIN'))
     monkeypatch.setattr(maintenance, 'main', main)
     with pytest.raises(SystemExit) as caught:
@@ -74,11 +149,25 @@ def test_actual_scheduled_launcher_is_hold_without_archive_import(monkeypatch, c
     hold = source.split('  scheduled-hold:', 1)[1].split('  archive:', 1)[0]
     assert 'secrets.' not in hold
     assert 'checkout' not in hold
-    assert 'options: [preview, export]' in source
+    assert "vars.ARCHIVE_NIGHTLY_DELETE != 'true'" in hold
+    assert 'options: [preview, export, restore-check, delete]' in source
+
+
+def test_actual_scheduled_launcher_runs_restore_proven_growing_retention(monkeypatch):
+    _, script = _launcher()
+    monkeypatch.setenv('EVENT_NAME', 'schedule')
+    monkeypatch.setenv('NIGHTLY_DELETE', 'true')
+    main = Mock(return_value=0)
+    monkeypatch.setattr(maintenance, 'main', main)
+    with pytest.raises(SystemExit) as caught:
+        exec(compile(script, '<synthetic-workflow>', 'exec'), {})
+    assert caught.value.code == 0
+    main.assert_called_once_with(['--mode', 'delete', '--table', 'growing', '--max-batches', '100'])
 
 
 def test_no_boolean_is_a_commissioning_receipt(monkeypatch):
-    for name in ('ARCHIVE_DELETE_ENABLED', 'CUSTODY_VERIFIED', 'RESTORE_VERIFIED', 'ARCHIVE_COMMISSIONED'):
+    for name in ('ARCHIVE_DELETE_ENABLED', 'CUSTODY_VERIFIED', 'RESTORE_VERIFIED', 'ARCHIVE_COMMISSIONED',
+                 'ARCHIVE_NIGHTLY_DELETE', 'NIGHTLY_DELETE'):
         monkeypatch.setenv(name, 'true')
     with pytest.raises(ArchiveError, match='AUTHENTICATED_CUSTODY_AND_RESTORE_NOT_COMMISSIONED'):
         maintenance.require_commissioned_delete()
