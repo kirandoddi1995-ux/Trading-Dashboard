@@ -236,8 +236,8 @@ def confirm_custody(drive, manifest: dict[str, Any], *, check_bytes: bool = True
     """Fresh proof that both files of one just-uploaded batch exist, are untrashed and unchanged.
 
     Takes the upload record (batch_id, source_table, rows, sha256, drive_file_id, drive_manifest_id).
-    check_bytes=False is the quick form used while database locks are held: identity and trashed
-    flag only. The byte comparison runs before any lock is taken (see run_batch).
+    check_bytes=False is the quick form used while database locks are held: identity, trashed flag and
+    Drive's own sha256 (a missing checksum fails closed). The full download runs before any lock.
     """
     batch = manifest['batch_id']
     manifest_bytes = expected_manifest_bytes(batch, manifest['source_table'], manifest['rows'],
@@ -248,8 +248,9 @@ def confirm_custody(drive, manifest: dict[str, Any], *, check_bytes: bool = True
             raw = drive.download(manifest[key]) if check_bytes else None
         except ArchiveError:
             raise ArchiveError('ARCHIVE_CUSTODY_LOST') from None
-        wanted = (not check_bytes or (digest(raw) == manifest['sha256'] if kind == 'data'
-                                      else raw == manifest_bytes))
+        expected = manifest['sha256'] if kind == 'data' else digest(manifest_bytes)
+        wanted = (digest(raw) == manifest['sha256'] if kind == 'data' else raw == manifest_bytes) \
+            if check_bytes else meta.get('sha256Checksum') == expected  # quick: Drive's own checksum
         if (meta.get('trashed') or (meta.get('appProperties') or {}) != {'batch': batch, 'kind': kind}
                 or not wanted):
             raise ArchiveError('ARCHIVE_CUSTODY_LOST')

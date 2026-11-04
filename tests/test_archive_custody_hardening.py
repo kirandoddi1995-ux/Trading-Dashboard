@@ -166,7 +166,12 @@ def test_run_batch_checks_bytes_before_locks_and_only_the_quick_form_runs_under_
     drive.data[manifest['drive_manifest_id']] = (changed[0] + b' ', 'manifest')
     with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
         restore_check.confirm_custody(drive, manifest)  # full form, used before any lock
-    restore_check.confirm_custody(drive, manifest, check_bytes=False)  # quick form: identity and trash only
+    # The quick form (used under locks) now compares Drive's own checksum, so replaced contents
+    # are caught too; it does not download.
+    with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
+        restore_check.confirm_custody(drive, manifest, check_bytes=False)
+    drive.data[manifest['drive_manifest_id']] = changed
+    restore_check.confirm_custody(drive, manifest, check_bytes=False)
     drive.trashed.add(manifest['drive_file_id'])
     with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
         restore_check.confirm_custody(drive, manifest, check_bytes=False)
@@ -274,3 +279,23 @@ def test_a_proof_cannot_authorize_deletion_for_another_database_or_folder():
             maintenance.require_commissioned_delete(restore_check.context_key(repo, drive_b))
     finally:
         maintenance._ACTIVE_PROOF = None
+
+
+def test_quick_custody_catches_replaced_data_and_missing_checksum_fails_closed():
+    drive = ListedDrive()
+    manifest, _ = upload_verified(drive, 'mf_nav', [exact_json(nav())])
+    restore_check.confirm_custody(drive, manifest, check_bytes=False)
+    original = drive.data[manifest['drive_file_id']]
+    drive.data[manifest['drive_file_id']] = (original[0] + b'\n', original[1])  # replaced after the full check
+    with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
+        restore_check.confirm_custody(drive, manifest, check_bytes=False)
+    drive.data[manifest['drive_file_id']] = original
+    drive.no_checksum.add(manifest['drive_file_id'])  # cannot be confirmed cheaply: do not delete
+    with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
+        restore_check.confirm_custody(drive, manifest, check_bytes=False)
+
+
+def test_the_database_lock_wait_is_bounded_before_the_advisory_lock():
+    import inspect
+    source = inspect.getsource(ArchiveRepository.acknowledge)
+    assert source.index("SET LOCAL lock_timeout") < source.index('pg_advisory_xact_lock')

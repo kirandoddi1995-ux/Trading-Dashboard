@@ -11,14 +11,14 @@
       {
         "predecessor_legacy_sha256": "7715add8c1c9893a875dc54db75110aa3be5d17f9b6f6ae6aec20bbce6baf46f",
         "reason": "ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md",
-        "successor_raw_sha256": "d73bac8ce1487096fad0778440c047b109840b9534bb3f1f8881ef0617f232f5"
+        "successor_raw_sha256": "3a30c048582ecf44508d5cfd2a9a6351d8fe53ed316760758506857222b257ec"
       }
     ],
     "drive_archive.py": [
       {
         "predecessor_legacy_sha256": "47bae109d49a43408fbe2cd3176a974d49e997442ddf1f1f9adcb8161caea38f",
         "reason": "ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md",
-        "successor_raw_sha256": "efe9dc6d7604c0c3e04a8f2be65e876ed6a907e0efab2d99111583c000223b8b"
+        "successor_raw_sha256": "429b8bc21faa3457463ff3b2c61918e89cb75f95aec1455cbae45d920788f442"
       }
     ],
     "tests/test_archive_commissioning_hold.py": [

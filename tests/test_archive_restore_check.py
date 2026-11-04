@@ -28,13 +28,17 @@ class ListedDrive(MemoryDrive):
         self.page_size = page_size
         self.properties = {}
         self.trashed = set()
+        self.no_checksum = set()
 
     def metadata(self, file_id):
         """Drive files.get metadata; a vanished file is a 404."""
         if file_id not in self.data:
             raise ArchiveError('DRIVE_HTTP_404')
+        body = self.data[file_id][0]
         return {'id': file_id, 'trashed': file_id in self.trashed,
-                'appProperties': self.properties[file_id]}
+                'appProperties': self.properties[file_id],
+                'sha256Checksum': None if file_id in self.no_checksum else digest(body),
+                'size': str(len(body))}
 
     def put(self, name, data, batch, kind, mime):
         file_id = super().put(name, data, batch, kind, mime)
