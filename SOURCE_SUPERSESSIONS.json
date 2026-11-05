@@ -11,7 +11,7 @@
       {
         "predecessor_legacy_sha256": "7715add8c1c9893a875dc54db75110aa3be5d17f9b6f6ae6aec20bbce6baf46f",
         "reason": "ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md",
-        "successor_raw_sha256": "836445a03dd6ef5fd77404c9ff937ea60f072aa5c99343f166c6c27484bd3b1c"
+        "successor_raw_sha256": "d9a115df7657c50a5bcf68fc525541ce14be06e4e0af66485a17103f392a95fc"
       }
     ],
     "drive_archive.py": [

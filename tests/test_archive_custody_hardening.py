@@ -345,7 +345,7 @@ def test_sql_lock_timeout_is_in_force_inside_the_deleting_transaction_only(pg):
         assert repo.acknowledge(manifest, texts, cutoff, True, custody=custody) == 1
     finally:
         maintenance._ACTIVE_PROOF = None
-    assert seen == ['15s']  # also bounds FOR UPDATE, dependency locks and the DELETE's row locks
+    assert seen == ['5s']  # also bounds FOR UPDATE, dependency locks and the DELETE's row locks
     assert pg.execute('SHOW lock_timeout').fetchone()[0] == '0'  # SET LOCAL ended with the transaction
 
 

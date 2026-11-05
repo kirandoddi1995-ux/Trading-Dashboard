@@ -171,7 +171,7 @@ def test_prune_rebuilds_rows_from_the_archive_and_stops_on_a_damaged_file(pg):
 @needs_sql
 def test_prune_stops_for_review_when_a_source_row_changed_since_export(pg):
     repo, drive = _setup(pg)
-    _export(repo, drive)
+    maintenance.export_batches(repo, drive, 'mf_nav', CUTOFF, 2, 10)
     before = repo.database_now()
     count, fingerprint = repo.generation(before)
     pg.execute('RESET ROLE')
@@ -184,8 +184,31 @@ def test_prune_stops_for_review_when_a_source_row_changed_since_export(pg):
                                         expected_sha256=fingerprint, today=TODAY, limit=50)
     finally:
         maintenance._ACTIVE_PROOF = None
-    # The changed row is kept; nothing after the stop is touched.
-    assert _count(pg, "SELECT count(*) FROM quant_app.mf_nav WHERE nav_date = '2026-08-01'") == 1
+    # Both rows in the failing batch survive, including the unchanged row.
+    assert _count(pg, 'SELECT count(*) FROM quant_app.mf_nav') == 4
+    assert _count(pg, 'SELECT count(*) FROM quant_app.archive_manifests WHERE completed_at IS NOT NULL') == 0
+
+
+@needs_sql
+def test_prune_binds_generation_and_candidates_in_one_statement(pg, monkeypatch):
+    repo, drive = _setup(pg)
+    _export(repo, drive)
+    before = repo.database_now()
+    expected = repo.generation(before)
+    statements = []
+    original = pg.execute
+
+    def record(sql, params=()):
+        if 'archive_manifests' in sql:
+            statements.append(sql)
+        return original(sql, params)
+
+    monkeypatch.setattr(pg, 'execute', record)
+    candidates = repo.preserved_candidates(before, 2, expected, ('mf_nav',))
+    assert len(candidates) == 2
+    assert len(statements) == 1
+    assert 'string_agg' in statements[0] and 'completed_at IS NULL' in statements[0]
+    assert repo.preserved_candidates(before, 2, expected, ('market_quotes',)) == []
 
 
 @pytest.mark.parametrize('argv', [
