@@ -20,10 +20,22 @@ from test_drive_archive import MemoryDrive
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class _LegacyCustody:
+    """Algorithm rehearsal only: custody evidence is stubbed by the fixture below."""
+    drive = None
+    context = None
+
+    def __call__(self):
+        return None
+
+
 @pytest.fixture(autouse=True)
 def legacy_algorithm_only(monkeypatch):
     """Disposable SQL algorithm rehearsal only; does not commission deletion."""
-    monkeypatch.setattr('archive_maintenance.require_commissioned_delete', lambda: None)
+    monkeypatch.setattr('archive_maintenance.require_commissioned_delete', lambda context=None: None)
+    monkeypatch.setattr('archive_restore_check.confirm_custody', lambda drive, manifest, **kwargs: {'data': 'r', 'manifest': 'r'})
+    monkeypatch.setattr('archive_restore_check.valid_custody', lambda custody, manifest: True)
+    monkeypatch.setattr('archive_restore_check.context_key', lambda repo, drive: None)
 
 
 pytestmark = pytest.mark.skipif(not os.environ.get('EQUITY_TEST_PGLITE_MODULE'),
@@ -235,7 +247,7 @@ def test_real_sql_nav_latest_retained_changed_row_not_deleted_and_retry(pg):
     assert pg.execute("SELECT nav::text FROM restore_check").fetchone()[0] == '1.123456789123456789'
     pg.execute("UPDATE quant_app.mf_nav SET nav=99 WHERE nav_date='2026-08-01'")
     pg.execute('SET ROLE quant_archive_worker')
-    assert repo.acknowledge(manifest, texts, cutoff, True) == 0
+    assert repo.acknowledge(manifest, texts, cutoff, True, custody=_LegacyCustody()) == 0
     assert repo.preview('mf_nav', cutoff) == 1
     with pytest.raises(RuntimeError):
         pg.execute('SELECT * FROM quant_app.evidence_ledger_events')
@@ -253,10 +265,10 @@ def test_manifest_conflict_never_deletes_source_and_ack_retry_is_idempotent(pg):
     manifest, texts = upload_verified(MemoryDrive(), 'mf_nav', repo.select('mf_nav', cutoff, 100))
     repo.acknowledge(manifest, texts, cutoff, False)
     with pytest.raises(Exception, match='MANIFEST_CONFLICT'):
-        repo.acknowledge({**manifest, 'sha256': 'a' * 64}, texts, cutoff, True)
+        repo.acknowledge({**manifest, 'sha256': 'a' * 64}, texts, cutoff, True, custody=_LegacyCustody())
     assert repo.preview('mf_nav', cutoff) == 1
-    assert repo.acknowledge(manifest, texts, cutoff, True) == 1
-    assert repo.acknowledge(manifest, texts, cutoff, True) == 0
+    assert repo.acknowledge(manifest, texts, cutoff, True, custody=_LegacyCustody()) == 1
+    assert repo.acknowledge(manifest, texts, cutoff, True, custody=_LegacyCustody()) == 0
     assert pg.execute('SELECT deleted_count FROM quant_app.archive_manifests').fetchone()[0] == 1
 
 
@@ -386,7 +398,7 @@ def test_scanner_rechecks_payload_status_and_new_target_after_export(pg):
     pg.execute("UPDATE quant_app.scanner_observations SET stage2_pass=true WHERE observation_id='promoted'")
     pg.execute("INSERT INTO quant_app.prediction_targets VALUES ('target_added','label')")
     pg.execute('SET ROLE quant_archive_worker')
-    assert repo.acknowledge(manifest, texts, cutoff, True) == 0
+    assert repo.acknowledge(manifest, texts, cutoff, True, custody=_LegacyCustody()) == 0
     pg.execute('RESET ROLE')
     # Even an owner bypassing RLS cannot cascade away an existing target.
     with pytest.raises(RuntimeError, match='foreign key'):
@@ -536,8 +548,8 @@ def test_research_failed_verification_never_deletes_and_export_retry_is_safe(pg)
     manifest, texts = upload_verified(MemoryDrive(), 'equity_research.outcomes',
                                       repo.select('equity_research.outcomes', cutoff, 100))
     assert repo.acknowledge(manifest, texts, cutoff, False) == 0
-    assert repo.acknowledge(manifest, texts, cutoff, True) == 1
-    assert repo.acknowledge(manifest, texts, cutoff, True) == 0
+    assert repo.acknowledge(manifest, texts, cutoff, True, custody=_LegacyCustody()) == 1
+    assert repo.acknowledge(manifest, texts, cutoff, True, custody=_LegacyCustody()) == 0
 
 
 def test_research_migration_rerunnable_and_disabled_guard_fails_check(pg):

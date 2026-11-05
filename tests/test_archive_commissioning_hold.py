@@ -112,7 +112,7 @@ def test_presence_is_rechecked_before_every_deleting_batch(monkeypatch, capsys):
     monkeypatch.setattr(restore_check, 'prove', lambda *args, **kwargs: proof())
     calls = []
 
-    def recheck(repo, drive):
+    def recheck(repo, drive, proof):
         calls.append('recheck')
         if calls.count('recheck') == 2:
             raise ArchiveError('ARCHIVE_PRESENCE_CHANGED_SINCE_PROOF')

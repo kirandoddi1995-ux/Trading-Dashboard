@@ -14,10 +14,22 @@ from test_drive_archive import MemoryDrive
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class _LegacyCustody:
+    """Algorithm rehearsal only: custody evidence is stubbed by the fixture below."""
+    drive = None
+    context = None
+
+    def __call__(self):
+        return None
+
+
 @pytest.fixture(autouse=True)
 def legacy_algorithm_only(monkeypatch):
     """Disposable SQL algorithm rehearsal only; does not commission deletion."""
-    monkeypatch.setattr('archive_maintenance.require_commissioned_delete', lambda: None)
+    monkeypatch.setattr('archive_maintenance.require_commissioned_delete', lambda context=None: None)
+    monkeypatch.setattr('archive_restore_check.confirm_custody', lambda drive, manifest, **kwargs: {'data': 'r', 'manifest': 'r'})
+    monkeypatch.setattr('archive_restore_check.valid_custody', lambda custody, manifest: True)
+    monkeypatch.setattr('archive_restore_check.context_key', lambda repo, drive: None)
 
 
 pg = sql_harness.pg
@@ -133,7 +145,7 @@ def test_canonical_rechecks_after_remote_export(pg, change):
     else:
         pg.execute("UPDATE quant_app.universe_snapshots SET observed_at=clock_timestamp() WHERE snapshot_date='2020-01-01'")
     pg.execute('SET ROLE quant_archive_worker')
-    assert repo.acknowledge(manifest, texts, cutoff, True) == 0
+    assert repo.acknowledge(manifest, texts, cutoff, True, custody=_LegacyCustody()) == 0
     assert pg.execute('SELECT count(*) FROM quant_app.universe_membership').fetchone()[0] == 2
 
 
@@ -206,11 +218,11 @@ def test_canonical_staging_precedes_locks(pg, monkeypatch, staging_failure):
     monkeypatch.setattr(pg, 'execute', execute)
     if staging_failure:
         with pytest.raises(RuntimeError, match='staging failure'):
-            repo.acknowledge(manifest, texts, cutoff, True)
+            repo.acknowledge(manifest, texts, cutoff, True, custody=_LegacyCustody())
         assert not any('lock_canonical_archive_dependencies' in sql for sql in statements)
         assert pg.execute('SELECT count(*) FROM quant_app.universe_membership').fetchone()[0] == 2
     else:
-        assert repo.acknowledge(manifest, texts, cutoff, True) == 1
+        assert repo.acknowledge(manifest, texts, cutoff, True, custody=_LegacyCustody()) == 1
         stage = next(i for i, sql in enumerate(statements) if sql.startswith('INSERT INTO verified_archive_rows'))
         lock = next(i for i, sql in enumerate(statements) if 'lock_canonical_archive_dependencies' in sql)
         delete = next(i for i, sql in enumerate(statements) if 'WITH removed AS' in sql)

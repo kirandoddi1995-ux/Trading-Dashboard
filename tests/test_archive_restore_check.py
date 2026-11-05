@@ -27,6 +27,23 @@ class ListedDrive(MemoryDrive):
         super().__init__(corrupt)
         self.page_size = page_size
         self.properties = {}
+        self.trashed = set()
+        self.no_checksum = set()
+        self.no_revision = set()
+        self.moved = set()
+
+    def metadata(self, file_id):
+        """Drive files.get metadata; a vanished file is a 404."""
+        if file_id not in self.data:
+            raise ArchiveError('DRIVE_HTTP_404')
+        body = self.data[file_id][0]
+        # Drive gives every binary file a head revision id that changes when content is replaced.
+        return {'id': file_id, 'trashed': file_id in self.trashed,
+                'parents': [] if file_id in self.moved else [self.folder_id],
+                'appProperties': self.properties[file_id],
+                'sha256Checksum': None if file_id in self.no_checksum else digest(body),
+                'headRevisionId': None if file_id in self.no_revision else 'rev-' + digest(body)[:16],
+                'size': str(len(body))}
 
     def put(self, name, data, batch, kind, mime):
         file_id = super().put(name, data, batch, kind, mime)
@@ -35,7 +52,7 @@ class ListedDrive(MemoryDrive):
 
     def request(self, method, url, **kwargs):
         assert method == 'GET' and url == restore_check.API
-        ids = sorted(self.data)
+        ids = sorted(i for i in self.data if i not in self.trashed)
         start = int(kwargs['params'].get('pageToken', 0))
         chunk = ids[start:start + self.page_size]
         files = [{'id': i, 'size': str(len(self.data[i][0])), 'sha256Checksum': digest(self.data[i][0]),
@@ -120,6 +137,7 @@ def _prove(monkeypatch, drive, manifests, counts=None, everything=True):
     monkeypatch.setattr(restore_check, 'load_manifests', lambda repo: manifests)
     monkeypatch.setattr(restore_check, 'restore_counts',
                         counts or (lambda repo, table, texts: (len(texts), 0, len(texts))))
+    monkeypatch.setattr(restore_check, 'rehearse_insert', lambda repo, table, texts: len(texts))
     return restore_check.prove(object(), drive, today=dt.date(2026, 11, 4), everything=everything)
 
 
@@ -210,12 +228,21 @@ def test_sql_delete_keeps_rows_that_would_not_restore_exactly(pg):
     pg.execute('SET ROLE quant_archive_worker')
     repo = ArchiveRepository('postgres://test-only')
     cutoff = dt.date(2026, 9, 13)
-    manifest, texts = upload_verified(ListedDrive(), 'mf_nav', repo.select('mf_nav', cutoff, 10))
+    drive = ListedDrive()
+    manifest, texts = upload_verified(drive, 'mf_nav', repo.select('mf_nav', cutoff, 10))
     pg.execute('RESET ROLE')
     pg.execute('ALTER TABLE quant_app.mf_nav ADD COLUMN later_note text DEFAULT \'x\'')
     pg.execute('SET ROLE quant_archive_worker')
     # to_jsonb(s) now differs from the archive, and so would the restore: nothing is deleted.
-    assert repo.acknowledge(manifest, texts, cutoff, True) == 0
+    custody = maintenance.restore_check.CustodyCheck(repo, drive, manifest)
+    proof = restore_check.RestoreProof(manifests=0, presence_verified=0, deep_batches=0, deep_rows=0,
+                                       exact_rows=0, added_column_rows=0, failures=(),
+                                       issuer=restore_check._ISSUER, context=custody.context)
+    maintenance.activate_restore_proof(proof)
+    try:
+        assert repo.acknowledge(manifest, texts, cutoff, True, custody=custody) == 0
+    finally:
+        maintenance._ACTIVE_PROOF = None
     assert pg.execute('SELECT count(*) FROM quant_app.mf_nav').fetchone()[0] == 2
 
 
@@ -239,8 +266,8 @@ def test_batch_without_drive_checksum_is_deep_checked_tonight(monkeypatch):
 def test_recheck_presence_catches_a_file_trashed_after_the_proof(monkeypatch):
     drive = ListedDrive()
     manifests = fixture_batches(drive)
-    monkeypatch.setattr(restore_check, 'load_manifests', lambda repo: manifests)
-    assert restore_check.recheck_presence(object(), drive) == len(manifests)
+    proof = _prove(monkeypatch, drive, manifests)
+    assert restore_check.recheck_presence(object(), drive, proof) == len(manifests)
     del drive.data[manifests[3]['drive_file_id']]  # trashed files leave the untrashed listing
     with pytest.raises(ArchiveError, match='ARCHIVE_PRESENCE_CHANGED_SINCE_PROOF'):
-        restore_check.recheck_presence(object(), drive)
+        restore_check.recheck_presence(object(), drive, proof)

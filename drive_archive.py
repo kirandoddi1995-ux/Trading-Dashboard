@@ -209,9 +209,14 @@ class DriveArchive:
     def close(self):
         self.session.close()
 
-    def request(self, method, url, **kwargs):
-        response = self.session.request(method, url, timeout=(10, 90),
-                                        allow_redirects=False, **kwargs)
+    def request(self, method, url, quick=False, **kwargs):
+        # quick: calls made while database locks are held. Connect 3 s / read 7 s socket timeouts;
+        # google-auth checks max_allowed_time only after a request returns, so this is NOT a hard
+        # total deadline. The hard bounds are server-side: lock_timeout and
+        # idle_in_transaction_session_timeout end the transaction, and nothing is deleted.
+        extra = {'max_allowed_time': 10} if quick else {}
+        response = self.session.request(method, url, timeout=(3, 7) if quick else (10, 90),
+                                        allow_redirects=False, **extra, **kwargs)
         if not 200 <= response.status_code < 300:
             response.close()
             raise ArchiveError('DRIVE_HTTP_' + str(response.status_code))
@@ -224,6 +229,14 @@ class DriveArchive:
         if (info.get('trashed') or info.get('mimeType') != 'application/vnd.google-apps.folder'
                 or not info.get('capabilities', {}).get('canAddChildren')):
             raise ArchiveError('DRIVE_FOLDER_NOT_WRITABLE')
+
+    def metadata(self, file_id):
+        """files.get metadata: a trashed file still downloads, so custody needs this too."""
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', file_id):
+            raise ArchiveError('INVALID_DRIVE_FILE_ID')
+        with self.request('GET', f'{API}/{file_id}', quick=True,
+                          params={'fields': 'id,trashed,parents,appProperties,sha256Checksum,headRevisionId,size'}) as response:
+            return response.json()
 
     def download(self, file_id):
         if not re.fullmatch(r'[A-Za-z0-9_-]+', file_id):
@@ -264,6 +277,13 @@ class DriveArchive:
             return response.json()['id']
 
 
+def manifest_record(batch_id, table, rows, sha, data_id):
+    """The one definition of a batch's manifest file; later checks rebuild its exact bytes from it."""
+    return {'format': FORMAT_VERSION, 'batch_id': batch_id, 'source_table': table,
+            'rows': rows, 'sha256': sha, 'drive_file_id': data_id,
+            'postgres_types': SPECS[table], 'numeric_encoding': 'decimal-string'}
+
+
 def upload_verified(drive, table, texts):
     batch_id, data, canonical = parquet_bytes(table, texts)
     sha = digest(data)
@@ -275,9 +295,7 @@ def upload_verified(drive, table, texts):
     verified = verify_parquet(downloaded, table, batch_id, len(canonical), sha)
     if verified != canonical:
         raise ArchiveError('ARCHIVE_ROWS_DIFFER')
-    manifest = {'format': FORMAT_VERSION, 'batch_id': batch_id, 'source_table': table,
-                'rows': len(verified), 'sha256': sha, 'drive_file_id': data_id,
-                'postgres_types': SPECS[table], 'numeric_encoding': 'decimal-string'}
+    manifest = manifest_record(batch_id, table, len(verified), sha, data_id)
     manifest_bytes = exact_json(manifest).encode()
     manifest_id = drive.put(f'{table}-{batch_id}.manifest.json', manifest_bytes,
                             batch_id, 'manifest', 'application/json')

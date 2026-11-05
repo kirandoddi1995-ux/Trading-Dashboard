@@ -26,12 +26,13 @@ def legacy_algorithm_only(monkeypatch):
     Separate test_archive_commissioning_hold.py and test_archive_restore_check.py
     test the production proof gate itself.
     """
-    monkeypatch.setattr(maintenance, 'require_commissioned_delete', lambda: None)
+    monkeypatch.setattr(maintenance, 'require_commissioned_delete', lambda context=None: None)
     passing = maintenance.restore_check.RestoreProof(manifests=0, presence_verified=0, deep_batches=0,
                                                      deep_rows=0, exact_rows=0, added_column_rows=0,
                                                      failures=(), issuer=maintenance.restore_check._ISSUER)
     monkeypatch.setattr(maintenance.restore_check, 'prove', lambda *args, **kwargs: passing)
-    monkeypatch.setattr(maintenance.restore_check, 'recheck_presence', lambda repo, drive: 0)
+    monkeypatch.setattr(maintenance.restore_check, 'recheck_presence', lambda repo, drive, proof=None: 0)
+    monkeypatch.setattr(maintenance.restore_check, 'confirm_custody', lambda drive, manifest, **kwargs: {'data': 'r', 'manifest': 'r'})
 
 
 def nav(code='A', value=Decimal('1.123456789123456789')):
