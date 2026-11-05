@@ -18,7 +18,7 @@ deletion was paused (`ARCHIVE_NIGHTLY_DELETE=false`) until this is merged and in
 | Deep check (rotating 1/7 plus last 8 days; `restore-check` = all) | The bytes download, re-hash, recompute the content-addressed batch id, and every row converts back to the live row type | That rows would insert (next row) |
 | **Insert rehearsal** (new) | Every row inserts into an empty temporary copy of the live table (defaults, CHECK and NOT NULL, unique indexes), then rolls back | Foreign keys, triggers, row-level security, or a restore into a real disposable database |
 | **Cross-batch key check** (new, full mode only) | No key is archived twice with different content | Anything nightly (it needs every batch) |
-| Custody (new, per batch) | Before any lock (building the `CustodyCheck`): this batch's data and manifest files are untrashed, carry their identity, match their exact bytes, and their Drive head revision ids are pinned. Inside the delete transaction, right before the DELETE (quick form; Drive calls have 3 s connect / 7 s read socket timeouts, which are not a hard total deadline because google-auth checks `max_allowed_time` only after a request returns; the hard bounds are the server-side 30 s idle-in-transaction and 15 s lock timeouts, which abort the transaction): identity, trashed flag, revision ids unchanged, and Drive's sha256 wherever Drive reports one. A missing revision id or missing pins fail closed. Lock waits bounded by `lock_timeout` 15 s (applies to the advisory lock, `FOR UPDATE`, dependency locks and the DELETE's row locks); idle-in-transaction bounded at 30 s | An immutable lease: Drive can change after the check, and one batch is one copy (two files, not two copies); the final recheck then fails the job loudly but cannot restore lost bytes. That real Drive returns `headRevisionId` for our files is not yet observed: an `export` run now logs `custody_probe` per batch to show it without deleting |
+| Custody (new, per batch) | Before any lock (building the `CustodyCheck`): this batch's data and manifest files are untrashed, carry their identity, match their exact bytes, and their Drive head revision ids are pinned. Inside the delete transaction, right before the DELETE (quick form; Drive calls have 3 s connect / 7 s read socket timeouts, which are not a hard total deadline because google-auth checks `max_allowed_time` only after a request returns; the hard bounds are the server-side 30 s idle-in-transaction and 5 s lock timeouts, which abort the transaction): identity, trashed flag, revision ids unchanged, and Drive's sha256 wherever Drive reports one. A missing revision id or missing pins fail closed. Lock waits bounded by `lock_timeout` 5 s (applies to the advisory lock, `FOR UPDATE`, dependency locks and the DELETE's row locks); idle-in-transaction bounded at 30 s | An immutable lease: Drive can change after the check, and one batch is one copy (two files, not two copies); the final recheck then fails the job loudly but cannot restore lost bytes. That real Drive returns `headRevisionId` for our files is not yet observed: an `export` run now logs `custody_probe` per batch to show it without deleting |
 
 "Converts back" is not "restores". A full restore drill into a disposable database remains open.
 Drive is still the only copy; a second independent copy is the real answer to that risk.
@@ -45,7 +45,9 @@ Drive is still the only copy; a second independent copy is the real answer to th
    passed. It now compares pinned Drive revision ids (and Drive's sha256 where reported). Revision
    ids, not sha256, are the primary signal, because Drive may omit sha256 (rclone Drive docs) and a
    sha256-only rule could refuse every same-run delete before the storage deadline.
-7. Lock waits were unbounded. `SET LOCAL lock_timeout = '15s'` now precedes the advisory lock;
+7. Correction (5 Nov, own review): lock waits were already bounded at 5 s by the connection option
+   `lock_timeout=5000`; an earlier `SET LOCAL lock_timeout = '15s'` wrongly lengthened that bound.
+   It is now `'5s'`, set explicitly before the advisory lock;
    a SQL-harness test shows it in force inside the deleting transaction and gone after it.
 8. `CustodyCheck` can only be built through the full byte check (its constructor runs it).
 9. `export` mode logs a non-deleting `custody_probe` for each batch, so real Drive behaviour is
@@ -153,6 +155,24 @@ Owner sequence (each step is the owner's decision):
 
 Limits: DELETE frees space for reuse inside the same table after vacuum; it does not lower the
 collectors' size reading. Nightly deletion stays OFF.
+
+### Round 5 (ChatGPT, 5 Nov evening) — storage bridge, applied unchanged and re-checked
+
+- **Generation race closed.** `verified_at` is insertion time, not commit time: a batch inserted
+  before T but committed after the fingerprint check could have entered the candidate list without
+  being on the verified copy. Count, fingerprint and candidates are now read in ONE statement
+  (`preserved_candidates`). Candidates honour the selected `--table`.
+- **Short delete rolls back.** If fewer rows can be deleted than were preserved, the batch's
+  transaction rolls back (rows kept, batch stays pending) instead of being marked complete.
+- **Compact future quote writes.** New `market_quotes` rows store a retention marker instead of the
+  raw provider payload (no code reads it; typed fields and the daily-volume trigger are unchanged).
+  Owner decision: the original payload of future rows is not kept.
+- Universe de-duplication deferred: dropping member rows would leave dated headers claiming members
+  that readers cannot resolve.
+- Re-checked here: all six files byte-identical to the reviewer's hashes; four deliberate mutations
+  (no rollback, no table scope, no generation check, raw payload kept) each caught.
+- Prune timing: run #96 took 114 min for the full proof alone. The first supervised prune is one
+  batch (`max_batches=1`) on one table; larger runs need measured per-batch timing first.
 
 ## Still open (not fixed here; nightly deletion stays paused)
 

@@ -317,7 +317,7 @@ class ArchiveRepository:
         condition = predicate(table)
         with self.connection() as conn:
             # Bounded wait: the byte check ran before this point, so a long queue must fail, not drift.
-            conn.execute("SET LOCAL lock_timeout = '15s'")
+            conn.execute("SET LOCAL lock_timeout = '5s'")  # same bound as the session option; never longer
             # Transaction-scoped serialization; safe with Supabase session pooler.
             conn.execute('SELECT pg_advisory_xact_lock(71429051)')
             # The custody callback talks to Drive while locks are held: bound the idle wait.
