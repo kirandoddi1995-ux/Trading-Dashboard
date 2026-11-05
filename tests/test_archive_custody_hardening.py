@@ -520,3 +520,19 @@ def test_custody_refuses_a_file_moved_out_of_the_archive_folder():
         restore_check.confirm_custody(drive, manifest, check_bytes=False, revisions=revisions)
     with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
         restore_check.confirm_custody(drive, manifest)
+
+
+# ---- Round 4 follow-up: the custody check itself binds bytes to the claimed batch ----
+
+def test_custody_check_refuses_a_record_naming_one_batch_but_pointing_at_another_batchs_bytes():
+    """Direct caller assembles A's batch id/rows with B's data file (relabelled on Drive)."""
+    drive = ListedDrive()
+    a, _ = upload_verified(drive, 'mf_nav', [exact_json(nav('A'))])
+    b, _ = upload_verified(drive, 'mf_nav', [exact_json(nav('B'))])
+    drive.properties[b['drive_file_id']] = {'batch': a['batch_id'], 'kind': 'data'}  # relabelled
+    mixed = {**a, 'sha256': b['sha256'], 'drive_file_id': b['drive_file_id'], 'drive_manifest_id': 'mixm'}
+    drive.data['mixm'] = (restore_check.expected_manifest_bytes(
+        a['batch_id'], 'mf_nav', a['rows'], b['sha256'], b['drive_file_id']), 'manifest')
+    drive.properties['mixm'] = {'batch': a['batch_id'], 'kind': 'manifest'}
+    with pytest.raises(ArchiveError, match='ARCHIVE_CUSTODY_LOST'):
+        restore_check.CustodyCheck(object(), drive, mixed)

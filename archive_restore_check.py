@@ -261,6 +261,15 @@ def confirm_custody(drive, manifest: dict[str, Any], *, check_bytes: bool = True
         revision = meta.get('headRevisionId')
         if check_bytes:
             wanted = digest(raw) == manifest['sha256'] if kind == 'data' else raw == manifest_bytes
+            if wanted and kind == 'data':
+                # Decode the downloaded bytes against the claimed batch, table and row count, so the
+                # check binds bytes to the batch identity itself rather than trusting the caller to
+                # have paired them (round-4 review follow-up).
+                try:
+                    archived_rows(raw, {'batch_id': batch, 'source_table': manifest['source_table'],
+                                        'row_count': manifest['rows'], 'file_sha256': manifest['sha256']})
+                except ArchiveError:
+                    wanted = False
         else:
             wanted = revision == revisions[kind]
         checksum = meta.get('sha256Checksum')

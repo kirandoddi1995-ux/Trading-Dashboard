@@ -235,6 +235,17 @@ def test_database_fingerprint_sql_equals_the_verifier_fingerprint(tmp_path):
 
 # ---- CodeAnt review of PR #72 ----
 
+def _link_or_skip(make):
+    """Real links are mandatory where the OS allows them; skip only when creation itself is refused
+    (Windows without the symlink privilege raises WinError 1314)."""
+    try:
+        make()
+    except OSError as error:
+        if getattr(error, 'winerror', None) == 1314 or error.errno in (1, 13):
+            pytest.skip(f'link creation refused by the OS: {error}')
+        raise
+
+
 @pytest.mark.parametrize('link', ['file', 'directory'])
 def test_links_to_files_outside_the_copy_do_not_count(tmp_path, capsys, link):
     drive, manifests = _drive_with('AB')
@@ -243,12 +254,27 @@ def test_links_to_files_outside_the_copy_do_not_count(tmp_path, capsys, link):
     copy = tmp_path / 'copy'
     copy.mkdir()
     if link == 'file':
-        for item in (outside / 'sub').iterdir():
-            (copy / item.name).symlink_to(item)
+        _link_or_skip(lambda: [(copy / item.name).symlink_to(item) for item in (outside / 'sub').iterdir()])
     else:
-        (copy / 'sub').symlink_to(outside / 'sub', target_is_directory=True)
+        _link_or_skip(lambda: (copy / 'sub').symlink_to(outside / 'sub', target_is_directory=True))
     code, out = _run_fp(capsys, copy, 2, _fingerprint(manifests.values()))
     assert code == 1 and out['status'] == 'COPY_DOES_NOT_MATCH_INVENTORY'
+    # The refusal must be because of the link, not merely a mismatch (an implementation that
+    # silently ignored links would also mismatch).
+    assert any(item.endswith(':LINK_NOT_ALLOWED') for item in out['first_failures'])
+
+
+@pytest.mark.skipif(__import__('os').name != 'nt', reason='Windows directory junctions only')
+def test_windows_junction_to_files_outside_the_copy_does_not_count(tmp_path, capsys):
+    import _winapi  # junctions need no special privilege
+    drive, manifests = _drive_with('AB')
+    outside = tmp_path / 'outside'
+    _write_copy(outside, drive)
+    copy = tmp_path / 'copy'
+    copy.mkdir()
+    _winapi.CreateJunction(str(outside / 'sub'), str(copy / 'sub'))
+    code, out = _run_fp(capsys, copy, 2, _fingerprint(manifests.values()))
+    assert code == 1 and any(item.endswith(':LINK_NOT_ALLOWED') for item in out['first_failures'])
 
 
 def test_oversized_files_are_refused_without_reading_them(tmp_path, capsys, monkeypatch):
