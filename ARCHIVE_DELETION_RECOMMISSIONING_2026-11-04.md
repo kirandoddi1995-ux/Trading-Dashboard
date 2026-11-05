@@ -128,8 +128,10 @@ independent copy (it uploads and deletes new batches in the same run). Two addit
 
 - **Bulk export** (`--mode export`, any table or `growing`, up to `--max-batches` per table): pages
   forward by each table's order key, uploads and records batches, deletes nothing, and logs a
-  `custody_probe` per batch. Re-running over unchanged rows re-finds the same content-addressed
-  batches.
+  `custody_probe` per batch. A page whose content-addressed batch is already in the catalog is
+  passed over without uploading and does not count against the bound, so a repeated run continues
+  where the previous one stopped (CodeAnt review of PR #74). `prune-preserved` honours a one-time
+  `--nav-cutoff` for NAV batches, as delete mode does.
 - **`--mode prune-preserved`** with `--preserved-before T --preserved-batches N --preserved-sha256 H`:
   (1) runs the full proof (every batch, insert rehearsal, cross-batch key check); (2) refuses unless
   the catalog batches recorded at or before T have exactly count N and fingerprint H — the pair the

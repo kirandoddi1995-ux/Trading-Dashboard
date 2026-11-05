@@ -19,8 +19,9 @@ import test_archive_maintenance_sql as sql_harness
 from test_archive_restore_check import ListedDrive
 
 pg = sql_harness.pg
-pytestmark = pytest.mark.skipif(not os.environ.get('EQUITY_TEST_PGLITE_MODULE'),
-                                reason='Local SQL harness not configured')
+# Only the SQL tests need the harness; argument and workflow-launcher tests always run.
+needs_sql = pytest.mark.skipif(not os.environ.get('EQUITY_TEST_PGLITE_MODULE'),
+                               reason='Local SQL harness not configured')
 CUTOFF = dt.date(2026, 9, 13)
 TODAY = CUTOFF + dt.timedelta(days=maintenance.HOT_RETENTION_DAYS)
 
@@ -49,6 +50,7 @@ def _export(repo, drive, max_batches=10):
     return maintenance.export_batches(repo, drive, 'mf_nav', CUTOFF, 1, max_batches)
 
 
+@needs_sql
 def test_bulk_export_pages_through_eligible_rows_without_deleting_and_is_idempotent(pg):
     repo, drive = _setup(pg)
     first = _export(repo, drive)
@@ -58,12 +60,12 @@ def test_bulk_export_pages_through_eligible_rows_without_deleting_and_is_idempot
     assert all(r['custody_probe'] == 'ok' for r in first)
     assert _count(pg, 'SELECT count(*) FROM quant_app.mf_nav') == 4
     assert _count(pg, 'SELECT count(*) FROM quant_app.archive_manifests') == 3
-    again = _export(repo, drive)  # same rows, same content-addressed batches, nothing new
-    assert [r['batch_id'] for r in again] == [r['batch_id'] for r in first]
+    # Same rows, same content-addressed batches: already in the catalog, so nothing new.
+    assert _export(repo, drive) == []
     assert _count(pg, 'SELECT count(*) FROM quant_app.archive_manifests') == 3
-    assert len(_export(repo, drive, max_batches=2)) == 2  # the bound is respected
 
 
+@needs_sql
 def test_generation_fingerprint_equals_the_copy_verifier_fingerprint(pg):
     repo, drive = _setup(pg)
     _export(repo, drive)
@@ -76,6 +78,7 @@ def test_generation_fingerprint_equals_the_copy_verifier_fingerprint(pg):
     assert count == 3 and fingerprint == verify.inventory_set_sha256(entries)
 
 
+@needs_sql
 def test_prune_deletes_exactly_the_preserved_generation_and_nothing_recorded_later(pg):
     repo, drive = _setup(pg)
     _export(repo, drive)
@@ -86,7 +89,7 @@ def test_prune_deletes_exactly_the_preserved_generation_and_nothing_recorded_lat
     sql_harness.insert_nav(pg, 'A', '2026-08-05')
     pg.execute('SET ROLE quant_archive_worker')
     later = _export(repo, drive)
-    assert len(later) == 4
+    assert len(later) == 1  # only the newly eligible 08-04 batch; earlier pages are already recorded
     proof = _proof(repo, drive)
     try:
         pruned = maintenance.prune_preserved(repo, drive, proof, before=before, expected_batches=count,
@@ -107,6 +110,7 @@ def test_prune_deletes_exactly_the_preserved_generation_and_nothing_recorded_lat
         maintenance._ACTIVE_PROOF = None
 
 
+@needs_sql
 @pytest.mark.parametrize('wrong', ['count', 'fingerprint', 'later_time'])
 def test_prune_refuses_any_generation_mismatch_before_touching_anything(pg, wrong):
     repo, drive = _setup(pg)
@@ -128,6 +132,7 @@ def test_prune_refuses_any_generation_mismatch_before_touching_anything(pg, wron
     assert _count(pg, 'SELECT count(*) FROM quant_app.archive_manifests WHERE completed_at IS NOT NULL') == 0
 
 
+@needs_sql
 def test_prune_without_an_active_restore_proof_deletes_nothing(pg):
     repo, drive = _setup(pg)
     _export(repo, drive)
@@ -143,6 +148,7 @@ def test_prune_without_an_active_restore_proof_deletes_nothing(pg):
     assert _count(pg, 'SELECT count(*) FROM quant_app.mf_nav') == 4
 
 
+@needs_sql
 def test_prune_rebuilds_rows_from_the_archive_and_stops_on_a_damaged_file(pg):
     repo, drive = _setup(pg)
     batches = _export(repo, drive)
@@ -162,6 +168,7 @@ def test_prune_rebuilds_rows_from_the_archive_and_stops_on_a_damaged_file(pg):
     assert len(batches) == 3 and _count(pg, 'SELECT count(*) FROM quant_app.mf_nav') == 4
 
 
+@needs_sql
 def test_prune_stops_for_review_when_a_source_row_changed_since_export(pg):
     repo, drive = _setup(pg)
     _export(repo, drive)
@@ -226,3 +233,33 @@ def test_dispatched_prune_passes_exactly_the_owner_inputs(monkeypatch):
     main.assert_called_once_with(['--mode', 'prune-preserved', '--table', 'growing', '--max-batches', '50',
                                   '--preserved-before', '2026-11-05 10:32:17.265431+00',
                                   '--preserved-batches', '1146', '--preserved-sha256', 'a' * 64])
+
+
+
+@needs_sql
+def test_a_repeated_bounded_export_continues_past_batches_already_exported(pg):
+    repo, drive = _setup(pg)
+    first = _export(repo, drive, max_batches=2)
+    second = maintenance.export_batches(repo, drive, 'mf_nav', CUTOFF, 1, 2)
+    assert len(first) == 2 and len(second) == 1  # only the one not yet exported
+    assert {r['batch_id'] for r in second}.isdisjoint({r['batch_id'] for r in first})
+    assert _count(pg, 'SELECT count(*) FROM quant_app.archive_manifests') == 3
+    assert maintenance.export_batches(repo, drive, 'mf_nav', CUTOFF, 1, 2) == []  # all done
+
+
+@needs_sql
+def test_prune_honours_the_one_time_nav_cutoff_used_at_export(pg):
+    repo, drive = _setup(pg, dates=('2026-09-20', '2026-09-21', '2026-09-22'))
+    one_time = dt.date(2026, 9, 25)  # newer than the 14-day default at TODAY
+    exported = maintenance.export_batches(repo, drive, 'mf_nav', one_time, 1, 10)
+    assert len(exported) == 2
+    before = repo.database_now()
+    count, fingerprint = repo.generation(before)
+    proof = _proof(repo, drive)
+    try:
+        pruned = maintenance.prune_preserved(repo, drive, proof, before=before, expected_batches=count,
+                                             expected_sha256=fingerprint, today=TODAY, limit=50,
+                                             nav_cutoff=one_time)
+    finally:
+        maintenance._ACTIVE_PROOF = None
+    assert [r['deleted'] for r in pruned] == [1, 1]

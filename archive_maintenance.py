@@ -256,6 +256,12 @@ class ArchiveRepository:
             count, fingerprint = conn.execute(GENERATION_SQL, {'before': as_aware(before).isoformat()}).fetchone()
         return int(count), fingerprint
 
+    def recorded(self, batch_id):
+        """Whether this content-addressed batch is already in the catalog."""
+        with self.connection(readonly=True) as conn:
+            return conn.execute('SELECT 1 FROM quant_app.archive_manifests WHERE batch_id=%s',
+                                (batch_id,)).fetchone() is not None
+
     def unpruned(self, before, limit):
         """Exported-but-not-yet-pruned batches of the generation at `before`, oldest first."""
         with self.connection(readonly=True) as conn:
@@ -371,15 +377,17 @@ def order_key(table, text):
     return tuple(row[column] for column in ORDER_COLUMNS[table])
 
 
-def run_batch(repo, drive, table, cutoff, limit=1000, delete=False, after=None):
+def run_batch(repo, drive, table, cutoff, limit=1000, delete=False):
     if delete:
         require_commissioned_delete(restore_check.context_key(repo, drive))
-        if after is not None:
-            raise ArchiveError('DELETE_DOES_NOT_PAGE')
-    texts = repo.select(table, cutoff, limit, after=after) if after is not None else repo.select(
-        table, cutoff, limit)
+    texts = repo.select(table, cutoff, limit)
     if not texts:
         return {'selected': 0, 'verified': 0, 'deleted': 0, 'retained': 0}
+    return archive_texts(repo, drive, table, texts, cutoff, delete)
+
+
+def archive_texts(repo, drive, table, texts, cutoff, delete):
+    """Upload one selected batch, verify it, record it, and (when deleting) delete it."""
     manifest, verified = upload_verified(drive, table, texts)
     custody = None
     if delete:
@@ -388,8 +396,7 @@ def run_batch(repo, drive, table, cutoff, limit=1000, delete=False, after=None):
         custody = restore_check.CustodyCheck(repo, drive, manifest)
     deleted = repo.acknowledge(manifest, verified, cutoff, delete, custody=custody)
     result = {'selected': len(texts), 'verified': len(verified), 'deleted': deleted,
-              'retained': len(texts) - deleted, 'batch_id': manifest['batch_id'],
-              '_after': order_key(table, texts[-1])}  # internal; never printed (row values)
+              'retained': len(texts) - deleted, 'batch_id': manifest['batch_id']}
     if not delete:
         # Non-deleting probe on real Drive: would the full check and the under-lock quick check
         # pass for this batch? Reported in the log only; nothing is deleted either way.
@@ -411,29 +418,29 @@ def build_drive_credentials():
     return credentials(token_info)
 
 
-def _public(result):
-    return {key: value for key, value in result.items() if not key.startswith('_')}
-
-
 def export_batches(repo, drive, table, cutoff, limit, max_batches, report=None):
-    """Upload and record up to `max_batches` consecutive batches without deleting anything.
+    """Upload and record up to `max_batches` NEW batches without deleting anything.
 
-    Pages forward by order key, so it never re-selects rows it has just exported. Batches are
-    content-addressed, so a repeated run over unchanged rows re-finds the same files and records."""
+    Pages forward by order key. A page whose content-addressed batch is already in the catalog
+    (exported by an earlier run) is passed over without uploading and does not count against
+    `max_batches`, so a repeated bounded run continues where the previous one stopped."""
     results, after = [], None
-    for _ in range(max_batches):
-        result = run_batch(repo, drive, table, cutoff, limit, False, after=after)
-        if result['selected'] == 0:
+    while len(results) < max_batches:
+        texts = repo.select(table, cutoff, limit, after=after) if after is not None else repo.select(
+            table, cutoff, limit)
+        if not texts:
             break
-        after = result['_after']
-        results.append(_public(result))
+        after = order_key(table, texts[-1])  # never printed (row values)
+        if repo.recorded(batch_identity(table, texts)[0]):
+            continue
+        results.append(archive_texts(repo, drive, table, texts, cutoff, False))
         if report:
             report(results[-1])
     return results
 
 
 def prune_preserved(repo, drive, proof, *, before, expected_batches, expected_sha256, today, limit,
-                    report=None):
+                    report=None, nav_cutoff=None):
     """Delete source rows only for batches of an independently preserved generation.
 
     The generation is every catalog batch recorded at or before `before`; its count and fingerprint
@@ -462,7 +469,9 @@ def prune_preserved(repo, drive, proof, *, before, expected_batches, expected_sh
         except Exception as error:  # noqa: BLE001 - never print file contents
             raise ArchiveError('PRESERVED_BATCH_UNREADABLE_' + type(error).__name__) from None
         custody = restore_check.CustodyCheck(repo, drive, manifest)
-        deleted = repo.acknowledge(manifest, texts, cutoff_for(table, today), True, custody=custody)
+        # A one-time NAV cutoff used at export applies to NAV batches only, as in delete mode.
+        cutoff = cutoff_for(table, today, nav_cutoff if table == 'mf_nav' else None)
+        deleted = repo.acknowledge(manifest, texts, cutoff, True, custody=custody)
         result = {'table': table, 'batch_id': record['batch_id'], 'rows': len(texts), 'deleted': deleted}
         results.append(result)
         if report:
@@ -537,6 +546,7 @@ def main(argv=None):
             pruned = prune_preserved(
                 repo, drive, proof, before=before, expected_batches=args.preserved_batches,
                 expected_sha256=args.preserved_sha256, today=today, limit=args.max_batches,
+                nav_cutoff=args.nav_cutoff,
                 report=lambda item: print('ARCHIVE_PRUNE ' + json.dumps(item), flush=True))
             print(json.dumps({'status': 'SUCCESS', 'pruned_batches': len(pruned),
                               'deleted_rows': sum(item['deleted'] for item in pruned)}), flush=True)
@@ -557,7 +567,7 @@ def main(argv=None):
                 if deleting:
                     # The proof may be minutes old: re-list Drive immediately before each batch.
                     restore_check.recheck_presence(repo, drive, proof)
-                result = _public(run_batch(repo, drive, table, cutoffs[table], sizes[table], deleting))
+                result = run_batch(repo, drive, table, cutoffs[table], sizes[table], deleting)
                 print('ARCHIVE_BATCH ' + json.dumps({'table': table, **result}), flush=True)
                 if result['selected'] == 0:
                     break
