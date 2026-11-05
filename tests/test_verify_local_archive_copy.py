@@ -283,3 +283,29 @@ def test_oversized_files_are_refused_without_reading_them(tmp_path, capsys, monk
     monkeypatch.setattr(verify, 'MAX_BYTES', 10)
     code, out = _run_fp(capsys, tmp_path / 'copy', 1, _fingerprint(manifests.values()))
     assert code == 1 and any('FILE_TOO_LARGE' in f for f in out['first_failures'])
+
+
+# ---- Real Drive folder (5 Nov): other archive kinds share the folder ----
+
+def test_other_archive_kinds_in_the_same_folder_are_ignored_not_failed(tmp_path, capsys):
+    drive, manifests = _drive_with('AB')
+    copy = tmp_path / 'copy'
+    _write_copy(copy, drive)
+    hexid = 'ab' * 32
+    (copy / 'sub' / f'nifty-forward-{hexid}.manifest.json').write_text('{"kind": "forward"}')
+    (copy / 'sub' / f'nifty-forward-{hexid}.jsonl.gz').write_bytes(b'\x1f\x8b')
+    (copy / 'sub' / f'nifty-versioned-manifest-{hexid}.json').write_text('{}')
+    (copy / 'sub' / f'unknown_table-{hexid}.parquet').write_bytes(b'x')
+    code, out = _run_fp(capsys, copy, 2, _fingerprint(manifests.values()))
+    assert code == 0 and out['status'] == 'COPY_MATCHES_INVENTORY'
+    assert out['other_files'] == 4
+    assert verify.main([str(copy), '--self-check-only']) == 0
+    assert json.loads(capsys.readouterr().out)['status'] == 'SELF_CONSISTENT_ONLY'
+
+
+def test_a_folder_with_only_other_archive_kinds_is_not_a_copy(tmp_path, capsys):
+    copy = tmp_path / 'copy'
+    copy.mkdir()
+    (copy / f"nifty-forward-{'cd' * 32}.manifest.json").write_text('{"kind": "forward"}')
+    code, out = _run_fp(capsys, copy, 1, '0' * 64)
+    assert code == 1 and out['status'] == 'COPY_DOES_NOT_MATCH_INVENTORY' and out['manifests'] == 0

@@ -187,7 +187,7 @@ def test_actual_scheduled_launcher_holds_without_nightly_owner_variable(monkeypa
     assert 'secrets.' not in hold
     assert 'checkout' not in hold
     assert "vars.ARCHIVE_NIGHTLY_DELETE != 'true'" in hold
-    assert 'options: [preview, export, restore-check, delete]' in source
+    assert 'options: [preview, export, restore-check, delete, prune-preserved]' in source
 
 
 def test_actual_scheduled_launcher_runs_restore_proven_growing_retention(monkeypatch):

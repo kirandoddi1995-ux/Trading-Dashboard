@@ -121,6 +121,39 @@ non-deleting export with `custody_probe: ok` for every candidate; freeze the cat
 only then a supervised prune of exactly those preserved batches. The current delete mode cannot
 restrict itself to a verified set — that gate must exist before any prune.
 
+### Preserved-generation prune (5 Nov) — the deterministic gate before any prune
+
+The round-4 review found that `delete` mode cannot restrict itself to batches verified on an
+independent copy (it uploads and deletes new batches in the same run). Two additions close that:
+
+- **Bulk export** (`--mode export`, any table or `growing`, up to `--max-batches` per table): pages
+  forward by each table's order key, uploads and records batches, deletes nothing, and logs a
+  `custody_probe` per batch. A page whose content-addressed batch is already in the catalog is
+  passed over without uploading and does not count against the bound, so a repeated run continues
+  where the previous one stopped (CodeAnt review of PR #74). `prune-preserved` honours a one-time
+  `--nav-cutoff` for NAV batches, as delete mode does.
+- **`--mode prune-preserved`** with `--preserved-before T --preserved-batches N --preserved-sha256 H`:
+  (1) runs the full proof (every batch, insert rehearsal, cross-batch key check); (2) refuses unless
+  the catalog batches recorded at or before T have exactly count N and fingerprint H — the pair the
+  owner verified on the independent copy with `verify_local_archive_copy.py`; (3) prunes only
+  exported, not-yet-pruned batches of that generation; (4) rebuilds each batch's rows from the
+  archive file itself, re-proves custody, and runs the normal deleting transaction; (5) stops the
+  whole run on any retained (changed) row. T is always taken from the database clock at full
+  precision. Manual dispatch only: the nightly schedule cannot reach it (tested). Job limit 180 min.
+
+Owner sequence (each step is the owner's decision):
+1. `restore-check` (read-only) passes.
+2. `export`, table `growing`, max batches 100; repeat until each table exports fewer than the
+   bound; every batch `custody_probe: ok`.
+3. Take T, N, H read-only from the database (`SELECT clock_timestamp()::text`, then
+   `GENERATION_SQL` at T).
+4. Download the Drive folder again to the external disk; verify it with
+   `--expect-batches N --expect-set-sha256 H` → `COPY_MATCHES_INVENTORY`.
+5. `prune-preserved` with T, N, H (max batches up to 200 per run; repeat until nothing is pruned).
+
+Limits: DELETE frees space for reuse inside the same table after vacuum; it does not lower the
+collectors' size reading. Nightly deletion stays OFF.
+
 ## Still open (not fixed here; nightly deletion stays paused)
 
 - **Per-generation preservation.** A one-time disk copy does not protect batches uploaded later.

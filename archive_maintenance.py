@@ -13,6 +13,7 @@ from contextlib import contextmanager
 import datetime as dt
 import json
 import os
+import re
 
 import psycopg
 
@@ -29,6 +30,20 @@ HOT_RETENTION_DAYS = 14  # Eligibility below additionally protects live dependen
 GROWING_TABLES = ('market_quotes', 'scanner_observations', 'universe_membership_versions',
                   'universe_membership')
 _ACTIVE_PROOF: restore_check.RestoreProof | None = None
+ORDER_COLUMNS = {
+    'mf_nav': ('nav_date', 'scheme_code'),
+    'universe_membership': ('snapshot_date', 'instrument_key'),
+    'market_quotes': ('observed_at', 'instrument_key'),
+    'universe_membership_versions': ('observed_at', 'snapshot_id', 'instrument_key'),
+    'scanner_observations': ('as_of_date', 'observation_id'),
+    'equity_research.outcomes': ('recorded_at', 'snapshot_id'),
+}
+# Must stay byte-compatible with verify_local_archive_copy.INVENTORY_SET_SQL (tested).
+GENERATION_SQL = """SELECT count(*), encode(sha256(convert_to(coalesce(string_agg(
+  batch_id||E'\\t'||source_table||E'\\t'||row_count::text||E'\\t'||file_sha256||E'\\t'||drive_file_id||E'\\n',
+  '' ORDER BY batch_id COLLATE "C"), ''), 'UTF8')), 'hex')
+  FROM quant_app.archive_manifests WHERE verified_at <= %(before)s::timestamptz"""
+HEX64 = re.compile(r'[0-9a-f]{64}')
 
 
 def activate_restore_proof(proof: restore_check.RestoreProof) -> None:
@@ -206,20 +221,57 @@ class ArchiveRepository:
             return conn.execute(f'SELECT count(*) FROM {RELATIONS[table]} s WHERE {condition}',
                                 {'cutoff': cutoff}).fetchone()[0]
 
-    def select(self, table, cutoff, limit):
+    def select(self, table, cutoff, limit, after=None):
+        """Eligible rows in a stable order. `after` (the order key of the last row of the previous
+        batch) pages forward without deleting, so bulk export never re-selects the same rows."""
         condition = predicate(table)
-        order = {'mf_nav': 's.nav_date,s.scheme_code',
-                 'universe_membership': 's.snapshot_date,s.instrument_key',
-                 'market_quotes': 's.observed_at,s.instrument_key',
-                 'universe_membership_versions': 's.observed_at,s.snapshot_id,s.instrument_key',
-                 'scanner_observations': 's.as_of_date,s.observation_id',
-                 'equity_research.outcomes': 's.recorded_at,s.snapshot_id'}[table]
+        columns = ORDER_COLUMNS[table]
+        order = ','.join(f's.{column}' for column in columns)
+        params = {'cutoff': cutoff, 'limit': limit}
+        page = ''
+        if after is not None:
+            if len(after) != len(columns):
+                raise ArchiveError('INVALID_PAGE_KEY')
+            bounds = ','.join(f'CAST(%(after{i})s AS {SPECS[table][column]})'
+                              for i, column in enumerate(columns))
+            page = f' AND ({order}) > ({bounds})'
+            params.update({f'after{i}': value for i, value in enumerate(after)})
         with self.connection(readonly=True) as conn:
             # Canonical PostgreSQL JSON text, never a driver float conversion.
             rows = conn.execute(f'SELECT to_jsonb(s)::text FROM {RELATIONS[table]} s '
-                                f'WHERE {condition} ORDER BY {order} LIMIT %(limit)s',
-                                {'cutoff': cutoff, 'limit': limit}).fetchall()
+                                f'WHERE {condition}{page} ORDER BY {order} LIMIT %(limit)s',
+                                params).fetchall()
             return [row[0] for row in rows]
+
+    def database_now(self):
+        """The database clock: a generation timestamp is always taken from here."""
+        with self.connection(readonly=True) as conn:
+            text = conn.execute('SELECT clock_timestamp()::text').fetchone()[0]  # full microseconds
+        return as_aware(text)
+
+    def generation(self, before):
+        """(count, fingerprint) of every catalog batch recorded at or before `before`. Byte-compatible
+        with verify_local_archive_copy.INVENTORY_SET_SQL / inventory_set_sha256 for the same rows."""
+        with self.connection(readonly=True) as conn:
+            count, fingerprint = conn.execute(GENERATION_SQL, {'before': as_aware(before).isoformat()}).fetchone()
+        return int(count), fingerprint
+
+    def recorded(self, batch_id):
+        """Whether this content-addressed batch is already in the catalog."""
+        with self.connection(readonly=True) as conn:
+            return conn.execute('SELECT 1 FROM quant_app.archive_manifests WHERE batch_id=%s',
+                                (batch_id,)).fetchone() is not None
+
+    def unpruned(self, before, limit):
+        """Exported-but-not-yet-pruned batches of the generation at `before`, oldest first."""
+        with self.connection(readonly=True) as conn:
+            rows = conn.execute("""SELECT batch_id,source_table,row_count,file_sha256,drive_file_id,
+                    drive_manifest_id FROM quant_app.archive_manifests
+                WHERE verified_at <= %(before)s::timestamptz AND completed_at IS NULL
+                ORDER BY verified_at,batch_id LIMIT %(limit)s""",
+                                {'before': as_aware(before).isoformat(), 'limit': limit}).fetchall()
+        names = ('batch_id', 'source_table', 'row_count', 'file_sha256', 'drive_file_id', 'drive_manifest_id')
+        return [dict(zip(names, row)) for row in rows]
 
     def acknowledge(self, manifest, texts, cutoff, delete, custody=None):
         """Verification records are atomic; deletion needs an active restore proof.
@@ -309,12 +361,33 @@ class ArchiveRepository:
             return count
 
 
+def as_aware(value):
+    """A timezone-aware datetime from a datetime or ISO text; naive or unparseable is refused."""
+    try:
+        value = value if isinstance(value, dt.datetime) else dt.datetime.fromisoformat(str(value))
+    except ValueError:
+        raise ArchiveError('PRESERVED_GENERATION_REQUIRED') from None
+    if value.tzinfo is None:
+        raise ArchiveError('PRESERVED_GENERATION_REQUIRED')
+    return value
+
+
+def order_key(table, text):
+    row = json.loads(text)
+    return tuple(row[column] for column in ORDER_COLUMNS[table])
+
+
 def run_batch(repo, drive, table, cutoff, limit=1000, delete=False):
     if delete:
         require_commissioned_delete(restore_check.context_key(repo, drive))
     texts = repo.select(table, cutoff, limit)
     if not texts:
         return {'selected': 0, 'verified': 0, 'deleted': 0, 'retained': 0}
+    return archive_texts(repo, drive, table, texts, cutoff, delete)
+
+
+def archive_texts(repo, drive, table, texts, cutoff, delete):
+    """Upload one selected batch, verify it, record it, and (when deleting) delete it."""
     manifest, verified = upload_verified(drive, table, texts)
     custody = None
     if delete:
@@ -345,26 +418,104 @@ def build_drive_credentials():
     return credentials(token_info)
 
 
+def export_batches(repo, drive, table, cutoff, limit, max_batches, report=None):
+    """Upload and record up to `max_batches` NEW batches without deleting anything.
+
+    Pages forward by order key. A page whose content-addressed batch is already in the catalog
+    (exported by an earlier run) is passed over without uploading and does not count against
+    `max_batches`, so a repeated bounded run continues where the previous one stopped."""
+    results, after = [], None
+    while len(results) < max_batches:
+        texts = repo.select(table, cutoff, limit, after=after) if after is not None else repo.select(
+            table, cutoff, limit)
+        if not texts:
+            break
+        after = order_key(table, texts[-1])  # never printed (row values)
+        if repo.recorded(batch_identity(table, texts)[0]):
+            continue
+        results.append(archive_texts(repo, drive, table, texts, cutoff, False))
+        if report:
+            report(results[-1])
+    return results
+
+
+def prune_preserved(repo, drive, proof, *, before, expected_batches, expected_sha256, today, limit,
+                    report=None, nav_cutoff=None):
+    """Delete source rows only for batches of an independently preserved generation.
+
+    The generation is every catalog batch recorded at or before `before`; its count and fingerprint
+    must equal what the owner verified on an independent copy, or nothing happens. Only exported,
+    not-yet-pruned batches of that generation are candidates. Each batch's rows are rebuilt from the
+    archive file itself (never selected from the live table), custody is re-proved, and the normal
+    deleting transaction runs. Any retained row stops the whole run for review."""
+    before = as_aware(before)
+    if (type(expected_batches) is not int or expected_batches < 1
+            or not HEX64.fullmatch(str(expected_sha256).lower())):
+        raise ArchiveError('PRESERVED_GENERATION_REQUIRED')
+    require_commissioned_delete(restore_check.context_key(repo, drive))
+    if repo.generation(before) != (expected_batches, str(expected_sha256).lower()):
+        raise ArchiveError('PRESERVED_GENERATION_MISMATCH')
+    results = []
+    for record in repo.unpruned(before, limit):
+        restore_check.recheck_presence(repo, drive, proof)
+        table = record['source_table']
+        manifest = {'batch_id': record['batch_id'], 'source_table': table, 'rows': record['row_count'],
+                    'sha256': record['file_sha256'], 'drive_file_id': record['drive_file_id'],
+                    'drive_manifest_id': record['drive_manifest_id']}
+        try:
+            texts = restore_check.archived_rows(drive.download(record['drive_file_id']), record)
+        except ArchiveError:
+            raise
+        except Exception as error:  # noqa: BLE001 - never print file contents
+            raise ArchiveError('PRESERVED_BATCH_UNREADABLE_' + type(error).__name__) from None
+        custody = restore_check.CustodyCheck(repo, drive, manifest)
+        # A one-time NAV cutoff used at export applies to NAV batches only, as in delete mode.
+        cutoff = cutoff_for(table, today, nav_cutoff if table == 'mf_nav' else None)
+        deleted = repo.acknowledge(manifest, texts, cutoff, True, custody=custody)
+        result = {'table': table, 'batch_id': record['batch_id'], 'rows': len(texts), 'deleted': deleted}
+        results.append(result)
+        if report:
+            report(result)
+        if deleted != len(texts):
+            raise ArchiveError('SOURCE_CHANGED_OR_ALREADY_REMOVED_REVIEW_REQUIRED')
+    restore_check.recheck_presence(repo, drive, proof)
+    return results
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Verified Drive archival, isolated from scans')
-    parser.add_argument('--mode', choices=('preview', 'export', 'restore-check', 'delete'), default='preview')
+    parser.add_argument('--mode', choices=('preview', 'export', 'restore-check', 'delete', 'prune-preserved'),
+                        default='preview')
     parser.add_argument('--table', choices=(*SPECS, 'growing'), default='mf_nav')
     parser.add_argument('--nav-cutoff', type=dt.date.fromisoformat,
                         help='Manual one-time NAV cleanup only; normal policy is 14 days')
     parser.add_argument('--batch-size', type=int, default=None,
                         help='1–2000; default outcomes=100, canonical universe=500, others=1000')
     parser.add_argument('--max-batches', type=int, default=20)
+    parser.add_argument('--preserved-before', default=None,
+                        help='prune-preserved: generation timestamp with offset (from the database clock)')
+    parser.add_argument('--preserved-batches', type=int, default=None,
+                        help='prune-preserved: batch count of that generation verified on the copy')
+    parser.add_argument('--preserved-sha256', default=None,
+                        help='prune-preserved: fingerprint of that generation verified on the copy')
     args = parser.parse_args(argv)
     drive = None
     try:
         tables = GROWING_TABLES if args.table == 'growing' else (args.table,)
-        if args.table == 'growing' and args.mode not in ('preview', 'delete'):
-            raise ArchiveError('GROWING_PRESET_PREVIEW_OR_DELETE_ONLY')
+        if args.table == 'growing' and args.mode not in ('preview', 'export', 'delete', 'prune-preserved'):
+            raise ArchiveError('GROWING_PRESET_PREVIEW_EXPORT_OR_DELETE_ONLY')
+        pruning = args.mode == 'prune-preserved'
+        before = None
+        if pruning:
+            before = as_aware(args.preserved_before or '')
+            if (args.preserved_batches is None or args.preserved_batches < 1
+                    or not HEX64.fullmatch(str(args.preserved_sha256 or '').lower())):
+                raise ArchiveError('PRESERVED_GENERATION_REQUIRED')
         sizes = {table: batch_size_for(table, args.batch_size) for table in tables}
         if not 1 <= args.max_batches <= 200:
             raise ArchiveError('INVALID_BATCH_LIMIT')
         deleting = args.mode == 'delete'
-        if deleting and os.environ.get('ARCHIVE_DELETE_ENABLED') != 'true':
+        if (deleting or pruning) and os.environ.get('ARCHIVE_DELETE_ENABLED') != 'true':
             raise ArchiveError('DELETION_NOT_ENABLED')
         today = dt.datetime.now(UTC).date()
         cutoffs = {table: cutoff_for(table, today, args.nav_cutoff) for table in tables}
@@ -377,10 +528,12 @@ def main(argv=None):
             return 0
         creds = build_drive_credentials()
         drive = DriveArchive(creds, os.environ.get('DRIVE_ARCHIVE_FOLDER_ID', ''))
-        if args.mode != 'restore-check':
-            drive.check_folder()  # Writers need canAddChildren; the read-only check does not.
-        if args.mode == 'restore-check' or deleting:
-            proof = restore_check.prove(repo, drive, today=today, everything=args.mode == 'restore-check',
+        if args.mode not in ('restore-check', 'prune-preserved'):
+            drive.check_folder()  # Writers need canAddChildren; read-only checks and pruning do not.
+        if args.mode == 'restore-check' or deleting or pruning:
+            # Pruning always runs the full proof, including the cross-batch key-conflict check.
+            proof = restore_check.prove(repo, drive, today=today,
+                                        everything=args.mode in ('restore-check', 'prune-preserved'),
                                         progress=lambda item: print('RESTORE_PROGRESS ' + json.dumps(item), flush=True))
             print('RESTORE_PROOF ' + json.dumps(proof.summary()), flush=True)
             if not proof.valid_now():
@@ -389,6 +542,26 @@ def main(argv=None):
                 print(json.dumps({'status': 'SUCCESS', 'restore_proof': 'PASSED'}), flush=True)
                 return 0
             activate_restore_proof(proof)
+        if pruning:
+            pruned = prune_preserved(
+                repo, drive, proof, before=before, expected_batches=args.preserved_batches,
+                expected_sha256=args.preserved_sha256, today=today, limit=args.max_batches,
+                nav_cutoff=args.nav_cutoff,
+                report=lambda item: print('ARCHIVE_PRUNE ' + json.dumps(item), flush=True))
+            print(json.dumps({'status': 'SUCCESS', 'pruned_batches': len(pruned),
+                              'deleted_rows': sum(item['deleted'] for item in pruned)}), flush=True)
+            return 0
+        if args.mode == 'export':
+            for table in tables:
+                exported = export_batches(
+                    repo, drive, table, cutoffs[table], sizes[table], args.max_batches,
+                    report=lambda item, table=table: print('ARCHIVE_BATCH ' + json.dumps({'table': table, **item}),
+                                                           flush=True))
+                print(json.dumps({'status': 'TABLE_EXPORTED', 'table': table, 'batches': len(exported),
+                                  'custody_probe_not_ok': sum(item.get('custody_probe') != 'ok'
+                                                              for item in exported)}), flush=True)
+            print(json.dumps({'status': 'SUCCESS'}), flush=True)
+            return 0
         for table in tables:
             for _ in range(args.max_batches):
                 if deleting:
@@ -396,9 +569,7 @@ def main(argv=None):
                     restore_check.recheck_presence(repo, drive, proof)
                 result = run_batch(repo, drive, table, cutoffs[table], sizes[table], deleting)
                 print('ARCHIVE_BATCH ' + json.dumps({'table': table, **result}), flush=True)
-                # Export-only verifies one batch as a deployment smoke test. Do not
-                # repeatedly select it or pretend the whole table has been archived.
-                if not deleting or result['selected'] == 0:
+                if result['selected'] == 0:
                     break
                 if result['retained']:
                     raise ArchiveError('SOURCE_CHANGED_OR_ALREADY_REMOVED_REVIEW_REQUIRED')

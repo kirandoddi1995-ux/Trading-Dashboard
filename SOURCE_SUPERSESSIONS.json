@@ -4,14 +4,14 @@
       {
         "predecessor_legacy_sha256": "5cc2b4dfc8751315e406285d26b7c2a65281102dad30a7042d66c727c6a2c138",
         "reason": "ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md",
-        "successor_raw_sha256": "88fbd83c4e09ef00cb0f18c690d6f9827bf2794a2f2a64c3ae35ea1729cd41ad"
+        "successor_raw_sha256": "4a79ad48d3d8d63cf2126f3d004a1c36062d0b3a13d39ef91c968e9b1d55ae1c"
       }
     ],
     "archive_maintenance.py": [
       {
         "predecessor_legacy_sha256": "7715add8c1c9893a875dc54db75110aa3be5d17f9b6f6ae6aec20bbce6baf46f",
         "reason": "ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md",
-        "successor_raw_sha256": "c7b29ef3f788dea37759f43676e633fbf538f145555c358fa811730972b9c5f2"
+        "successor_raw_sha256": "836445a03dd6ef5fd77404c9ff937ea60f072aa5c99343f166c6c27484bd3b1c"
       }
     ],
     "drive_archive.py": [
@@ -25,7 +25,7 @@
       {
         "predecessor_legacy_sha256": "8ea61e76bd842279790dd8dcb0db10d20f8c7ffbeffa4e2fc7e3f46cf5be13c7",
         "reason": "ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md",
-        "successor_raw_sha256": "61b88a83fdbfd992245d5553a078183702e9007746f5d3e0f300769f7b65143c"
+        "successor_raw_sha256": "35a3720c19e6255ccca358ed1d2e135cf27084f3ad480ec210f12b08644fcabe"
       }
     ],
     "tests/test_archive_maintenance_sql.py": [
