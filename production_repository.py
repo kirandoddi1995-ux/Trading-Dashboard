@@ -1053,10 +1053,12 @@ class ProductionRepository:
             conn.commit()
 
     def archive_quotes(self, quotes: Iterable[Mapping], *, observed_at=None, source="Upstox Market Quote V3") -> int:
-        """Keep raw snapshots; the reviewed DB trigger updates daily maxima atomically.
+        """Keep typed quote snapshots; the reviewed DB trigger updates daily maxima atomically.
 
-        The trigger also covers collectors running the previous release. No raw
-        snapshot is deleted here; verified Drive archival owns that operation.
+        New rows store the typed fields only, with a small retention marker in `raw`
+        (typed_only_v1); the original provider payload is not kept for new rows. The trigger
+        also covers collectors running the previous release. No snapshot is deleted here;
+        verified Drive archival owns that operation.
         """
         self.ensure_schema()
         observed_at = observed_at or _utcnow()
@@ -1082,7 +1084,8 @@ class ProductionRepository:
                 _finite_decimal(ohlc.get("high")), _finite_decimal(ohlc.get("low")),
                 _finite_decimal(previous.get("close") or ohlc.get("close")),
                 _finite_decimal(item.get("volume") or ohlc.get("volume")),
-                _finite_decimal(item.get("oi") or item.get("open_interest")),
+                # A real 0 is a value, not "missing": the raw payload is no longer kept to recover it.
+                _finite_decimal(item.get("oi") if item.get("oi") is not None else item.get("open_interest")),
                 # Preserve typed quote history and the volume trigger input. The original
                 # provider payload is intentionally not retained for new rows.
                 _json({"retention": "typed_only_v1"}),

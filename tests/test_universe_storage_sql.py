@@ -144,3 +144,14 @@ def test_first_quick_scan_requires_explicit_button():
     assignment = next(n for n in branch.body if isinstance(n, ast.Assign))
     assert isinstance(assignment.value, ast.Call)
     assert ast.unparse(assignment.value.func) == 'st.button'
+
+
+def test_compact_quote_keeps_a_zero_open_interest(repository):
+    """With the raw payload no longer kept, a real 0 must not become NULL (CodeAnt, PR #75)."""
+    repo, db = repository
+    columns = ','.join(f'{name} {kind}' for name, kind in SPECS['market_quotes'].items())
+    db.execute(f'CREATE TABLE quant_app.market_quotes ({columns}, PRIMARY KEY(instrument_key,observed_at))')
+    observed = dt.datetime(2026, 10, 5, 9, tzinfo=dt.timezone.utc)
+    quote = {'instrument_key': 'NSE_EQ|1', 'last_price': 11, 'oi': 0, 'ohlc': {'close': 10}}
+    assert repo.archive_quotes([quote], observed_at=observed) == 1
+    assert db.execute('SELECT open_interest FROM quant_app.market_quotes').fetchone()[0] == '0'
