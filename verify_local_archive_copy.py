@@ -123,28 +123,37 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
-def _index(folder: Path) -> tuple[dict[str, list[Path]], dict[str, list[Path]], list[str]]:
-    """Archive files physically under FOLDER. Links (symlinks, junctions, or anything resolving
-    outside FOLDER) are never counted as part of the copy; they are recorded as failures."""
+ARCHIVE_NAME = re.compile(r'^(?P<table>.+)-(?P<batch>[0-9a-f]{64})\.(?P<kind>manifest\.json|parquet)$')
+
+
+def _index(folder: Path) -> tuple[dict[str, list[Path]], dict[str, list[Path]], list[str], int]:
+    """Archive files physically under FOLDER, named `<table>-<batch>.manifest.json|.parquet` for a
+    supported table. Other files (other archive kinds sharing the Drive folder) are counted and
+    ignored. Links (symlinks, junctions, or anything resolving outside FOLDER) and malformed names
+    claiming one of our tables are never counted as part of the copy; they are returned as problems."""
     root = folder.resolve()
     manifests: dict[str, list[Path]] = {}
     data: dict[str, list[Path]] = {}
-    links: list[str] = []
+    problems: list[str] = []
+    others = 0
     for path in sorted(folder.rglob('*')):
-        if not path.name.endswith(('.manifest.json', '.parquet')):
+        match = ARCHIVE_NAME.match(path.name)
+        if not match or match.group('table') not in SPECS:
             if path.is_symlink() or getattr(path, 'is_junction', lambda: False)():
-                links.append(path.name)
+                problems.append(f'{path.name[:40]}:LINK_NOT_ALLOWED')
+            elif path.name.endswith(('.manifest.json', '.parquet')) and any(
+                    path.name.startswith(table + '-') for table in SPECS):
+                # Claims one of our tables but is not a valid archive name.
+                problems.append(f'{path.name[:40]}:MALFORMED_ARCHIVE_NAME')
+            elif path.is_file():
+                others += 1
             continue
         if path.is_symlink() or not _inside(path, root) or not path.is_file():
-            links.append(path.name)
+            problems.append(f'{path.name[:40]}:LINK_NOT_ALLOWED')
             continue
-        target = manifests if path.name.endswith('.manifest.json') else data
+        target = manifests if match.group('kind') == 'manifest.json' else data
         target.setdefault(path.name, []).append(path)
-    return manifests, data, links
-
-
-def _link_failures(links: list[str]) -> list[str]:
-    return [f'{name[:40]}:LINK_NOT_ALLOWED' for name in links]
+    return manifests, data, problems, others
 
 
 def _check_batch(entry: dict[str, Any], manifests, data) -> str | None:
@@ -174,7 +183,7 @@ def _check_batch(entry: dict[str, Any], manifests, data) -> str | None:
 
 
 def verify_against_inventory(folder: Path, batches: list[dict[str, Any]]) -> dict[str, Any]:
-    manifests, data, links = _index(folder)
+    manifests, data, problems, others = _index(folder)
     failures, matched, missing = [], 0, 0
     expected_names = set()
     for entry in batches:
@@ -189,14 +198,14 @@ def verify_against_inventory(folder: Path, batches: list[dict[str, Any]]) -> dic
     extra_files = (set(manifests) | set(data)) - expected_names
     extras = sorted({name.removesuffix('.manifest.json').removesuffix('.parquet') for name in extra_files})
     failures.extend(f'{stem[:40]}:NOT_IN_INVENTORY' for stem in extras)
-    failures.extend(_link_failures(links))
+    failures.extend(problems)
     return {'inventory_batches': len(batches), 'matched': matched, 'missing': missing,
-            'not_in_inventory': len(extras), 'failures': failures}
+            'not_in_inventory': len(extras), 'other_files': others, 'failures': failures}
 
 
 def self_check(folder: Path) -> dict[str, Any]:
     """Each manifest is the exact bytes its own fields imply and its data file matches it."""
-    manifests, data, links = _index(folder)
+    manifests, data, problems, others = _index(folder)
     failures, consistent, entries = [], 0, []
     for name, paths in manifests.items():
         label = name[:40]
@@ -223,11 +232,11 @@ def self_check(folder: Path) -> dict[str, Any]:
     used = {name.removesuffix('.manifest.json') + '.parquet' for name in manifests}
     orphans = sorted(set(data) - used)
     failures.extend(f'{name[:40]}:DATA_WITHOUT_MANIFEST' for name in orphans)
-    failures.extend(_link_failures(links))
+    failures.extend(problems)
     if not manifests:
         failures.append('EMPTY_FOLDER')
-    return {'manifests': len(manifests), 'consistent': consistent, 'failures': failures,
-            'entries': entries}
+    return {'manifests': len(manifests), 'consistent': consistent, 'other_files': others,
+            'failures': failures, 'entries': entries}
 
 
 def _per_table(entries: list[dict[str, Any]]) -> dict[str, int]:
