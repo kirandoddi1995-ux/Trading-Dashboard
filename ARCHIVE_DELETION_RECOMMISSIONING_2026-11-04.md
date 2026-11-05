@@ -100,6 +100,27 @@ Each was reproduced with a failing test first (tests/test_archive_custody_harden
     about an hour). It stays an activation gate: a full `restore-check` must pass before any
     supervised delete, and nightly deletion stays off.
 
+### Round 4 independent review of 2e96336 (ChatGPT, 5 Nov) and follow-ups
+
+Verdict: safe to keep merged as inactive code (PR #72 merged by owner as 92e156a, zero file
+difference from the reviewed head); nightly deletion stays OFF. Its independent checker caught all
+ten targeted mutations. Windows full run: 8,045 passed, 22 skipped, 2 failed — both failures were
+fixture symlink creation refused by Windows (WinError 1314) before the verifier ran. Hosted Linux:
+7,706 passed. Follow-ups closed on branch archive-followups-20261105:
+
+22. The custody full check now decodes the downloaded data bytes against the claimed batch id, table
+    and row count (`archived_rows`), so a record naming batch A but pointing at batch B's bytes is
+    refused by the check itself, not only by the production call order. Reproduced first.
+23. Link tests now require `LINK_NOT_ALLOWED` explicitly (a verifier that silently ignored links
+    would also mismatch), skip only when the OS refuses to create the link (WinError 1314), and a
+    Windows-only directory-junction test (no privilege needed) is added.
+
+Operational order agreed for any prune (owner decides each step): exact-byte capacity reading;
+non-deleting export with `custody_probe: ok` for every candidate; freeze the catalog; full
+`restore-check`; fresh fingerprint; verify the independent disk copy against that same generation;
+only then a supervised prune of exactly those preserved batches. The current delete mode cannot
+restrict itself to a verified set — that gate must exist before any prune.
+
 ## Still open (not fixed here; nightly deletion stays paused)
 
 - **Per-generation preservation.** A one-time disk copy does not protect batches uploaded later.
