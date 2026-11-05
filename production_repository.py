@@ -1082,7 +1082,10 @@ class ProductionRepository:
                 _finite_decimal(ohlc.get("high")), _finite_decimal(ohlc.get("low")),
                 _finite_decimal(previous.get("close") or ohlc.get("close")),
                 _finite_decimal(item.get("volume") or ohlc.get("volume")),
-                _finite_decimal(item.get("oi") or item.get("open_interest")), _json(dict(item)),
+                _finite_decimal(item.get("oi") or item.get("open_interest")),
+                # Preserve typed quote history and the volume trigger input. The original
+                # provider payload is intentionally not retained for new rows.
+                _json({"retention": "typed_only_v1"}),
             ))
         if not rows:
             return 0

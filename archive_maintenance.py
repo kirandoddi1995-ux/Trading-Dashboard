@@ -262,18 +262,31 @@ class ArchiveRepository:
             return conn.execute('SELECT 1 FROM quant_app.archive_manifests WHERE batch_id=%s',
                                 (batch_id,)).fetchone() is not None
 
-    def unpruned(self, before, limit):
-        """Exported-but-not-yet-pruned batches of the generation at `before`, oldest first."""
+    def preserved_candidates(self, before, limit, expected, tables):
+        """Bind the verified prefix and its candidate records to one statement snapshot."""
         with self.connection(readonly=True) as conn:
-            rows = conn.execute("""SELECT batch_id,source_table,row_count,file_sha256,drive_file_id,
-                    drive_manifest_id FROM quant_app.archive_manifests
-                WHERE verified_at <= %(before)s::timestamptz AND completed_at IS NULL
-                ORDER BY verified_at,batch_id LIMIT %(limit)s""",
-                                {'before': as_aware(before).isoformat(), 'limit': limit}).fetchall()
+            rows = conn.execute(f"""
+                WITH generation(batch_count,fingerprint) AS ({GENERATION_SQL}),
+                candidates AS (
+                    SELECT batch_id,source_table,row_count,file_sha256,drive_file_id,
+                           drive_manifest_id,verified_at
+                    FROM quant_app.archive_manifests
+                    WHERE verified_at <= %(before)s::timestamptz AND completed_at IS NULL
+                      AND source_table = ANY(%(tables)s::text[])
+                    ORDER BY verified_at,batch_id LIMIT %(limit)s
+                )
+                SELECT g.batch_count,g.fingerprint,c.batch_id,c.source_table,c.row_count,
+                       c.file_sha256,c.drive_file_id,c.drive_manifest_id
+                FROM generation g LEFT JOIN candidates c ON true
+                ORDER BY c.verified_at,c.batch_id""",
+                                {'before': as_aware(before).isoformat(), 'limit': limit,
+                                 'tables': list(tables)}).fetchall()
+        if not rows or tuple(rows[0][:2]) != expected:
+            raise ArchiveError('PRESERVED_GENERATION_MISMATCH')
         names = ('batch_id', 'source_table', 'row_count', 'file_sha256', 'drive_file_id', 'drive_manifest_id')
-        return [dict(zip(names, row)) for row in rows]
+        return [dict(zip(names, row[2:])) for row in rows if row[2] is not None]
 
-    def acknowledge(self, manifest, texts, cutoff, delete, custody=None):
+    def acknowledge(self, manifest, texts, cutoff, delete, custody=None, *, require_complete=False):
         """Verification records are atomic; deletion needs an active restore proof.
 
         A deleting call must also pass `custody`, a callable that re-confirms this batch's Drive
@@ -354,6 +367,8 @@ class ArchiveRepository:
                 WHERE {key_match} AND to_jsonb(s)=v.original AND {condition}
                   AND to_jsonb(jsonb_populate_record(NULL::{RELATIONS[table]}, v.original))=v.original
                 RETURNING 1) SELECT count(*) FROM removed""", {'cutoff': cutoff}).fetchone()[0]
+            if require_complete and count != len(texts):
+                raise ArchiveError('SOURCE_CHANGED_OR_ALREADY_REMOVED_REVIEW_REQUIRED')
             conn.execute("""UPDATE quant_app.archive_manifests
                 SET completed_at=clock_timestamp(),
                     deleted_count=GREATEST(COALESCE(deleted_count,0),%s) WHERE batch_id=%s""",
@@ -440,7 +455,7 @@ def export_batches(repo, drive, table, cutoff, limit, max_batches, report=None):
 
 
 def prune_preserved(repo, drive, proof, *, before, expected_batches, expected_sha256, today, limit,
-                    report=None, nav_cutoff=None):
+                    report=None, nav_cutoff=None, tables=tuple(SPECS)):
     """Delete source rows only for batches of an independently preserved generation.
 
     The generation is every catalog batch recorded at or before `before`; its count and fingerprint
@@ -453,10 +468,9 @@ def prune_preserved(repo, drive, proof, *, before, expected_batches, expected_sh
             or not HEX64.fullmatch(str(expected_sha256).lower())):
         raise ArchiveError('PRESERVED_GENERATION_REQUIRED')
     require_commissioned_delete(restore_check.context_key(repo, drive))
-    if repo.generation(before) != (expected_batches, str(expected_sha256).lower()):
-        raise ArchiveError('PRESERVED_GENERATION_MISMATCH')
+    expected = (expected_batches, str(expected_sha256).lower())
     results = []
-    for record in repo.unpruned(before, limit):
+    for record in repo.preserved_candidates(before, limit, expected, tables):
         restore_check.recheck_presence(repo, drive, proof)
         table = record['source_table']
         manifest = {'batch_id': record['batch_id'], 'source_table': table, 'rows': record['row_count'],
@@ -471,7 +485,8 @@ def prune_preserved(repo, drive, proof, *, before, expected_batches, expected_sh
         custody = restore_check.CustodyCheck(repo, drive, manifest)
         # A one-time NAV cutoff used at export applies to NAV batches only, as in delete mode.
         cutoff = cutoff_for(table, today, nav_cutoff if table == 'mf_nav' else None)
-        deleted = repo.acknowledge(manifest, texts, cutoff, True, custody=custody)
+        deleted = repo.acknowledge(manifest, texts, cutoff, True, custody=custody,
+                                   require_complete=True)
         result = {'table': table, 'batch_id': record['batch_id'], 'rows': len(texts), 'deleted': deleted}
         results.append(result)
         if report:
@@ -546,7 +561,7 @@ def main(argv=None):
             pruned = prune_preserved(
                 repo, drive, proof, before=before, expected_batches=args.preserved_batches,
                 expected_sha256=args.preserved_sha256, today=today, limit=args.max_batches,
-                nav_cutoff=args.nav_cutoff,
+                nav_cutoff=args.nav_cutoff, tables=tables,
                 report=lambda item: print('ARCHIVE_PRUNE ' + json.dumps(item), flush=True))
             print(json.dumps({'status': 'SUCCESS', 'pruned_batches': len(pruned),
                               'deleted_rows': sum(item['deleted'] for item in pruned)}), flush=True)

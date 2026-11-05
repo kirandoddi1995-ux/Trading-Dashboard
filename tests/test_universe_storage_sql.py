@@ -1,4 +1,4 @@
-"""Real universe writer SQL in disposable PostgreSQL; no hosted data or secrets."""
+"""Universe and quote writer SQL in a disposable engine; no hosted data or secrets."""
 import ast
 import json
 from contextlib import contextmanager
@@ -60,6 +60,32 @@ def repository(monkeypatch):
 
 def records(count=2):
     return [{'instrument_key': f'NSE_EQ|{i}', 'trading_symbol': f'S{i}', 'name': 'fixture'} for i in range(count)]
+
+
+def test_compact_quote_retains_typed_fields_and_daily_volume(repository):
+    repo, db = repository
+    columns = ','.join(f'{name} {kind}' for name, kind in SPECS['market_quotes'].items())
+    db.execute(f'CREATE TABLE quant_app.market_quotes ({columns}, PRIMARY KEY(instrument_key,observed_at))')
+    db.execute("""CREATE TABLE quant_app.market_daily_volumes(
+        instrument_key text, trade_date date, max_captured_volume numeric,
+        PRIMARY KEY(instrument_key,trade_date))""")
+    migration = (Path(__file__).resolve().parents[1] / 'sql/drive_archive_draft.sql').read_text()
+    function = migration[migration.index('CREATE OR REPLACE FUNCTION quant_app.capture_daily_volume()'):
+                         migration.index('REVOKE ALL ON FUNCTION quant_app.capture_daily_volume()')]
+    trigger = migration[migration.index('CREATE TRIGGER quote_daily_volume_insert'):
+                        migration.index('\n\nINSERT INTO quant_app.market_daily_volumes')]
+    db.send({'script': function + trigger})
+    observed = dt.datetime(2026, 10, 5, 9, tzinfo=dt.timezone.utc)
+    quote = {'instrument_key': 'NSE_EQ|1', 'last_price': 11, 'volume': 20, 'oi': 2,
+             'ohlc': {'open': 9, 'high': 12, 'low': 8, 'close': 10},
+             'unread_payload': 'x' * 2000}
+    assert repo.archive_quotes([quote], observed_at=observed) == 1
+    assert repo.archive_quotes([dict(quote, volume=30)], observed_at=observed + dt.timedelta(hours=1)) == 1
+    assert db.execute("""SELECT last_price,open,high,low,previous_close,volume,open_interest,
+        raw->>'retention' AS retention, raw ? 'unread_payload' AS has_payload
+        FROM quant_app.market_quotes ORDER BY observed_at LIMIT 1""").fetchone() == (
+        '11', '9', '12', '8', '10', '20', '2', 'typed_only_v1', False)
+    assert db.execute('SELECT max_captured_volume FROM quant_app.market_daily_volumes').fetchone()[0] == '30'
 
 
 def test_repeat_is_storage_noop_preserves_receipt(repository, monkeypatch):
