@@ -21,6 +21,13 @@
         "successor_raw_sha256": "26bfa344f125ac0989bd0d260fb98c0cac2e95ec7bba47c3b50cf180b6d5fa02"
       }
     ],
+    "scheduled_collector.py": [
+      {
+        "predecessor_legacy_sha256": "6be0f30152472309f3e83378f6053ed9f1a8b09e2c10be4aecef5343d7554dde",
+        "reason": "SCANNER_STORAGE_2026-11-06: scheduled Stage-1 scanner rows point to the ledger batch",
+        "successor_raw_sha256": "cda09c606cd8dea62aa4f9198c832eb0a9f00fcfc6961f2fc834a73b688322a7"
+      }
+    ],
     "tests/test_archive_commissioning_hold.py": [
       {
         "predecessor_legacy_sha256": "8ea61e76bd842279790dd8dcb0db10d20f8c7ffbeffa4e2fc7e3f46cf5be13c7",

@@ -668,3 +668,77 @@ def test_close_run_keeps_committed_stages_when_one_global_quote_returns_400(monk
         for args, _ in repo.quality_events
     )
     assert len(client.calls) == 1
+
+
+def _stage1_run(monkeypatch, repo, quotes_by_key, universe):
+    now = dt.datetime(2026, 9, 7, 10, 0, tzinfo=collector.IST)
+    monkeypatch.delenv("PROSPECTIVE_DATA_LICENSE_ACK", raising=False)
+    monkeypatch.setenv("SCHEDULED_STAGE1_TOP_N", "1")
+    monkeypatch.setattr(collector, "fetch_nse_universe", lambda client: universe)
+    monkeypatch.setattr(collector, "fetch_full_quotes", lambda client, token, keys: quotes_by_key(now))
+    monkeypatch.setattr(
+        collector, "fetch_nse_exchange_status",
+        lambda client, token: {"exchange": "NSE", "status": "NORMAL_OPEN"},
+    )
+    return collector._scheduled_stage1(repo, object(), "token", "run-1", now=now)
+
+
+def test_scheduled_scanner_rows_point_to_the_ledger_and_rebuild_exactly(monkeypatch):
+    universe = [{"instrument_key": f"NSE_EQ|{s}", "trading_symbol": s} for s in ("AAA", "BBB", "CCC")]
+    full = {}
+    original = collector.stage1_prefilter
+
+    def spy(*args, **kwargs):
+        selected, stats = original(*args, **kwargs)
+        for item in stats["_evidence"]:
+            full[item["instrument_key"]] = dict(item["features"])
+        return selected, stats
+
+    class OrderedRepository(MemoryRepository):
+        def upsert_scanner_observations(self, rows):
+            assert any(e["event_type"] == "DECISION_BATCH_EVALUATED" for e in self.ledger), \
+                "the ledger batch must be durable before compact scanner rows"
+            return super().upsert_scanner_observations(rows)
+
+    monkeypatch.setattr(collector, "stage1_prefilter", spy)
+    repo = OrderedRepository()
+    result = _stage1_run(monkeypatch, repo, lambda now: {
+        "NSE_EQ|AAA": quote(105, 100, 1800, now.astimezone(UTC)),
+        "NSE_EQ|BBB": quote(98, 100, 1200, now.astimezone(UTC)),
+        "NSE_EQ|CCC": quote(101, 100, 900, now.astimezone(UTC)),
+    }, universe)
+    assert result["status"] == "SUCCESS" and len(repo.scanner) == 3
+    batch = next(e for e in repo.ledger if e["event_type"] == "DECISION_BATCH_EVALUATED")
+    assert batch["aggregate_id"] == "scan:run-1"
+    by_id = {c["decision_id"]: c for c in batch["payload"]["candidates"]}
+    for row in repo.scanner:
+        assert row["features"] == {"scan_run_id": "run-1", "retention": "ledger_v1"}
+        candidate = by_id[row["observation_id"]]
+        rebuilt = {**candidate["inputs_used"], "scan_run_id": batch["payload"]["scan_run_id"],
+                   "shadow_action": candidate["action"]}
+        expected = {**full[row["instrument_key"]], "scan_run_id": "run-1",
+                    "shadow_action": "Watch" if row["stage1_pass"] else "No Trade"}
+        assert json.dumps(rebuilt, sort_keys=True) == json.dumps(expected, sort_keys=True)
+
+
+def test_quality_rejected_candidates_keep_full_scanner_features(monkeypatch):
+    universe = [{"instrument_key": "NSE_EQ|AAA", "trading_symbol": "AAA"},
+                {"instrument_key": "NSE_EQ|BBB", "trading_symbol": "BBB"}]
+    original = collector.stage1_prefilter
+
+    def poisoned(*args, **kwargs):
+        selected, stats = original(*args, **kwargs)
+        for item in stats["_evidence"]:
+            if item["trading_symbol"] == "BBB":
+                item["features"] = {**item["features"], "range_pct": float("inf")}
+        return selected, stats
+
+    monkeypatch.setattr(collector, "stage1_prefilter", poisoned)
+    repo = MemoryRepository()
+    _stage1_run(monkeypatch, repo, lambda now: {
+        "NSE_EQ|AAA": quote(105, 100, 1800, now.astimezone(UTC)),
+        "NSE_EQ|BBB": quote(98, 100, 1200, now.astimezone(UTC)),
+    }, universe)
+    rows = {row["trading_symbol"]: row["features"] for row in repo.scanner}
+    assert rows["AAA"] == {"scan_run_id": "run-1", "retention": "ledger_v1"}
+    assert rows["BBB"]["range_pct"] == float("inf") and rows["BBB"]["scan_run_id"] == "run-1"
