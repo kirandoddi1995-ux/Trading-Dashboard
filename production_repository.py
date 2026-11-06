@@ -145,6 +145,47 @@ def _json(value):
     return Jsonb(clean) if Jsonb is not None else clean
 
 
+# Canonical universe rows keep their typed columns; the provider payload stays in
+# universe_membership_versions (same date + header payload_hash = snapshot_id).
+UNIVERSE_CANONICAL_RAW = {"retention": "versions_v1"}
+_PROVIDER_INTEGER_KEYS = ("lot_size",)
+
+
+def _missing(value) -> bool:
+    if value is None or type(value).__name__ == "NaTType":
+        return True
+    try:
+        return isinstance(value, Real) and not math.isfinite(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _provider_universe_record(item: Mapping) -> Mapping:
+    """Return the provider's BOD record for an app DataFrame row; other rows pass unchanged.
+
+    The app reads the same Upstox BOD JSON into pandas, which adds every column of
+    the whole file as NaN/NaT, copies trading_symbol to tradingsymbol, moves the
+    provider exchange into source_exchange and turns integer lot sizes into floats.
+    Archived as-is, that shape stored a second full universe version for the same
+    day. Only rows carrying the app's source_exchange marker are reshaped, so the
+    collector's provider rows keep their exact bytes and payload hash.
+    """
+    if "source_exchange" not in item:
+        return item
+    restored = {key: value for key, value in item.items()
+                if key != "source_exchange" and not _missing(value)}
+    if restored.get("tradingsymbol") == restored.get("trading_symbol"):
+        restored.pop("tradingsymbol", None)
+    restored.pop("exchange", None)
+    if not _missing(item.get("source_exchange")):
+        restored["exchange"] = item["source_exchange"]
+    for key in _PROVIDER_INTEGER_KEYS:
+        value = restored.get(key)
+        if isinstance(value, float) and value.is_integer():
+            restored[key] = int(value)
+    return restored
+
+
 def _finite_decimal(value):
     if value is None or value == "":
         return None
@@ -844,6 +885,7 @@ class ProductionRepository:
         self.ensure_schema()
         rows = []
         for item in records:
+            item = _provider_universe_record(item)
             key = str(item.get("instrument_key") or "").strip()
             symbol = str(item.get("trading_symbol") or item.get("tradingsymbol") or "").strip().upper()
             if not key or not symbol:
@@ -905,7 +947,7 @@ class ProductionRepository:
                     f"INSERT INTO {SCHEMA}.universe_membership VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     [(snapshot_date, r["instrument_key"], r["trading_symbol"], r["isin"], r["name"],
                       r["exchange"], r["segment"], r["instrument_type"], r["security_type"], r["sector"],
-                      source, observed_at, _json(r["raw"])) for r in rows],
+                      source, observed_at, _json(UNIVERSE_CANONICAL_RAW)) for r in rows],
                 )
             conn.commit()
         return {
