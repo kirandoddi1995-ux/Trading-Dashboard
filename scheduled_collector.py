@@ -91,6 +91,11 @@ def is_us_close_capture_window(now=None) -> bool:
     return current.weekday() in {1, 2, 3, 4, 5} and dt.time(3, 0) <= current.time() <= dt.time(5, 0)
 
 
+# Scheduled Stage-1 scanner rows point to the DECISION_BATCH_EVALUATED ledger event
+# (aggregate "scan:<scan_run_id>") for their inputs_used and shadow action.
+SCANNER_FEATURES_RETENTION = "ledger_v1"
+
+
 def _runtime_hashes() -> tuple[str, str, str]:
     root = Path(__file__).resolve().parent
     code = hashlib.sha256()
@@ -282,7 +287,6 @@ def _scheduled_stage1(repo, client, token: str, run_id: str, *, now=None) -> dic
         })
     if len(records) != len(universe):
         raise RuntimeError("Stage-1 evidence did not cover the complete PIT universe")
-    stored = repo.upsert_scanner_observations(records)
     code_hash, config_hash, policy_hash = _runtime_hashes()
     decision_batch = DecisionEvidenceSpine(
         repo.append_evidence_event, repo,
@@ -308,6 +312,19 @@ def _scheduled_stage1(repo, client, token: str, run_id: str, *, now=None) -> dic
         config_hash=config_hash,
         policy_hash=policy_hash,
     )
+    # The immutable batch above now holds every candidate's inputs and action
+    # (decision_id = observation_id), so scanner rows keep their typed columns plus
+    # the run id that finds that batch. Rows the batch rejected for data quality
+    # keep their full features. Writing the batch first means a failed write can
+    # never leave a scanner row whose features exist nowhere.
+    in_ledger = {
+        row["decision_id"] for row in decision_batch["record"]["candidates"]
+        if "data_quality" not in row
+    }
+    for record in records:
+        if record["observation_id"] in in_ledger:
+            record["features"] = {"scan_run_id": run_id, "retention": SCANNER_FEATURES_RETENTION}
+    stored = repo.upsert_scanner_observations(records)
     quality_failures = list(decision_batch.get("quality_failures") or [])
     if quality_failures:
         try:
