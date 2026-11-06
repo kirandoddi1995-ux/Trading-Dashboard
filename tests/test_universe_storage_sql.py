@@ -1,5 +1,6 @@
 """Universe and quote writer SQL in a disposable engine; no hosted data or secrets."""
 import ast
+import hashlib
 import json
 from contextlib import contextmanager
 import datetime as dt
@@ -155,3 +156,91 @@ def test_compact_quote_keeps_a_zero_open_interest(repository):
     quote = {'instrument_key': 'NSE_EQ|1', 'last_price': 11, 'oi': 0, 'ohlc': {'close': 10}}
     assert repo.archive_quotes([quote], observed_at=observed) == 1
     assert db.execute('SELECT open_interest FROM quant_app.market_quotes').fetchone()[0] == '0'
+
+
+def provider_rows():
+    """Collector shape: Upstox BOD equity rows (lot_size int; some keys absent)."""
+    return [
+        {'isin': 'INE467B01029', 'name': 'TATA CONSULTANCY SERV LT', 'segment': 'NSE_EQ', 'exchange': 'NSE',
+         'lot_size': 1, 'tick_size': 10.0, 'short_name': 'TCS', 'cas_eligible': True, 'security_type': 'NORMAL',
+         'exchange_token': '11536', 'instrument_key': 'NSE_EQ|INE467B01029', 'qty_multiplier': 1.0,
+         'trading_symbol': 'TCS', 'freeze_quantity': 100000.0, 'instrument_type': 'EQ'},
+        {'isin': 'INE002A01018', 'name': 'RELIANCE INDUSTRIES LTD', 'segment': 'NSE_EQ', 'exchange': 'NSE',
+         'lot_size': 1, 'tick_size': 10.0, 'security_type': 'NORMAL', 'exchange_token': '2885',
+         'instrument_key': 'NSE_EQ|INE002A01018', 'qty_multiplier': 1.0, 'trading_symbol': 'RELIANCE',
+         'freeze_quantity': 100000.0, 'instrument_type': 'EQ'},
+    ]
+
+
+def app_frame_rows():
+    """The app's shape: the same BOD file through pandas, as app.py reshapes it."""
+    pd = pytest.importorskip('pandas')
+    future = {'segment': 'NSE_FO', 'exchange': 'NSE', 'instrument_key': 'NSE_FO|1', 'trading_symbol': 'X FUT',
+              'expiry': 1795000000000, 'weekly': False, 'lot_size': 75, 'strike_price': 0.0,
+              'underlying_key': 'NSE_INDEX|Nifty 50', 'minimum_lot': 75, 'instrument_type': 'FUT'}
+    index = {'segment': 'NSE_INDEX', 'exchange': 'NSE', 'instrument_key': 'NSE_INDEX|Nifty 50',
+             'trading_symbol': 'NIFTY', 'instrument_type': 'INDEX'}  # no lot_size: the column becomes float
+    df = pd.DataFrame(provider_rows() + [future, index])
+    df['tradingsymbol'] = df['trading_symbol']
+    df['source_exchange'] = df.get('exchange')
+    df['exchange'] = df['segment']
+    numeric_expiry = pd.to_numeric(df['expiry'], errors='coerce')
+    df['expiry'] = pd.to_datetime(numeric_expiry, unit='ms', errors='coerce')
+    equities = df[(df['segment'] == 'NSE_EQ') & (df['instrument_type'] == 'EQ')]
+    return equities.to_dict('records')
+
+
+def test_app_frame_rows_are_the_same_universe_version(repository):
+    repo, db = repository
+    shaped = app_frame_rows()
+    assert shaped[0]['lot_size'] == 1.0 and isinstance(shaped[0]['lot_size'], float)
+    assert shaped[0]['exchange'] == 'NSE_EQ' and 'tradingsymbol' in shaped[0]
+    first = repo.archive_universe(provider_rows(), '2026-11-06', minimum_complete=2)
+    second = repo.archive_universe(shaped, '2026-11-06', minimum_complete=2)
+    assert second['snapshot_id'] == first['snapshot_id']
+    assert not second['version_created'] and not second['canonical_changed']
+    assert db.execute('SELECT count(*) FROM quant_app.universe_membership_versions').fetchone()[0] == 2
+    # The other order: app first, then the collector, is equally a single version.
+    other = repo.archive_universe(shaped, '2026-11-07', minimum_complete=2)
+    collector = repo.archive_universe(provider_rows(), '2026-11-07', minimum_complete=2)
+    assert other['version_created'] and not collector['version_created']
+    assert collector['snapshot_id'] == other['snapshot_id']
+    stored = {row[0]: row[1] for row in db.execute(
+        "SELECT instrument_key, raw FROM quant_app.universe_membership_versions WHERE snapshot_id=%s",
+        (other['snapshot_id'],)).fetchall()}
+    expected = {row['instrument_key']: row for row in provider_rows()}
+    assert {k: json.loads(v) if isinstance(v, str) else v for k, v in stored.items()} == expected
+
+
+def test_provider_rows_pass_through_unchanged():
+    from production_repository import _provider_universe_record
+    for row in provider_rows():
+        assert _provider_universe_record(row) is row
+
+
+def test_canonical_rows_point_to_the_exact_version_payload(repository):
+    repo, db = repository
+    result = repo.archive_universe(provider_rows(), '2026-11-06', minimum_complete=2)
+    canonical = db.execute(
+        "SELECT DISTINCT raw::text FROM quant_app.universe_membership WHERE snapshot_date='2026-11-06'"
+    ).fetchall()
+    assert [json.loads(row[0]) for row in canonical] == [{'retention': 'versions_v1'}]
+    # Lossless: date + header payload_hash identify the version holding the provider rows.
+    rebuilt = db.execute("""
+        SELECT m.instrument_key, v.raw::text FROM quant_app.universe_membership m
+        JOIN quant_app.universe_snapshots h USING (snapshot_date)
+        JOIN quant_app.universe_snapshot_versions sv
+          ON sv.snapshot_date=h.snapshot_date AND sv.payload_hash=h.payload_hash
+        JOIN quant_app.universe_membership_versions v
+          ON v.snapshot_id=sv.snapshot_id AND v.instrument_key=m.instrument_key
+        WHERE m.snapshot_date='2026-11-06' ORDER BY 1""").fetchall()
+    assert {key: json.loads(raw) for key, raw in rebuilt} == {r['instrument_key']: r for r in provider_rows()}
+    assert result['snapshot_id'] == hashlib.sha256(f"2026-11-06|{result['payload_hash']}".encode()).hexdigest()
+
+
+def test_app_row_without_provider_exchange_drops_the_segment_copy():
+    from production_repository import _provider_universe_record
+    row = {'instrument_key': 'NSE_EQ|X', 'trading_symbol': 'X', 'tradingsymbol': 'X',
+           'segment': 'NSE_EQ', 'exchange': 'NSE_EQ', 'source_exchange': float('nan'), 'weekly': None}
+    assert _provider_universe_record(row) == {'instrument_key': 'NSE_EQ|X', 'trading_symbol': 'X',
+                                              'segment': 'NSE_EQ'}
