@@ -11,7 +11,7 @@
       {
         "predecessor_legacy_sha256": "7715add8c1c9893a875dc54db75110aa3be5d17f9b6f6ae6aec20bbce6baf46f",
         "reason": "ROLLING_WINDOW_2026-11-07.md",
-        "successor_raw_sha256": "c24c55d06166f934114bb8e69eccb87ea2715cb5878935a2efe3be2a6cec0dc1"
+        "successor_raw_sha256": "92db9deefb42895663c26136bfd29ee9464778e4ae3d8179660b04c72401401a"
       }
     ],
     "drive_archive.py": [

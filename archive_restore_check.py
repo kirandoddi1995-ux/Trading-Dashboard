@@ -97,10 +97,10 @@ class RestoreProof:
 def load_manifests(repo) -> list[dict[str, Any]]:
     with repo.connection(readonly=True) as conn:
         rows = conn.execute("""SELECT batch_id,source_table,row_count,file_sha256,drive_file_id,
-                drive_manifest_id,verified_at FROM quant_app.archive_manifests
+                drive_manifest_id,verified_at,completed_at FROM quant_app.archive_manifests
                 ORDER BY verified_at,batch_id""").fetchall()
     names = ('batch_id', 'source_table', 'row_count', 'file_sha256', 'drive_file_id',
-             'drive_manifest_id', 'verified_at')
+             'drive_manifest_id', 'verified_at', 'completed_at')
     return [dict(zip(names, row)) for row in rows]
 
 
@@ -199,9 +199,11 @@ def _aware(value: Any) -> dt.datetime:
 def select_deep(manifests: list[dict[str, Any]], today: dt.date, everything: bool,
                 deep_after: dt.datetime | None = None) -> list[dict[str, Any]]:
     if deep_after is not None:
-        # Incremental: every batch recorded after the previous verified generation. Older batches were
-        # deep-checked by an earlier proof; they still get presence and exact manifest bytes here.
-        return [m for m in manifests if _aware(m['verified_at']) > _aware(deep_after)]
+        # Incremental: every batch recorded after the previous generation, plus every batch not yet
+        # pruned (a time-bounded prune may leave some of an older generation pending). Pruned older
+        # batches were deep-checked by an earlier proof; they still get presence and manifest bytes.
+        return [m for m in manifests
+                if m.get('completed_at') is None or _aware(m['verified_at']) > _aware(deep_after)]
     if everything:
         return list(manifests)
     recent = dt.datetime.combine(today - dt.timedelta(days=DEEP_RECENT_DAYS), dt.time(), dt.timezone.utc)

@@ -146,19 +146,29 @@ def _activate(proof):
 
 
 @needs_sql
-def test_incremental_proof_deep_checks_only_new_batches_and_scopes_the_prune(pg):
-    _nav(pg, ('2026-08-01', '2026-08-02', '2026-08-03', '2026-08-04'))
+def test_incremental_proof_deep_checks_new_and_unpruned_batches_only(pg):
+    _nav(pg, ('2026-08-01', '2026-08-02', '2026-08-03', '2026-08-04', '2026-08-05'))
     pg.execute('SET ROLE quant_archive_worker')
     repo, drive = ArchiveRepository('postgres://test-only'), ListedDrive()
-    # An older generation, already proven by an earlier cycle; one batch was left unpruned.
-    maintenance.export_batches(repo, drive, 'mf_nav', CUTOFF, 1, 1)
+    # An earlier cycle: two batches, of which a time-bounded prune pruned only the first.
+    maintenance.export_batches(repo, drive, 'mf_nav', CUTOFF, 1, 2)
     previous = repo.database_now()
-    maintenance.export_batches(repo, drive, 'mf_nav', CUTOFF, 1, 10)  # two new batches
+    count, fingerprint = repo.generation(previous)
+    proof = restore_check.prove(repo, drive, today=TODAY, everything=True)
+    try:
+        _activate(proof)
+        assert len(maintenance.prune_preserved(repo, drive, proof, before=previous, expected_batches=count,
+                                               expected_sha256=fingerprint, today=TODAY, limit=1)) == 1
+    finally:
+        maintenance._ACTIVE_PROOF = None
+    # This cycle: two new batches, proven after the previous generation.
+    maintenance.export_batches(repo, drive, 'mf_nav', CUTOFF, 1, 10)
     before = repo.database_now()
     count, fingerprint = repo.generation(before)
     proof = restore_check.prove(repo, drive, today=TODAY, everything=True, deep_after=previous)
-    assert proof.valid_now() and proof.manifests == 3 and proof.presence_verified == 3
-    assert proof.deep_batches == 2 and len(proof.deep_ids) == 2
+    assert proof.valid_now() and proof.manifests == 4 and proof.presence_verified == 4
+    # The pruned batch is not deep-checked again; the stranded pending one is.
+    assert proof.deep_batches == 3 and len(proof.deep_ids) == 3
     assert proof.summary()['deep_after'] == previous.isoformat()
     try:
         _activate(proof)
@@ -166,10 +176,9 @@ def test_incremental_proof_deep_checks_only_new_batches_and_scopes_the_prune(pg)
                                              expected_sha256=fingerprint, today=TODAY, limit=50)
     finally:
         maintenance._ACTIVE_PROOF = None
-    # Only the two deep-checked batches; the older one stays pending for a later proof.
-    assert [r['deleted'] for r in pruned] == [1, 1]
-    assert _count(pg, 'SELECT count(*) FROM quant_app.archive_manifests WHERE completed_at IS NULL') == 1
-    assert _count(pg, "SELECT count(*) FROM quant_app.mf_nav WHERE nav_date='2026-08-01'") == 1
+    assert [r['deleted'] for r in pruned] == [1, 1, 1]
+    assert _count(pg, 'SELECT count(*) FROM quant_app.archive_manifests WHERE completed_at IS NULL') == 0
+    assert [r[0] for r in pg.execute('SELECT nav_date::text FROM quant_app.mf_nav').fetchall()] == ['2026-08-05']
 
 
 @needs_sql

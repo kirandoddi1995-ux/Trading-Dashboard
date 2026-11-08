@@ -29,9 +29,15 @@ verified custody. Every step stays owner-triggered (`workflow_dispatch`); nightl
 2. **Incremental proof** (`--proven-after T0`, workflow input `proven_after`).
    - Presence, Drive checksum and exact manifest bytes for EVERY batch, as before.
    - Deep restore, insert rehearsal and the cross-batch key check only for batches recorded after T0
-     (plus any batch Drive reports no checksum for).
-   - The proof carries the ids it deep-checked. `prune-preserved` takes candidates only from batches
-     recorded after T0 and refuses any candidate outside those ids (`BATCH_NOT_DEEP_PROVEN`).
+     and for every batch not yet pruned (plus any batch Drive reports no checksum for). Including
+     unpruned batches means a time-bounded prune never strands a pending batch (CodeAnt, PR #78).
+   - The proof carries the ids it deep-checked; `prune-preserved` refuses any candidate outside them
+     (`BATCH_NOT_DEEP_PROVEN`).
+   - Accepted limit: the cross-batch key check compares the deep-checked batches with each other, not
+     with older pruned batches (their rows are gone from Supabase; checking them means downloading the
+     whole archive). A key archived twice with different content does not lose data on prune (both
+     versions are on Drive); it matters only for which version a restore keeps. A full `restore-check`
+     (blank `proven_after`, about 2 hours) catches it; run one monthly.
    - T0 = the previous cycle's `preserved_before`. First cycle: `2026-11-05T00:00:00+00:00` (restore-check
      #96 deep-checked all 956 batches; none were recorded after 4 Nov 14:29 UTC).
 3. **Time-bounded prune** (`--max-minutes`, workflow input `max_minutes`, default 150, at most 170).

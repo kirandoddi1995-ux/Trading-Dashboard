@@ -316,10 +316,8 @@ class ArchiveRepository:
             return conn.execute('SELECT 1 FROM quant_app.archive_manifests WHERE batch_id=%s',
                                 (batch_id,)).fetchone() is not None
 
-    def preserved_candidates(self, before, limit, expected, tables, after=None):
-        """Bind the verified prefix and its candidate records to one statement snapshot.
-
-        `after` (an incremental proof's scope) limits candidates to batches recorded after it."""
+    def preserved_candidates(self, before, limit, expected, tables):
+        """Bind the verified prefix and its candidate records to one statement snapshot."""
         tables = [table for table in tables if table not in APPEND_ONLY]
         with self.connection(readonly=True) as conn:
             rows = conn.execute(f"""
@@ -330,7 +328,6 @@ class ArchiveRepository:
                     FROM quant_app.archive_manifests
                     WHERE verified_at <= %(before)s::timestamptz AND completed_at IS NULL
                       AND source_table = ANY(%(tables)s::text[])
-                      AND (%(after)s::timestamptz IS NULL OR verified_at > %(after)s::timestamptz)
                     ORDER BY verified_at,batch_id LIMIT %(limit)s
                 )
                 SELECT g.batch_count,g.fingerprint,c.batch_id,c.source_table,c.row_count,
@@ -338,8 +335,7 @@ class ArchiveRepository:
                 FROM generation g LEFT JOIN candidates c ON true
                 ORDER BY c.verified_at,c.batch_id""",
                                 {'before': as_aware(before).isoformat(), 'limit': limit,
-                                 'tables': tables,
-                                 'after': None if after is None else as_aware(after).isoformat()}).fetchall()
+                                 'tables': tables}).fetchall()
         if not rows or tuple(rows[0][:2]) != expected:
             raise ArchiveError('PRESERVED_GENERATION_MISMATCH')
         names = ('batch_id', 'source_table', 'row_count', 'file_sha256', 'drive_file_id', 'drive_manifest_id')
@@ -525,8 +521,8 @@ def prune_preserved(repo, drive, proof, *, before, expected_batches, expected_sh
     archive file itself (never selected from the live table), custody is re-proved, and the normal
     deleting transaction runs. Any retained row stops the whole run for review.
 
-    An incremental proof (deep check of batches recorded after `proof.deep_after` only) scopes the
-    candidates to those batches, and a candidate the proof did not deep-check is refused. `deadline`
+    A candidate the proof did not deep-check is refused; an incremental proof deep-checks every
+    unpruned batch plus those recorded after `proof.deep_after`, so no pending batch is stranded. `deadline`
     (time.monotonic()) stops starting new batches, so a bounded run ends inside the job limit."""
     before = as_aware(before)
     if (type(expected_batches) is not int or expected_batches < 1
@@ -535,7 +531,7 @@ def prune_preserved(repo, drive, proof, *, before, expected_batches, expected_sh
     require_commissioned_delete(restore_check.context_key(repo, drive))
     expected = (expected_batches, str(expected_sha256).lower())
     results = []
-    for record in repo.preserved_candidates(before, limit, expected, tables, after=proof.deep_after):
+    for record in repo.preserved_candidates(before, limit, expected, tables):
         if proof.deep_ids is not None and record['batch_id'] not in proof.deep_ids:
             raise ArchiveError('BATCH_NOT_DEEP_PROVEN')
         if deadline is not None and time.monotonic() >= deadline:
