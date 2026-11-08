@@ -76,6 +76,10 @@ class RestoreProof:
     context: str = field(default='', repr=False)
     # Manifest file id -> sha256 of the bytes seen at proof time; later rechecks must still match.
     manifest_pins: dict = field(default_factory=dict, repr=False, compare=False)
+    # Incremental proof: only batches recorded after deep_after were deep-checked (their ids here).
+    # None for a hand-built proof; prune-preserved refuses any candidate outside deep_ids.
+    deep_ids: frozenset | None = field(default=None, repr=False, compare=False)
+    deep_after: dt.datetime | None = field(default=None, repr=False, compare=False)
 
     def valid_now(self, context: str | None = None) -> bool:
         return (self.issuer is _ISSUER and not self.failures and self.presence_verified == self.manifests
@@ -86,16 +90,17 @@ class RestoreProof:
         return {'manifests': self.manifests, 'presence_verified': self.presence_verified,
                 'deep_batches': self.deep_batches, 'deep_rows': self.deep_rows,
                 'exact_rows': self.exact_rows, 'added_column_rows': self.added_column_rows,
-                'failures': len(self.failures), 'first_failures': list(self.failures[:20])}
+                'failures': len(self.failures), 'first_failures': list(self.failures[:20]),
+                **({} if self.deep_after is None else {'deep_after': self.deep_after.isoformat()})}
 
 
 def load_manifests(repo) -> list[dict[str, Any]]:
     with repo.connection(readonly=True) as conn:
         rows = conn.execute("""SELECT batch_id,source_table,row_count,file_sha256,drive_file_id,
-                drive_manifest_id,verified_at FROM quant_app.archive_manifests
+                drive_manifest_id,verified_at,completed_at FROM quant_app.archive_manifests
                 ORDER BY verified_at,batch_id""").fetchall()
     names = ('batch_id', 'source_table', 'row_count', 'file_sha256', 'drive_file_id',
-             'drive_manifest_id', 'verified_at')
+             'drive_manifest_id', 'verified_at', 'completed_at')
     return [dict(zip(names, row)) for row in rows]
 
 
@@ -184,7 +189,21 @@ def restore_counts(repo, table: str, texts: list[str]) -> tuple[int, int, int]:
     return int(row[0]), int(row[1]), int(row[2])
 
 
-def select_deep(manifests: list[dict[str, Any]], today: dt.date, everything: bool) -> list[dict[str, Any]]:
+def _aware(value: Any) -> dt.datetime:
+    value = value if isinstance(value, dt.datetime) else dt.datetime.fromisoformat(str(value))
+    if value.tzinfo is None:
+        raise ArchiveError('NAIVE_TIMESTAMP')
+    return value
+
+
+def select_deep(manifests: list[dict[str, Any]], today: dt.date, everything: bool,
+                deep_after: dt.datetime | None = None) -> list[dict[str, Any]]:
+    if deep_after is not None:
+        # Incremental: every batch recorded after the previous generation, plus every batch not yet
+        # pruned (a time-bounded prune may leave some of an older generation pending). Pruned older
+        # batches were deep-checked by an earlier proof; they still get presence and manifest bytes.
+        return [m for m in manifests
+                if m.get('completed_at') is None or _aware(m['verified_at']) > _aware(deep_after)]
     if everything:
         return list(manifests)
     recent = dt.datetime.combine(today - dt.timedelta(days=DEEP_RECENT_DAYS), dt.time(), dt.timezone.utc)
@@ -331,7 +350,7 @@ def _row_key(table: str, text: str) -> tuple[str, str]:
 
 
 def prove(repo, drive, *, today: dt.date, everything: bool = False,
-          progress: Any = None) -> RestoreProof:
+          progress: Any = None, deep_after: dt.datetime | None = None) -> RestoreProof:
     manifests = load_manifests(repo)
     listing = list_folder(drive)
     failures: list[str] = []
@@ -360,7 +379,7 @@ def prove(repo, drive, *, today: dt.date, everything: bool = False,
             failures.append(f'{label}:{error}')
         except Exception as error:  # noqa: BLE001
             failures.append(f'{label}:{type(error).__name__}')
-    deep = select_deep(manifests, today, everything)
+    deep = select_deep(manifests, today, everything, deep_after)
     chosen = {manifest['batch_id'] for manifest in deep}
     # Anything whose bytes Drive cannot vouch for is downloaded and compared tonight.
     deep += [manifest for manifest in manifests if manifest['batch_id'] not in chosen
@@ -392,7 +411,8 @@ def prove(repo, drive, *, today: dt.date, everything: bool = False,
     return RestoreProof(manifests=len(manifests), presence_verified=present, deep_batches=len(deep),
                         deep_rows=deep_rows, exact_rows=exact, added_column_rows=added,
                         failures=tuple(failures), issuer=_ISSUER, context=context_key(repo, drive),
-                        manifest_pins=pins)
+                        manifest_pins=pins, deep_ids=frozenset(m['batch_id'] for m in deep),
+                        deep_after=None if deep_after is None else _aware(deep_after))
 
 
 def recheck_presence(repo, drive, proof: RestoreProof) -> int:

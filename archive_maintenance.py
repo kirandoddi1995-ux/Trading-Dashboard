@@ -14,13 +14,14 @@ import datetime as dt
 import json
 import os
 import re
+import time
 
 import psycopg
 
 import archive_restore_check as restore_check
 
-from drive_archive import (ArchiveError, DriveArchive, RELATIONS, SPECS, batch_identity, credentials,
-                           upload_verified)
+from drive_archive import (APPEND_ONLY, ArchiveError, DriveArchive, RELATIONS, SPECS, batch_identity,
+                           credentials, upload_verified)
 
 ROLE = 'quant_archive_worker'
 UTC = dt.timezone.utc
@@ -37,7 +38,13 @@ ORDER_COLUMNS = {
     'universe_membership_versions': ('observed_at', 'snapshot_id', 'instrument_key'),
     'scanner_observations': ('as_of_date', 'observation_id'),
     'equity_research.outcomes': ('recorded_at', 'snapshot_id'),
+    'evidence_ledger_events': ('recorded_at', 'event_id'),
 }
+# Ledger pages: one closed UTC day at most, and at most this many stored (TOAST) payload bytes, so a
+# page never changes once exported and its Parquet file stays well under MAX_BYTES (single events
+# reach ~2.6 MB of JSON, ~0.6 MB stored).
+LEDGER_PAGE_STORED_BYTES = 6 * 1024 * 1024
+PRUNE_MAX_MINUTES = 170  # the job limit is 180 minutes
 # Must stay byte-compatible with verify_local_archive_copy.INVENTORY_SET_SQL (tested).
 GENERATION_SQL = """SELECT count(*), encode(sha256(convert_to(coalesce(string_agg(
   batch_id||E'\\t'||source_table||E'\\t'||row_count::text||E'\\t'||file_sha256||E'\\t'||drive_file_id||E'\\n',
@@ -72,11 +79,13 @@ def batch_size_for(table, requested=None):
         if not 1 <= requested <= 2000:
             raise ArchiveError('INVALID_BATCH_LIMIT')
         return requested
-    return {'equity_research.outcomes': 100, 'universe_membership': 500}.get(table, 1000)
+    return {'equity_research.outcomes': 100, 'universe_membership': 500,
+            'evidence_ledger_events': 500}.get(table, 1000)
 
 
 def cutoff_for(table, today, nav_cutoff=None):
-    if table not in SPECS:
+    """Deletion retention cutoff. Append-only tables have none (see export_cutoff)."""
+    if table not in SPECS or table in APPEND_ONLY:
         raise ArchiveError('UNSUPPORTED_TABLE')
     days = 7 if table == 'equity_research.outcomes' else HOT_RETENTION_DAYS
     normal = today - dt.timedelta(days=days)
@@ -85,6 +94,22 @@ def cutoff_for(table, today, nav_cutoff=None):
     if table != 'mf_nav' or nav_cutoff >= today:
         raise ArchiveError('INVALID_ONE_TIME_NAV_CUTOFF')
     return nav_cutoff
+
+
+def export_cutoff(table, today, nav_cutoff=None):
+    """Export bound. The ledger has no retention cutoff (it is never deleted): any CLOSED UTC day."""
+    if table in APPEND_ONLY:
+        if nav_cutoff is not None:
+            raise ArchiveError('INVALID_ONE_TIME_NAV_CUTOFF')
+        return today - dt.timedelta(days=1)
+    return cutoff_for(table, today, nav_cutoff)
+
+
+def export_condition(table):
+    """Rows a run may READ for export. Append-only tables have no deletion predicate at all."""
+    if table in APPEND_ONLY:
+        return "s.recorded_at < (%(cutoff)s::date::timestamp AT TIME ZONE 'UTC')"
+    return predicate(table)
 
 
 def predicate(table):
@@ -153,7 +178,8 @@ class ArchiveRepository:
                 raise ArchiveError('ARCHIVE_ROLE_MEMBERSHIP_FORBIDDEN')
             yield conn
 
-    def check(self):
+    def check(self, readable=()):
+        """Role shape and grants. `readable`: append-only tables this run will export (SELECT needed)."""
         with self.connection(readonly=True) as conn:
             forbidden = conn.execute("""SELECT EXISTS (
                 SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -161,7 +187,8 @@ class ArchiveRepository:
                   AND c.relkind IN ('r','p','v','m')
                   AND NOT (n.nspname='quant_app' AND c.relname IN
                       ('mf_nav','market_quotes','market_daily_volumes','archive_manifests',
-                       'universe_membership_versions','universe_membership','scanner_observations')
+                       'universe_membership_versions','universe_membership','scanner_observations',
+                       'evidence_ledger_events')
                        OR n.nspname='equity_research' AND c.relname='outcomes')
                   AND (has_table_privilege(current_user,c.oid,'SELECT')
                     OR has_table_privilege(current_user,c.oid,'INSERT')
@@ -171,6 +198,16 @@ class ArchiveRepository:
             if forbidden:
                 raise ArchiveError('ARCHIVE_ROLE_TOO_BROAD')
             for table in SPECS:
+                if table in APPEND_ONLY:
+                    # Never deletable by this role; SELECT only when this run exports it.
+                    if conn.execute('SELECT has_table_privilege(current_user,%s,%s)',
+                                    (RELATIONS[table], 'DELETE,INSERT,UPDATE,TRUNCATE,TRIGGER')).fetchone()[0]:
+                        raise ArchiveError('ARCHIVE_APPEND_ONLY_WRITE_GRANT_FORBIDDEN')
+                    if table in readable and not conn.execute(
+                            'SELECT has_table_privilege(current_user,%s,%s)',
+                            (RELATIONS[table], 'SELECT')).fetchone()[0]:
+                        raise ArchiveError('ARCHIVE_LEDGER_SELECT_GRANT_MISSING')
+                    continue
                 for permission in ('SELECT', 'DELETE'):
                     if not conn.execute('SELECT has_table_privilege(current_user,%s,%s)',
                                         (RELATIONS[table], permission)).fetchone()[0]:
@@ -216,7 +253,7 @@ class ArchiveRepository:
                 raise ArchiveError('RESEARCH_ARCHIVE_GUARDS_REQUIRED')
 
     def preview(self, table, cutoff):
-        condition = predicate(table)
+        condition = export_condition(table)
         with self.connection(readonly=True) as conn:
             return conn.execute(f'SELECT count(*) FROM {RELATIONS[table]} s WHERE {condition}',
                                 {'cutoff': cutoff}).fetchone()[0]
@@ -224,7 +261,7 @@ class ArchiveRepository:
     def select(self, table, cutoff, limit, after=None):
         """Eligible rows in a stable order. `after` (the order key of the last row of the previous
         batch) pages forward without deleting, so bulk export never re-selects the same rows."""
-        condition = predicate(table)
+        condition = export_condition(table)
         columns = ORDER_COLUMNS[table]
         order = ','.join(f's.{column}' for column in columns)
         params = {'cutoff': cutoff, 'limit': limit}
@@ -236,11 +273,28 @@ class ArchiveRepository:
                               for i, column in enumerate(columns))
             page = f' AND ({order}) > ({bounds})'
             params.update({f'after{i}': value for i, value in enumerate(after)})
+        if table in APPEND_ONLY:
+            params['budget'] = LEDGER_PAGE_STORED_BYTES
+            # A page ends at the first row's UTC day and at the stored-byte budget (first row always
+            # included). Days before the cutoff are closed, so the same page is selected every run.
+            sql = f"""WITH eligible AS (
+                    SELECT s.recorded_at,s.event_id,pg_column_size(s.payload) AS size
+                    FROM {RELATIONS[table]} s WHERE {condition}{page}),
+                day AS (SELECT min(recorded_at) AS first FROM eligible),
+                ranked AS (
+                    SELECT e.event_id,row_number() OVER w AS n,sum(e.size) OVER w AS run
+                    FROM eligible e,day
+                    WHERE e.recorded_at < ((date_trunc('day',day.first AT TIME ZONE 'UTC')
+                                            + interval '1 day') AT TIME ZONE 'UTC')
+                    WINDOW w AS (ORDER BY e.recorded_at,e.event_id ROWS UNBOUNDED PRECEDING))
+                SELECT to_jsonb(s)::text FROM {RELATIONS[table]} s JOIN ranked r ON r.event_id=s.event_id
+                WHERE r.n <= %(limit)s AND (r.n = 1 OR r.run <= %(budget)s) ORDER BY r.n"""
+        else:
+            sql = (f'SELECT to_jsonb(s)::text FROM {RELATIONS[table]} s '
+                   f'WHERE {condition}{page} ORDER BY {order} LIMIT %(limit)s')
         with self.connection(readonly=True) as conn:
             # Canonical PostgreSQL JSON text, never a driver float conversion.
-            rows = conn.execute(f'SELECT to_jsonb(s)::text FROM {RELATIONS[table]} s '
-                                f'WHERE {condition}{page} ORDER BY {order} LIMIT %(limit)s',
-                                params).fetchall()
+            rows = conn.execute(sql, params).fetchall()
             return [row[0] for row in rows]
 
     def database_now(self):
@@ -264,6 +318,7 @@ class ArchiveRepository:
 
     def preserved_candidates(self, before, limit, expected, tables):
         """Bind the verified prefix and its candidate records to one statement snapshot."""
+        tables = [table for table in tables if table not in APPEND_ONLY]
         with self.connection(readonly=True) as conn:
             rows = conn.execute(f"""
                 WITH generation(batch_count,fingerprint) AS ({GENERATION_SQL}),
@@ -280,7 +335,7 @@ class ArchiveRepository:
                 FROM generation g LEFT JOIN candidates c ON true
                 ORDER BY c.verified_at,c.batch_id""",
                                 {'before': as_aware(before).isoformat(), 'limit': limit,
-                                 'tables': list(tables)}).fetchall()
+                                 'tables': tables}).fetchall()
         if not rows or tuple(rows[0][:2]) != expected:
             raise ArchiveError('PRESERVED_GENERATION_MISMATCH')
         names = ('batch_id', 'source_table', 'row_count', 'file_sha256', 'drive_file_id', 'drive_manifest_id')
@@ -296,6 +351,8 @@ class ArchiveRepository:
         A completed manifest is never reused to authorize unrelated source data.
         Unknown outcomes require read-only reconciliation, never automatic retry.
         """
+        if delete and manifest.get('source_table') in APPEND_ONLY:
+            raise ArchiveError('APPEND_ONLY_NEVER_DELETED')
         if delete:
             require_commissioned_delete()  # No active proof: denied before anything else.
             if not restore_check.valid_custody(custody, manifest):
@@ -314,7 +371,7 @@ class ArchiveRepository:
                     or len(texts) != len(rows)):
                 raise ArchiveError('ROWS_NOT_THE_VERIFIED_BATCH')
         table = manifest['source_table']
-        condition = predicate(table)
+        condition = predicate(table) if delete else None  # deletion only; export uses export_condition
         with self.connection() as conn:
             # Bounded wait: the byte check ran before this point, so a long queue must fail, not drift.
             conn.execute("SET LOCAL lock_timeout = '5s'")  # same bound as the session option; never longer
@@ -455,14 +512,18 @@ def export_batches(repo, drive, table, cutoff, limit, max_batches, report=None):
 
 
 def prune_preserved(repo, drive, proof, *, before, expected_batches, expected_sha256, today, limit,
-                    report=None, nav_cutoff=None, tables=tuple(SPECS)):
+                    report=None, nav_cutoff=None, tables=tuple(SPECS), deadline=None):
     """Delete source rows only for batches of an independently preserved generation.
 
     The generation is every catalog batch recorded at or before `before`; its count and fingerprint
     must equal what the owner verified on an independent copy, or nothing happens. Only exported,
     not-yet-pruned batches of that generation are candidates. Each batch's rows are rebuilt from the
     archive file itself (never selected from the live table), custody is re-proved, and the normal
-    deleting transaction runs. Any retained row stops the whole run for review."""
+    deleting transaction runs. Any retained row stops the whole run for review.
+
+    A candidate the proof did not deep-check is refused; an incremental proof deep-checks every
+    unpruned batch plus those recorded after `proof.deep_after`, so no pending batch is stranded. `deadline`
+    (time.monotonic()) stops starting new batches, so a bounded run ends inside the job limit."""
     before = as_aware(before)
     if (type(expected_batches) is not int or expected_batches < 1
             or not HEX64.fullmatch(str(expected_sha256).lower())):
@@ -471,6 +532,12 @@ def prune_preserved(repo, drive, proof, *, before, expected_batches, expected_sh
     expected = (expected_batches, str(expected_sha256).lower())
     results = []
     for record in repo.preserved_candidates(before, limit, expected, tables):
+        if proof.deep_ids is not None and record['batch_id'] not in proof.deep_ids:
+            raise ArchiveError('BATCH_NOT_DEEP_PROVEN')
+        if deadline is not None and time.monotonic() >= deadline:
+            if report:
+                report({'stopped': 'TIME_BOUND', 'pruned_batches': len(results)})
+            break
         restore_check.recheck_presence(repo, drive, proof)
         table = record['source_table']
         manifest = {'batch_id': record['batch_id'], 'source_table': table, 'rows': record['row_count'],
@@ -513,13 +580,26 @@ def main(argv=None):
                         help='prune-preserved: batch count of that generation verified on the copy')
     parser.add_argument('--preserved-sha256', default=None,
                         help='prune-preserved: fingerprint of that generation verified on the copy')
+    parser.add_argument('--proven-after', default=None,
+                        help='restore-check / prune-preserved: deep-check only batches recorded after this '
+                             'timestamp (with offset); use the previous cycle\'s preserved-before')
+    parser.add_argument('--max-minutes', type=int, default=None,
+                        help=f'prune-preserved: start no new batch after this many minutes (1-{PRUNE_MAX_MINUTES})')
     args = parser.parse_args(argv)
+    started = time.monotonic()
     drive = None
     try:
         tables = GROWING_TABLES if args.table == 'growing' else (args.table,)
         if args.table == 'growing' and args.mode not in ('preview', 'export', 'delete', 'prune-preserved'):
             raise ArchiveError('GROWING_PRESET_PREVIEW_EXPORT_OR_DELETE_ONLY')
         pruning = args.mode == 'prune-preserved'
+        proven_after = None
+        if args.proven_after:
+            if args.mode not in ('restore-check', 'prune-preserved'):
+                raise ArchiveError('PROVEN_AFTER_RESTORE_CHECK_OR_PRUNE_ONLY')
+            proven_after = as_aware(args.proven_after)
+        if args.max_minutes is not None and (not pruning or not 1 <= args.max_minutes <= PRUNE_MAX_MINUTES):
+            raise ArchiveError('INVALID_MAX_MINUTES')
         before = None
         if pruning:
             before = as_aware(args.preserved_before or '')
@@ -532,10 +612,12 @@ def main(argv=None):
         deleting = args.mode == 'delete'
         if (deleting or pruning) and os.environ.get('ARCHIVE_DELETE_ENABLED') != 'true':
             raise ArchiveError('DELETION_NOT_ENABLED')
+        if (deleting or pruning) and args.table in APPEND_ONLY:
+            raise ArchiveError('APPEND_ONLY_NEVER_DELETED')
         today = dt.datetime.now(UTC).date()
-        cutoffs = {table: cutoff_for(table, today, args.nav_cutoff) for table in tables}
+        cutoffs = {table: export_cutoff(table, today, args.nav_cutoff) for table in tables}
         repo = ArchiveRepository(os.environ.get('ARCHIVE_DATABASE_URL'))
-        repo.check()
+        repo.check(readable=tables if args.mode in ('preview', 'export') else ())
         for table in tables:
             print(json.dumps({'mode': args.mode, 'table': table, 'cutoff': str(cutoffs[table]),
                               'eligible': repo.preview(table, cutoffs[table])}), flush=True)
@@ -549,6 +631,7 @@ def main(argv=None):
             # Pruning always runs the full proof, including the cross-batch key-conflict check.
             proof = restore_check.prove(repo, drive, today=today,
                                         everything=args.mode in ('restore-check', 'prune-preserved'),
+                                        deep_after=proven_after,
                                         progress=lambda item: print('RESTORE_PROGRESS ' + json.dumps(item), flush=True))
             print('RESTORE_PROOF ' + json.dumps(proof.summary()), flush=True)
             if not proof.valid_now():
@@ -562,9 +645,12 @@ def main(argv=None):
                 repo, drive, proof, before=before, expected_batches=args.preserved_batches,
                 expected_sha256=args.preserved_sha256, today=today, limit=args.max_batches,
                 nav_cutoff=args.nav_cutoff, tables=tables,
+                deadline=None if args.max_minutes is None else started + 60 * args.max_minutes,
                 report=lambda item: print('ARCHIVE_PRUNE ' + json.dumps(item), flush=True))
             print(json.dumps({'status': 'SUCCESS', 'pruned_batches': len(pruned),
-                              'deleted_rows': sum(item['deleted'] for item in pruned)}), flush=True)
+                              'deleted_rows': sum(item['deleted'] for item in pruned),
+                              'eligible_unpruned': {table: repo.preview(table, cutoffs[table])
+                                                    for table in tables}}), flush=True)
             return 0
         if args.mode == 'export':
             for table in tables:
@@ -575,6 +661,12 @@ def main(argv=None):
                 print(json.dumps({'status': 'TABLE_EXPORTED', 'table': table, 'batches': len(exported),
                                   'custody_probe_not_ok': sum(item.get('custody_probe') != 'ok'
                                                               for item in exported)}), flush=True)
+            # The generation to copy and verify independently, then to give prune-preserved.
+            at = repo.database_now()
+            count, fingerprint = repo.generation(at)
+            print('ARCHIVE_GENERATION ' + json.dumps({'preserved_before': at.isoformat(),
+                                                       'preserved_batches': count,
+                                                       'preserved_sha256': fingerprint}), flush=True)
             print(json.dumps({'status': 'SUCCESS'}), flush=True)
             return 0
         for table in tables:
