@@ -49,7 +49,8 @@ def canonical(db, day, *, complete=True, observed=None):
 
 def test_only_outcomes_get_seven_days():
     today = dt.date(2026, 9, 30)
-    for table in SPECS:
+    from drive_archive import APPEND_ONLY  # never deleted: no retention cutoff (ROLLING_WINDOW_2026-11-07.md)
+    for table in set(SPECS) - APPEND_ONLY:
         assert cutoff_for(table, today) == today - dt.timedelta(
             days=7 if table == 'equity_research.outcomes' else 14)
 

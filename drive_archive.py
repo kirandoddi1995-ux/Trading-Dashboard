@@ -61,12 +61,23 @@ SPECS = {
         'stop': 'double precision', 'target': 'double precision', 'feature_json': 'jsonb',
     },
 }
+# Append-only evidence (no-delete/no-update triggers): exported to Drive, NEVER deleted by this job
+# (ROLLING_WINDOW_2026-11-07.md). Declared apart from the SPECS literal above, which
+# archive_recovery_review.SPECS mirrors for the deletable tables (tested).
+SPECS['evidence_ledger_events'] = {
+    'event_id': 'uuid', 'aggregate_id': 'text', 'sequence_no': 'integer', 'event_type': 'text',
+    'recorded_at': 'timestamptz', 'effective_at': 'timestamptz', 'source': 'text',
+    'actor_id': 'text', 'idempotency_key': 'text', 'payload': 'jsonb', 'previous_hash': 'text',
+    'event_hash': 'text', 'hash_algorithm': 'text', 'schema_version': 'integer', 'key_id': 'text',
+}
+APPEND_ONLY = frozenset({'evidence_ledger_events'})
 KEYS = {'mf_nav': ('scheme_code', 'nav_date'),
         'universe_membership': ('snapshot_date', 'instrument_key'),
         'equity_research.outcomes': ('snapshot_id',),
         'market_quotes': ('observed_at', 'instrument_key'),
         'universe_membership_versions': ('snapshot_id', 'instrument_key'),
-        'scanner_observations': ('observation_id',)}
+        'scanner_observations': ('observation_id',),
+        'evidence_ledger_events': ('event_id',)}
 
 # Schema routing is fixed, never derived from user-supplied SQL identifiers.
 RELATIONS = {key: ('equity_research.outcomes' if key == 'equity_research.outcomes'
