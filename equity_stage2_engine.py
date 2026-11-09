@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import math
 
 import numpy as np
 import pandas as pd
@@ -604,3 +605,107 @@ def _execution_cost_breakdown(estimate, *, assumptions):
         "breakdown_complete": True,
         "assumptions": str(assumptions),
     }
+
+
+def compute_historical_setup_probability(df, horizon_days=15, min_samples=20, transaction_cost_pct=0.30):
+    """Estimate the historical probability of this fixed EMA/ADX setup.
+
+    This is deliberately not called a trained or out-of-sample model. Signals
+    enter at the next bar's open, trades do not overlap, same-bar target/stop
+    ambiguity is resolved conservatively as a stop, and uncertainty is
+    reported with a Wilson interval. Missing evidence returns None instead of
+    a fabricated default probability.
+    """
+    try:
+        horizon_days = max(int(horizon_days), 1)
+        if df is None or df.empty or len(df) < 80 + horizon_days:
+            return None
+
+        d = df.copy()
+        if isinstance(d.index, pd.DatetimeIndex):
+            # Never include an unfinished current-session candle in evidence.
+            d = runtime.completed_daily_bars(d)
+        d['EMA_20'] = ta.ema(d['Close'], length=20)
+        d['EMA_50'] = ta.ema(d['Close'], length=50)
+        adx_df = ta.adx(d['High'], d['Low'], d['Close'], length=14)
+        d['ADX'] = adx_df.iloc[:, 0] if adx_df is not None and not adx_df.empty else np.nan
+        d['ATR'] = ta.atr(d['High'], d['Low'], d['Close'], length=14)
+        d = d.dropna(subset=['Open', 'High', 'Low', 'Close', 'EMA_20', 'EMA_50', 'ADX', 'ATR'])
+        if len(d) < 60 + horizon_days:
+            return None
+
+        outcomes = []
+        n = len(d)
+        # All required indicators have already been warmed up and NaN rows were
+        # removed above. Starting at 50 again discarded another 50 valid bars
+        # and made the 20-sample threshold unreachable for many 15-day tests.
+        i = 0
+        while i + horizon_days < n:
+            row = d.iloc[i]
+            signal = row['Close'] > row['EMA_50'] and row['EMA_20'] >= row['EMA_50'] and row['ADX'] >= 20
+            if not signal:
+                i += 1
+                continue
+
+            entry_idx = i + 1
+            entry = float(d['Open'].iloc[entry_idx])
+            atr = float(row['ATR'])
+            if not np.isfinite(entry) or entry <= 0 or not np.isfinite(atr) or atr <= 0:
+                i += 1
+                continue
+            # Same structural level routine as the displayed screener plan.
+            # Only candles known on signal day are supplied to that routine.
+            stop, target, _, _ = derive_long_trade_levels(d.iloc[:i + 1], entry, atr, horizon_days)
+            if stop is None or target is None:
+                i += 1
+                continue
+            future_slice = d.iloc[entry_idx:entry_idx + horizon_days]
+            evaluated = runtime.trade_outcome(
+                list(future_slice[['Open', 'High', 'Low', 'Close']].itertuples(index=False, name=None)),
+                entry, stop, target, transaction_cost_pct,
+            )
+            outcomes.append(evaluated["win"])
+            # Prevent overlapping trades from overstating the effective sample.
+            i = entry_idx + horizon_days
+
+        samples = len(outcomes)
+        wins = int(sum(outcomes))
+        if samples < int(min_samples):
+            return {
+                "samples": samples,
+                "wins": wins,
+                "win_probability": None,
+                "ci_low": None,
+                "ci_high": None,
+                "sample_tier": f"Insufficient evidence (n={samples}; need {int(min_samples)})",
+            }
+
+        raw_p = wins / samples
+        # Beta(1,1) smoothing avoids reporting 0%/100% from small samples.
+        probability = (wins + 1.0) / (samples + 2.0)
+        z = 1.959963984540054
+        denom = 1.0 + z * z / samples
+        centre = (raw_p + z * z / (2.0 * samples)) / denom
+        margin = z * math.sqrt((raw_p * (1.0 - raw_p) / samples) + z * z / (4.0 * samples * samples)) / denom
+        ci_low = max(0.0, centre - margin)
+        ci_high = min(1.0, centre + margin)
+        if samples < 30:
+            tier = f"Limited evidence (n={samples})"
+        elif samples < 100:
+            tier = f"Developing evidence (n={samples})"
+        elif samples < 250:
+            tier = f"Moderate evidence (n={samples})"
+        else:
+            tier = f"Large historical sample (n={samples})"
+
+        return {
+            "samples": samples,
+            "wins": wins,
+            "win_probability": round(probability * 100.0, 1),
+            "ci_low": round(ci_low * 100.0, 1),
+            "ci_high": round(ci_high * 100.0, 1),
+            "sample_tier": tier,
+        }
+    except Exception as exc:
+        LOGGER.debug("Historical setup probability failed: %s", exc)
+        return None
