@@ -41,7 +41,9 @@ SHARED = (
 # --- the only permitted differences, as explicit transforms on app.py's AST ---
 
 def _insert_param(name: str, position: int):
+    """Transform: insert required positional parameter `name` at `position`."""
     def apply(fn: ast.FunctionDef) -> int:
+        """Insert the parameter into `fn`; return the change count."""
         n_args = len(fn.args.args)
         if position > n_args - len(fn.args.defaults):
             raise AssertionError(f"{fn.name}: cannot insert required param after defaulted ones")
@@ -52,7 +54,9 @@ def _insert_param(name: str, position: int):
 
 
 def _append_param(name: str, default):
+    """Transform: append parameter `name` with `default`."""
     def apply(fn: ast.FunctionDef) -> int:
+        """Append the defaulted parameter to `fn`; return the change count."""
         fn.args.args.append(ast.arg(arg=name))
         fn.args.defaults.append(ast.Constant(value=default))
         return 1
@@ -61,7 +65,9 @@ def _append_param(name: str, default):
 
 
 def _rename_global(old: str, new: str, expected: int):
+    """Transform: rename global `old` to parameter `new`; app.py must use it `expected` times."""
     def apply(fn: ast.FunctionDef) -> int:
+        """Rename the global inside `fn`; return how many uses were renamed."""
         hits = 0
         for node in ast.walk(fn):
             if isinstance(node, ast.Name) and node.id == old:
@@ -74,7 +80,9 @@ def _rename_global(old: str, new: str, expected: int):
 
 
 def _add_call_keyword(callee: str, keyword: str, expected: int):
+    """Transform: pass `keyword=keyword` to each call of `callee`; expects `expected` calls."""
     def apply(fn: ast.FunctionDef) -> int:
+        """Add the keyword to matching calls inside `fn`; return how many calls changed."""
         hits = 0
         for node in ast.walk(fn):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == callee:
@@ -104,6 +112,7 @@ ALLOWED_DIFFS = {
 # --- helpers ---
 
 def _defs(path: Path) -> dict[str, list[ast.stmt]]:
+    """{name: [top-level def/assignment nodes]} for one source file."""
     found: dict[str, list[ast.stmt]] = {}
     for node in ast.parse(path.read_text(encoding="utf-8")).body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -118,6 +127,7 @@ def _defs(path: Path) -> dict[str, list[ast.stmt]]:
 
 
 def _import_bindings(path: Path) -> dict[str, str]:
+    """{bound name: dotted origin} for one file's top-level imports."""
     bindings = {}
     for node in ast.parse(path.read_text(encoding="utf-8")).body:
         if isinstance(node, ast.Import):
@@ -130,6 +140,7 @@ def _import_bindings(path: Path) -> dict[str, str]:
 
 
 def _without_docstring(node: ast.stmt) -> ast.stmt:
+    """Copy of `node` without its docstring (docstrings are not compared)."""
     node = copy.deepcopy(node)
     body = getattr(node, "body", None)
     if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
@@ -145,17 +156,20 @@ ENGINE_DEFS = _defs(ENGINE)
 # --- tests ---
 
 def test_engine_defines_exactly_shared_set():
+    """The engine defines exactly the SHARED names."""
     assert set(ENGINE_DEFS) == set(SHARED), (
         f"engine-only: {sorted(set(ENGINE_DEFS) - set(SHARED))}, "
         f"missing: {sorted(set(SHARED) - set(ENGINE_DEFS))}")
 
 
 def test_allowed_diffs_only_name_shared_functions():
+    """Every allowed difference targets a shared definition."""
     assert set(ALLOWED_DIFFS) <= set(SHARED)
 
 
 @pytest.mark.parametrize("name", SHARED)
 def test_definition_matches_app_original(name):
+    """Each shared definition is AST-identical to app.py's after the allowed transforms."""
     assert len(APP_DEFS.get(name, [])) == 1, f"app.py must define {name} exactly once at top level"
     assert len(ENGINE_DEFS.get(name, [])) == 1, f"engine must define {name} exactly once"
     expected = copy.deepcopy(APP_DEFS[name][0])
@@ -175,6 +189,7 @@ def test_app_binds_each_shared_name_exactly_once_anywhere():
     # A second binding anywhere in app.py (nested block, `global` write, local
     # shadow) would make "which version is live" ambiguous; the top-level
     # comparison above would silently compare against the wrong one.
+    """app.py binds each shared name exactly once anywhere (def, assignment, argument, import alias, except-as)."""
     counts = {name: 0 for name in SHARED}
     for node in ast.walk(ast.parse(APP.read_text(encoding="utf-8"))):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in counts:
@@ -197,6 +212,7 @@ def test_engine_module_has_no_other_top_level_code():
     # Only the docstring, imports and the shared definitions may run at import time;
     # anything else (e.g. monkeypatching a shared module) would change behaviour
     # without changing any compared definition.
+    """Only the docstring, imports and shared definitions run when the engine is imported."""
     allowed = (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.Assign)
     tree = ast.parse(ENGINE.read_text(encoding="utf-8"))
     extra = [ast.unparse(n)[:80] for n in tree.body[1:] if not isinstance(n, allowed)]
@@ -205,11 +221,13 @@ def test_engine_module_has_no_other_top_level_code():
 
 
 def test_engine_free_names_resolve_at_module_level():
+    """Every free name in the engine resolves to a module-level binding or a builtin."""
     source = ENGINE.read_text(encoding="utf-8")
     module_names = set(ENGINE_DEFS) | set(_import_bindings(ENGINE)) | set(dir(builtins))
     unresolved = []
 
     def walk(table):
+        """Collect unresolved global reads in a scope and its child scopes."""
         for child in table.get_children():
             for symbol in child.get_symbols():
                 if symbol.is_referenced() and symbol.is_global() and symbol.get_name() not in module_names:
@@ -221,6 +239,7 @@ def test_engine_free_names_resolve_at_module_level():
 
 
 def test_engine_imports_bind_same_modules_as_app():
+    """Engine import aliases bind the same modules as app.py's."""
     app_imports, engine_imports = _import_bindings(APP), _import_bindings(ENGINE)
     mismatched = {name: (app_imports.get(name), module) for name, module in engine_imports.items()
                   if app_imports.get(name) != module}

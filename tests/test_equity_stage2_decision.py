@@ -118,6 +118,7 @@ def _scenario(*, history, quote=None, market_open=False, max_price=100_000.0, we
 def _fetch(scenario):
     """get_cached_history stand-in with app.py's call signature."""
     def get_cached_history(key, token, days=1200, fetch_fn=None):
+        """Return the scenario's history (or raise its error), checking app.py's call arguments."""
         assert token == "token" and days == 1200 and fetch_fn == "fetch-sentinel"
         if isinstance(scenario["history"], Exception):
             raise scenario["history"]
@@ -290,9 +291,10 @@ def test_headless_copy_reaches_the_same_decision_as_app(outcomes, name):
 
 def test_scenarios_exercise_the_pass_path_and_many_reject_branches(outcomes):
     """Guard against a vacuous differential: a pass and at least 5 distinct reject reasons are hit."""
-    results = {name: pair[1][0] for name, pair in outcomes.items()}
-    passes = [name for name, (record, _) in results.items() if record is not None]
-    reasons = {reject["reason"] for record, reject in results.values() if reject}
+    # outcomes[name] == (app_output, (engine_result, observation)); engine_result == (record, reject)
+    engine_results = {name: engine_result for name, (_app, (engine_result, _obs)) in outcomes.items()}
+    passes = [name for name, (record, _reject) in engine_results.items() if record is not None]
+    reasons = {reject["reason"] for _record, reject in engine_results.values() if reject}
     assert passes, "no scenario reached the pass path"
     assert len(reasons) >= 5, sorted(reasons)
 
@@ -300,6 +302,7 @@ def test_scenarios_exercise_the_pass_path_and_many_reject_branches(outcomes):
 def test_specific_rejects(outcomes):
     """Known inputs hit the expected app.py reject reasons."""
     def reject(name):
+        """The engine's reject dict for scenario `name`."""
         return outcomes[name][1][0][1]
     assert reject("no_instrument_key") == {"category": "Data", "reason": "No instrument key found for this ticker"}
     assert reject("short_history") == {"category": "Data",
@@ -320,6 +323,7 @@ def test_specific_rejects(outcomes):
 def test_pass_paths_include_buy_and_advanced_filters(outcomes):
     """Passes are reached with the default and the advanced filter set, including a "Buy" action."""
     def record(name):
+        """The engine's pass record for scenario `name`."""
         return outcomes[name][1][0][0]
     assert record("pass_buy")["action"] == "Buy"
     assert record("advanced_pass") is not None

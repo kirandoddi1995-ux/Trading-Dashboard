@@ -68,6 +68,7 @@ ENGINE_TRY = _single_try(ENGINE_FN)
 def _rename(old, new, expected):
     """Rename every Name `old` to `new`; app.py must use it exactly `expected` times."""
     def apply(tree):
+        """Rename in `tree`; return (count as expected, detail)."""
         hits = [n for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == old]
         for node in hits:
             node.id = new
@@ -85,6 +86,7 @@ def _calls_passing(tree, function_name):
 def _insert_positional_after(function_name, after_offset, new_name):
     """In profile_call(..., function_name, df, ...), insert `new_name` right after `df`."""
     def apply(tree):
+        """Insert the argument in each matching call; return (exactly one call, detail)."""
         calls = _calls_passing(tree, function_name)
         for call in calls:
             position = next(i for i, a in enumerate(call.args)
@@ -98,6 +100,7 @@ def _insert_positional_after(function_name, after_offset, new_name):
 def _append_keyword(function_name, keyword):
     """In profile_call(..., function_name, ...), append `keyword=keyword`."""
     def apply(tree):
+        """Append the keyword to each matching call; return (exactly one call, detail)."""
         calls = _calls_passing(tree, function_name)
         for call in calls:
             call.keywords.append(ast.keyword(arg=keyword, value=ast.Name(id=keyword, ctx=ast.Load())))
@@ -201,14 +204,17 @@ def _module_scope_bindings(tree):
     found = {}
 
     def add(name, kind):
+        """Record one binding of `name` with its kind."""
         found.setdefault(name, []).append(kind)
 
     def bind_target(target, kind):
+        """Record every name bound by an assignment-like target."""
         for node in ast.walk(target):
             if isinstance(node, ast.Name):
                 add(node.id, kind)
 
     def visit(statements):
+        """Walk statements run at module scope (into blocks, not into def/class bodies)."""
         for node in statements:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 add(node.name, "def")
@@ -277,16 +283,16 @@ def _top_level_defs(tree):
 
 def _free_names(statements):
     """Names the statements read but never bind (i.e. what they need from outside)."""
-    wrapper = ast.Module(body=[ast.FunctionDef(
-        name="_probe", args=ast.arguments(posonlyargs=[], args=[], vararg=None, kwonlyargs=[],
-                                          kw_defaults=[], kwarg=None, defaults=[]),
-        body=copy.deepcopy(statements), decorator_list=[], returns=None, type_params=[],
-    )], type_ignores=[])
+    # Parse the wrapper instead of constructing FunctionDef by hand: its fields differ
+    # across Python versions (e.g. `type_params`, added in 3.12).
+    wrapper = ast.parse("def _probe():\n    pass\n")
+    wrapper.body[0].body = copy.deepcopy(statements)
     ast.fix_missing_locations(wrapper)
     table = symtable.symtable(ast.unparse(wrapper), "probe", "exec").get_children()[0]
     found = set()
 
     def walk(scope):
+        """Collect names a scope reads as globals, recursing into child scopes."""
         for symbol in scope.get_symbols():
             if symbol.is_referenced() and symbol.is_global():
                 found.add(symbol.get_name())
@@ -462,6 +468,7 @@ def test_engine_free_names_all_resolve():
     unresolved = []
 
     def walk(scope):
+        """Collect unresolved global reads in a scope and its child scopes."""
         for symbol in scope.get_symbols():
             if symbol.is_referenced() and symbol.is_global() and symbol.get_name() not in module_names:
                 unresolved.append(f"{scope.get_name()}: {symbol.get_name()}")
