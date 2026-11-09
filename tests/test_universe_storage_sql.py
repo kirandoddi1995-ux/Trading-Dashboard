@@ -89,6 +89,20 @@ def test_compact_quote_retains_typed_fields_and_daily_volume(repository):
     assert db.execute('SELECT max_captured_volume FROM quant_app.market_daily_volumes').fetchone()[0] == '30'
 
 
+def test_quote_zero_volume_is_stored_not_overwritten_by_ohlc(repository):
+    # A real 0 (no trades this tick) must be stored as 0, not fall through to ohlc.volume.
+    repo, db = repository
+    columns = ','.join(f'{name} {kind}' for name, kind in SPECS['market_quotes'].items())
+    db.execute(f'CREATE TABLE quant_app.market_quotes ({columns}, PRIMARY KEY(instrument_key,observed_at))')
+    observed = dt.datetime(2026, 10, 5, 9, tzinfo=dt.timezone.utc)
+    quote = {'instrument_key': 'NSE_EQ|1', 'last_price': 11, 'volume': 0,
+             'ohlc': {'open': 9, 'high': 12, 'low': 8, 'close': 10, 'volume': 999}}
+    assert repo.archive_quotes([quote], observed_at=observed) == 1
+    assert db.execute(
+        "SELECT volume FROM quant_app.market_quotes WHERE instrument_key='NSE_EQ|1'"
+    ).fetchone()[0] == '0'
+
+
 def test_repeat_is_storage_noop_preserves_receipt(repository, monkeypatch):
     repo, db = repository
     first = repo.archive_universe(records(), '2026-10-05', minimum_complete=2)
