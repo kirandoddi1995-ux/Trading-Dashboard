@@ -1125,8 +1125,8 @@ class ProductionRepository:
                 _finite_decimal(item.get("last_price")), _finite_decimal(ohlc.get("open")),
                 _finite_decimal(ohlc.get("high")), _finite_decimal(ohlc.get("low")),
                 _finite_decimal(previous.get("close") or ohlc.get("close")),
-                _finite_decimal(item.get("volume") or ohlc.get("volume")),
-                # A real 0 is a value, not "missing": the raw payload is no longer kept to recover it.
+                # A real 0 is a value, not "missing": `or` would wrongly fall through to ohlc.
+                _finite_decimal(item.get("volume") if item.get("volume") is not None else ohlc.get("volume")),
                 _finite_decimal(item.get("oi") if item.get("oi") is not None else item.get("open_interest")),
                 # Preserve typed quote history and the volume trigger input. The original
                 # provider payload is intentionally not retained for new rows.
