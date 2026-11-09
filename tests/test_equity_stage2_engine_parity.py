@@ -34,6 +34,7 @@ SHARED = (
     "relative_strength_vs_nifty", "compute_trend_quality_score",
     "compute_volume_quality_score", "compute_breakout_quality_score",
     "derive_long_trade_levels", "_execution_cost_breakdown",
+    "compute_historical_setup_probability",
 )
 
 
@@ -182,7 +183,25 @@ def test_app_binds_each_shared_name_exactly_once_anywhere():
             counts[node.id] += 1
         elif isinstance(node, ast.arg) and node.arg in counts:
             counts[node.arg] += 1
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bound = alias.asname or alias.name.split(".")[0]
+                if bound in counts:
+                    counts[bound] += 1
+        elif isinstance(node, ast.ExceptHandler) and node.name in counts:
+            counts[node.name] += 1
     assert all(c == 1 for c in counts.values()), {n: c for n, c in counts.items() if c != 1}
+
+
+def test_engine_module_has_no_other_top_level_code():
+    # Only the docstring, imports and the shared definitions may run at import time;
+    # anything else (e.g. monkeypatching a shared module) would change behaviour
+    # without changing any compared definition.
+    allowed = (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.Assign)
+    tree = ast.parse(ENGINE.read_text(encoding="utf-8"))
+    extra = [ast.unparse(n)[:80] for n in tree.body[1:] if not isinstance(n, allowed)]
+    assert isinstance(tree.body[0], ast.Expr) and isinstance(tree.body[0].value, ast.Constant)
+    assert not extra, extra
 
 
 def test_engine_free_names_resolve_at_module_level():
