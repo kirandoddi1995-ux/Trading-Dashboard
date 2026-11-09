@@ -35,11 +35,11 @@ class RuntimePg(Pg):
     """Adapts the shared PGlite harness to ProductionRepository's DB-API use."""
 
     def commit(self):
-        # `connect()` already wraps BEGIN/COMMIT; repository code also calls commit().
+        """No-op: `connect()` already wraps BEGIN/COMMIT, but repository code calls commit()."""
         return None
 
     def execute(self, sql, params=()):
-        # psycopg Jsonb wrappers -> JSON text (same as tests/test_universe_storage_sql.py).
+        """Run SQL, turning psycopg Jsonb wrappers into JSON text (as tests/test_universe_storage_sql.py does)."""
         if not isinstance(params, dict):
             params = tuple(json.dumps(p.obj) if hasattr(p, 'obj') else p for p in params)
         return super().execute(sql, params)
@@ -47,6 +47,7 @@ class RuntimePg(Pg):
 
 @pytest.fixture
 def pg():
+    """Fresh DB in the live 9 Nov state: live grants, archive SQL applied, RLS on, no runtime policy."""
     db = RuntimePg()
     try:
         db.send({'script': """
@@ -82,6 +83,7 @@ def pg():
 
 
 def _repository(pg):
+    """Real ProductionRepository wired to the PGlite connection (schema bootstrap skipped)."""
     repository = ProductionRepository('postgres://test-only')
     repository.ensure_schema = lambda: None
     repository.connect = pg.connect
@@ -89,17 +91,20 @@ def _repository(pg):
 
 
 def _nav(value):
+    """One synthetic NAV row in the shape the collector passes to archive_mf_nav."""
     return [{'scheme_code': 'SYN001', 'nav_date': dt.date(2026, 11, 6), 'scheme_name': 'Synthetic Fund',
              'nav': value, 'option': 'Growth'}]
 
 
 def _gaps(pg, table):
+    """Gap-check rows for one table as {(role, privileges)}, run as the superuser."""
     pg.execute('RESET ROLE')
     return {(role, privileges) for role, _schema, name, privileges in pg.execute(GAP_SQL).fetchall()
             if name == table}
 
 
 def test_without_runtime_policy_the_collector_write_fails_like_9_nov(pg):
+    """Control: the fixture reproduces the exact production error before the fix."""
     repository = _repository(pg)
     pg.execute('SET ROLE quant_app_runtime')
     with pytest.raises(RuntimeError, match='row-level security'):
@@ -109,6 +114,7 @@ def test_without_runtime_policy_the_collector_write_fails_like_9_nov(pg):
 
 
 def test_policy_file_restores_runtime_quote_and_nav_writes(pg):
+    """After the policy file, the real quote and NAV write paths succeed as the runtime role."""
     pg.send({'script': POLICY_SQL})
     repository = _repository(pg)
     pg.execute('SET ROLE quant_app_runtime')
@@ -126,6 +132,7 @@ def test_policy_file_restores_runtime_quote_and_nav_writes(pg):
 
 
 def test_policy_does_not_widen_runtime_privileges(pg):
+    """The policies add no privilege: runtime still has no DELETE grant on either table."""
     pg.send({'script': POLICY_SQL})
     _repository(pg).archive_quotes([QUOTE], observed_at=OBSERVED)
     pg.execute('SET ROLE quant_app_runtime')
@@ -135,6 +142,7 @@ def test_policy_does_not_widen_runtime_privileges(pg):
 
 
 def test_archive_worker_access_is_unchanged(pg):
+    """The archive worker can still read and delete quotes, and still cannot insert."""
     pg.send({'script': POLICY_SQL})
     _repository(pg).archive_quotes([QUOTE], observed_at=OBSERVED)
     pg.execute('SET ROLE quant_archive_worker')
@@ -148,6 +156,7 @@ def test_archive_worker_access_is_unchanged(pg):
 
 
 def test_policy_file_is_rerunnable_and_leaves_rls_on(pg):
+    """Running the file twice leaves one policy per table, RLS on, and mf_nav's FORCE untouched."""
     pg.send({'script': POLICY_SQL})
     pg.send({'script': POLICY_SQL})
     rows = pg.execute("""
@@ -159,6 +168,7 @@ def test_policy_file_is_rerunnable_and_leaves_rls_on(pg):
 
 
 def test_gap_check_flags_the_lockout_and_clears_after_policy_file(pg):
+    """The gap check reports the 9 Nov lockout, and reports nothing once the policies exist."""
     assert _gaps(pg, 'market_quotes') == {('quant_app_runtime', 'INSERT,SELECT,UPDATE')}
     assert _gaps(pg, 'mf_nav') == {('quant_app_runtime', 'INSERT,SELECT,UPDATE')}
     pg.send({'script': POLICY_SQL})
@@ -167,3 +177,29 @@ def test_gap_check_flags_the_lockout_and_clears_after_policy_file(pg):
     # Worker grants (SELECT/DELETE) are fully covered by drive_archive_draft.sql policies.
     worker = [row for row in pg.execute(GAP_SQL).fetchall() if row[0] == 'quant_archive_worker']
     assert worker == []
+
+
+def test_gap_check_reports_public_grants_until_a_public_policy_exists(pg):
+    """A PUBLIC grant on an RLS table with no PUBLIC policy is a lockout for every role relying on it."""
+    pg.send({'script': """
+        CREATE TABLE quant_app.public_probe (id integer);
+        ALTER TABLE quant_app.public_probe ENABLE ROW LEVEL SECURITY;
+        GRANT SELECT ON quant_app.public_probe TO PUBLIC;
+    """})
+    assert _gaps(pg, 'public_probe') == {('PUBLIC', 'SELECT')}
+    pg.send({'script': 'CREATE POLICY probe_read ON quant_app.public_probe FOR SELECT USING (true);'})
+    assert _gaps(pg, 'public_probe') == set()
+
+
+def test_gap_check_reports_a_forced_owner_but_not_an_unforced_one(pg):
+    """RLS skips the owner unless FORCE is set; a forced, non-bypass owner with no policy is locked out."""
+    pg.send({'script': """
+        CREATE ROLE probe_owner NOSUPERUSER NOBYPASSRLS;
+        CREATE TABLE quant_app.owner_probe (id integer);
+        ALTER TABLE quant_app.owner_probe OWNER TO probe_owner;
+        ALTER TABLE quant_app.owner_probe ENABLE ROW LEVEL SECURITY;
+    """})
+    # Default ACL (relacl NULL): owner rows come from acldefault(); unforced owner is exempt.
+    assert _gaps(pg, 'owner_probe') == set()
+    pg.send({'script': 'ALTER TABLE quant_app.owner_probe FORCE ROW LEVEL SECURITY;'})
+    assert _gaps(pg, 'owner_probe') == {('probe_owner', 'DELETE,INSERT,SELECT,UPDATE')}
