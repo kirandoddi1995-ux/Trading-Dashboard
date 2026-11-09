@@ -90,7 +90,7 @@ def test_compact_quote_retains_typed_fields_and_daily_volume(repository):
 
 
 def test_quote_zero_volume_is_stored_not_overwritten_by_ohlc(repository):
-    # A real 0 (no trades this tick) must be stored as 0, not fall through to ohlc.volume.
+    """A real 0 volume (no trades this tick) must be stored as 0, not fall through to ohlc.volume."""
     repo, db = repository
     columns = ','.join(f'{name} {kind}' for name, kind in SPECS['market_quotes'].items())
     db.execute(f'CREATE TABLE quant_app.market_quotes ({columns}, PRIMARY KEY(instrument_key,observed_at))')
