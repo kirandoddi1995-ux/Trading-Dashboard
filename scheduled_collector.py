@@ -38,6 +38,7 @@ from prediction_validation import TARGET_VERSION, TargetDefinition, compute_forw
 from production_repository import ProductionRepository
 from decision_evidence import DecisionEvidenceSpine
 from equity_stage2_collector import run_shadow_stage2
+from nifty_session_calendar import cash_session
 from scanner_funnel import stage1_prefilter
 from prospective_collection import (
     CORPORATE_ACTIONS,
@@ -65,7 +66,10 @@ SCHEDULED_STAGE1_VERSION = "equity-stage1-scheduled-v1"
 
 
 def is_nse_scan_window(now=None) -> bool:
-    """Conservative normal-session window; holiday closure is caught by quote health."""
+    """Conservative normal-session window (weekday clock only).
+
+    Holidays are handled after this by `_market_status_or_holiday_skip`.
+    """
     current = now or dt.datetime.now(IST)
     if current.tzinfo is None or current.utcoffset() is None:
         raise ValueError("scan clock must be timezone-aware")
@@ -185,11 +189,65 @@ def fetch_nse_exchange_status(client, token: str, *, now=None) -> dict:
     }
 
 
+def nse_calendar_day(day: dt.date) -> dict:
+    """The reviewed NSE cash calendar's verdict for `day` (nifty_session_calendar).
+
+    kind: REGULAR, CLOSED (weekend or listed holiday), SPECIAL (announced special
+    session) or UNREVIEWED (year not in the calendar yet - never read as open or closed).
+    """
+    try:
+        return {"date": day.isoformat(), **cash_session(day)}
+    except ValueError as exc:
+        return {"date": day.isoformat(), "kind": "UNREVIEWED", "windows": [], "source": None,
+                "error": str(exc)}
+
+
+def _market_status_or_holiday_skip(repo, client, token: str, current: dt.datetime):
+    """Live NSE status for a scan, or a SKIPPED result on a confirmed holiday.
+
+    pg_cron dispatches scans Monday-Friday, including NSE holidays, where the live
+    status is stale or closed and `fetch_nse_exchange_status` fails closed. Skip
+    only when two sources agree: the reviewed calendar says CLOSED and the live
+    status does not show today's NORMAL_OPEN. If the exchange is open after all,
+    scan and record the calendar mismatch. Any other day keeps the fail-closed
+    check (an unscheduled closure or a stale feed stays a visible failure).
+    Returns (market_status, None) to scan, or (None, skip_result).
+    """
+    calendar = nse_calendar_day(current.date())
+    if calendar["kind"] != "CLOSED":
+        try:
+            return fetch_nse_exchange_status(client, token), None
+        except RuntimeError as exc:
+            if calendar["kind"] == "UNREVIEWED":
+                raise RuntimeError(
+                    f"{exc}; the NSE holiday calendar for {current.year} is not reviewed yet "
+                    "(add it to nifty_session_calendar.ANNUAL so holidays skip)"
+                ) from exc
+            raise
+    try:
+        market_status = fetch_nse_exchange_status(client, token)
+    except Exception as exc:
+        return None, {
+            "status": "SKIPPED", "reason": "NSE holiday (reviewed calendar)",
+            "calendar": calendar,
+            "exchange_check": f"{type(exc).__name__}: {str(exc)[:200]}",
+        }
+    repo.record_quality_event(
+        "scheduled_scan", "WARNING", "CALENDAR_CLOSED_BUT_EXCHANGE_OPEN",
+        f"Reviewed calendar lists {calendar['date']} as closed but NSE reports NORMAL_OPEN; "
+        "scanning. Review nifty_session_calendar.",
+        {"calendar": calendar, "market_status": market_status},
+    )
+    return market_status, None
+
+
 def _scheduled_stage1(repo, client, token: str, run_id: str, *, now=None, lease=None) -> dict:
     current = now or dt.datetime.now(IST)
     if not is_nse_scan_window(current):
         return {"status": "SKIPPED", "reason": "Outside conservative NSE scan window"}
-    market_status = fetch_nse_exchange_status(client, token)
+    market_status, holiday_skip = _market_status_or_holiday_skip(repo, client, token, current)
+    if holiday_skip is not None:
+        return holiday_skip
     universe = fetch_nse_universe(client)
     universe_result = repo.archive_universe(universe, current.date())
     if not universe_result["complete"]:
