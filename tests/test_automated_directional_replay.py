@@ -229,6 +229,6 @@ def test_opt_in_self_check_reuses_quality_without_credentials():
     assert 'cancel-in-progress: false' in active
     assert 'uses: ./.github/workflows/quality.yml' in active
     assert "if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && vars.AUTOMATED_SELF_CHECK_ENABLED == 'true')" in active
-    assert '  workflow_call:' in quality and 'timeout-minutes: 25' in quality
+    assert '  workflow_call:' in quality and 'timeout-minutes: 40' in quality
     assert 'secrets:' not in active and 'secrets.' not in active and 'secrets.' not in quality
     assert 'steps:' not in active and 'run:' not in active and 'write' not in active

@@ -10,7 +10,9 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # The full suite takes 15-25 min on hosted runners (Nov 2026); 25 cut off
+    # healthy runs. 40 leaves headroom while still stopping a hung run.
+    timeout-minutes: 40
     env:
       EQUITY_TEST_PGLITE_MODULE: ${{ github.workspace }}/tests/sql-harness/node_modules/@electric-sql/pglite
     steps:
