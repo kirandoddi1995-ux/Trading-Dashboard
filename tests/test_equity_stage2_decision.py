@@ -286,6 +286,11 @@ def test_headless_copy_reaches_the_same_decision_as_app(outcomes, name):
     app_inputs = dict(passed["features"]["equity_capture"]["inputs"])
     engine_inputs = dict(observation.snapshot()["inputs"])
     app_inputs.pop("timing", None), engine_inputs.pop("timing", None)
+    # elapsed_fraction reads the wall clock (both runs are milliseconds apart); during
+    # market hours after the 0.15 floor it differs in the last digits, so compare loosely.
+    app_fraction, engine_fraction = app_inputs.pop("elapsed_fraction"), engine_inputs.pop("elapsed_fraction")
+    assert (app_fraction is None) == (engine_fraction is None)
+    assert app_fraction is None or abs(app_fraction - engine_fraction) < 0.001
     assert engine_inputs == app_inputs
 
 

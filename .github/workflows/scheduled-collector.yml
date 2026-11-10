@@ -63,4 +63,7 @@ jobs:
           UPSTOX_ANALYTICS_TOKEN: ${{ secrets.UPSTOX_ANALYTICS_TOKEN }}
           EVIDENCE_LEDGER_SIGNING_KEY: ${{ secrets.EVIDENCE_LEDGER_SIGNING_KEY }}
           PROSPECTIVE_DATA_LICENSE_ACK: ${{ vars.PROSPECTIVE_DATA_LICENSE_ACK }}
+          # Shadow-only Stage-2 on the Stage-1 shortlist (scan mode). Off unless the
+          # repository variable is set to 1; never places orders.
+          SCHEDULED_STAGE2_SHADOW: ${{ vars.SCHEDULED_STAGE2_SHADOW }}
         run: python scheduled_collector.py --mode "${{ inputs.mode }}"

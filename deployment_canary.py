@@ -56,6 +56,16 @@ def run_canaries(root):
         and '"stage2_pass": False' in collector_source
         and "place_order" not in collector_source
     )
+    # Shadow Stage-2 (equity_stage2_collector): ledger action is never executable,
+    # governance is recorded as not evaluated, and no order API exists anywhere in it.
+    stage2_sources={name:(root/name).read_text(encoding="utf-8") for name in
+                    ("equity_stage2_collector.py","equity_stage2_decision.py","equity_stage2_engine.py")}
+    checks["scheduled_stage2_is_shadow_only"]=(
+        "from equity_stage2_collector import run_shadow_stage2" in collector_source
+        and 'action = "Watch" if item["stage2_pass"] else "No Trade"' in stage2_sources["equity_stage2_collector.py"]
+        and '"governance_evaluated": False' in stage2_sources["equity_stage2_collector.py"]
+        and not any("place_order" in source for source in stage2_sources.values())
+    )
     quality=(root/".github"/"workflows"/"quality.yml").read_text(encoding="utf-8")
     checks["dependency_preflight"]="environment_preflight.py --strict" in quality
     policy = root / "resilience_policy.json"

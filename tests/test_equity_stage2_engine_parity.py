@@ -35,6 +35,7 @@ SHARED = (
     "compute_volume_quality_score", "compute_breakout_quality_score",
     "derive_long_trade_levels", "_execution_cost_breakdown",
     "compute_historical_setup_probability",
+    "normalize_market_timestamp_series", "_history_to_dataframe",
 )
 
 
