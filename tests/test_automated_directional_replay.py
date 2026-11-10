@@ -4,6 +4,7 @@ import csv
 from datetime import datetime, timedelta, timezone
 import io
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -217,9 +218,19 @@ def test_cli_preparation_register_execution_and_no_private_output(tmp_path, caps
     assert all(json.loads(line)['approval_authority'] is False for line in output.splitlines())
 
 
+def _verify_job_keys(quality: str) -> list[str]:
+    """Job-level key lines (4-space indent, not comments) of quality.yml's `verify` job."""
+    match = re.search(r"^  verify:\n((?:(?:    .*|\s*)\n)*)", quality, re.M)
+    assert match, "quality.yml has no verify job"
+    return [line for line in match.group(1).splitlines() if re.match(r"^    [a-z][a-z-]*:", line)]
+
+
 def test_opt_in_self_check_reuses_quality_without_credentials():
-    # Exact small configuration contract, not a general-purpose YAML validator.
-    # No extra test dependency is imposed on promotion/rollback test environments.
+    """The opt-in self-check reuses quality.yml read-only, with no secrets and a bounded job.
+
+    Exact small configuration contract, not a general-purpose YAML validator.
+    No extra test dependency is imposed on promotion/rollback test environments.
+    """
     workflow = (ROOT / '.github/workflows/research-self-check.yml').read_text()
     quality = (ROOT / '.github/workflows/quality.yml').read_text()
     active = '\n'.join(line for line in workflow.splitlines() if not line.lstrip().startswith('#'))
@@ -229,6 +240,8 @@ def test_opt_in_self_check_reuses_quality_without_credentials():
     assert 'cancel-in-progress: false' in active
     assert 'uses: ./.github/workflows/quality.yml' in active
     assert "if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && vars.AUTOMATED_SELF_CHECK_ENABLED == 'true')" in active
-    assert '  workflow_call:' in quality and 'timeout-minutes: 25' in quality
+    assert '  workflow_call:' in quality
+    # The limit must be the verify job's own key (a comment or another job does not count).
+    assert '    timeout-minutes: 40' in _verify_job_keys(quality)
     assert 'secrets:' not in active and 'secrets.' not in active and 'secrets.' not in quality
     assert 'steps:' not in active and 'run:' not in active and 'write' not in active

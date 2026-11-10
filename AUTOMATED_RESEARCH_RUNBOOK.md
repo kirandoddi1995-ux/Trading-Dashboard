@@ -68,7 +68,7 @@ The opt-in `research-self-check.yml` reuses the entire quality workflow (unit/SQ
 golden/causal checks, imports, static checks, audits and ZIP gate); it does not
 read private datasets, call Upstox or replay real market files. It declares no
 secret inheritance, has a non-overlapping concurrency group and a bounded
-25-minute job. On weekdays it requests 23:47 IST; GitHub may delay/skip it, so it
+40-minute job (the quality workflow's limit, raised from 25 on 10 Nov 2026). On weekdays it requests 23:47 IST; GitHub may delay/skip it, so it
 is not a heartbeat or proof that a market collector ran.
 Implementation reference: [GitHub reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows)
 and [workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax).
