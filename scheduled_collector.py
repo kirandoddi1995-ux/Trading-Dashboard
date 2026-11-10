@@ -37,6 +37,7 @@ from amfi_ingestion import (
 from prediction_validation import TARGET_VERSION, TargetDefinition, compute_forward_target
 from production_repository import ProductionRepository
 from decision_evidence import DecisionEvidenceSpine
+from equity_stage2_collector import run_shadow_stage2
 from scanner_funnel import stage1_prefilter
 from prospective_collection import (
     CORPORATE_ACTIONS,
@@ -184,7 +185,7 @@ def fetch_nse_exchange_status(client, token: str, *, now=None) -> dict:
     }
 
 
-def _scheduled_stage1(repo, client, token: str, run_id: str, *, now=None) -> dict:
+def _scheduled_stage1(repo, client, token: str, run_id: str, *, now=None, lease=None) -> dict:
     current = now or dt.datetime.now(IST)
     if not is_nse_scan_window(current):
         return {"status": "SKIPPED", "reason": "Outside conservative NSE scan window"}
@@ -288,6 +289,16 @@ def _scheduled_stage1(repo, client, token: str, run_id: str, *, now=None) -> dic
     if len(records) != len(universe):
         raise RuntimeError("Stage-1 evidence did not cover the complete PIT universe")
     code_hash, config_hash, policy_hash = _runtime_hashes()
+    universe_evidence = {
+        "status": "VERIFIED",
+        "snapshot_id": universe_result["snapshot_id"],
+        "payload_hash": universe_result["payload_hash"],
+        "source": universe_result["source"],
+        "observed_at": universe_result["observed_at"],
+        "effective_at": dt.datetime.combine(
+            current.date(), dt.time.min, tzinfo=IST,
+        ).astimezone(dt.timezone.utc).isoformat(),
+    }
     decision_batch = DecisionEvidenceSpine(
         repo.append_evidence_event, repo,
     ).capture_candidate_batch(
@@ -297,16 +308,7 @@ def _scheduled_stage1(repo, client, token: str, run_id: str, *, now=None) -> dic
         target_version=TARGET_VERSION,
         horizon_sessions=15,
         candidates=batch,
-        universe={
-            "status": "VERIFIED",
-            "snapshot_id": universe_result["snapshot_id"],
-            "payload_hash": universe_result["payload_hash"],
-            "source": universe_result["source"],
-            "observed_at": universe_result["observed_at"],
-            "effective_at": dt.datetime.combine(
-                current.date(), dt.time.min, tzinfo=IST,
-            ).astimezone(dt.timezone.utc).isoformat(),
-        },
+        universe=universe_evidence,
         code_version="v22.1-PROSPECTIVE-COLLECTION",
         code_hash=code_hash,
         config_hash=config_hash,
@@ -349,11 +351,24 @@ def _scheduled_stage1(repo, client, token: str, run_id: str, *, now=None) -> dic
         repo.record_quality_event(
             "prospective_features", "WARNING", "LICENSE_ACK_REQUIRED", str(exc),
         )
+    # Shadow Stage-2 (off unless SCHEDULED_STAGE2_SHADOW is on) runs only after all
+    # Stage-1 evidence above is committed, writes its own batch and rows, and
+    # returns a summary instead of raising (except when the lease is lost).
+    stage2_shadow = run_shadow_stage2(
+        repo, client, token, run_id,
+        shortlist=[(ticker, instrument_dict[ticker]) for ticker in selected
+                   if instrument_dict.get(ticker)],
+        quotes=fresh_quotes,
+        quote_evidence={row["instrument_key"]: row["quote"] for row in batch},
+        universe=universe_evidence, now=current, observed_at=observed_at,
+        market_open=str(market_status.get("status", "")).upper() == "NORMAL_OPEN",
+        stage1_top_n=top_n, check_lease=(lease.assert_valid if lease is not None else None),
+    )
     return {
         "status": "SUCCESS", "universe": universe_result, "quotes": quote_count,
         "quote_coverage": coverage, "scanner_observations": stored,
         "shortlisted": len(selected), "funnel": stats, "market_status": market_status,
-        "order_book_shadow": shadow,
+        "order_book_shadow": shadow, "stage2_shadow": stage2_shadow,
     }
 
 
@@ -945,9 +960,10 @@ def run(mode: str, *, nav_file=None) -> dict:
         try:
             if mode == "scan":
                 lease.assert_valid()
-                scan_result = _scheduled_stage1(repo, client, token, run_id)
+                scan_result = _scheduled_stage1(repo, client, token, run_id, lease=lease)
                 result["scheduled_stage1"] = scan_result
                 record_count += int(scan_result.get("scanner_observations", 0))
+                record_count += int((scan_result.get("stage2_shadow") or {}).get("scanner_observations", 0))
             if mode == "global":
                 lease.assert_valid()
                 global_result = _global_cue_shadow(
@@ -1016,6 +1032,8 @@ def run(mode: str, *, nav_file=None) -> dict:
                 or result.get("prospective_shadow", {}).get("status") in {"PARTIAL", "FAILED"}
                 or result.get("global_cue_shadow", {}).get("status") in {"PARTIAL", "FAILED"}
                 or result.get("corporate_actions", {}).get("failed", 0)
+                or (result.get("scheduled_stage1", {}).get("stage2_shadow") or {}).get("status")
+                in {"PARTIAL", "FAILED"}
             ) else "SUCCESS"
             result["status"] = run_status
             repo.finish_run(run_id, status=run_status, record_count=record_count, metadata=result)

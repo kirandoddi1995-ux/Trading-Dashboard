@@ -33,6 +33,10 @@ silently read a Streamlit-page-scoped module global:
     Streamlit script run from a live NIFTY history fetch). Callers must now
     pass that dataframe explicitly.
 
+Phase 2 adds app.py's daily-history parser (`normalize_market_timestamp_series`,
+`_history_to_dataframe`), so the scheduled collector builds the exact frame the
+app builds from the same Upstox candles. Same rule: verbatim, parity-tested.
+
 See claude/spec_2026-11-09_stage2_auto_collector.md for the full extraction
 plan this is Phase 1a of (pure scoring engine only — governance/evidence
 capture and the full evaluate_stock() orchestration are later phases).
@@ -709,3 +713,55 @@ def compute_historical_setup_probability(df, horizon_days=15, min_samples=20, tr
     except Exception as exc:
         LOGGER.debug("Historical setup probability failed: %s", exc)
         return None
+
+
+def normalize_market_timestamp_series(series):
+    """CANONICAL TIMESTAMP CONVENTION for this app: all internal market-data
+    timestamps are timezone-NAIVE IST market time.
+
+    ROOT CAUSE this exists to fix: Upstox's raw API returns ISO8601 timestamps
+    WITH a timezone offset (e.g. '2026-08-20T09:15:00+05:30'), which pandas
+    automatically parses as timezone-AWARE. Meanwhile prepare_live_daily_bar's
+    live-bar insertion (and the SQLite cache write path in _serialize_history)
+    both already produce timezone-NAIVE timestamps. Mixing the two in the same
+    DataFrame index throws 'Cannot compare tz-naive and tz-aware timestamps'
+    the moment pandas needs to sort or compare them (e.g. sort_index() after
+    inserting today's live bar into cached history).
+
+    Applied once, here, at the single shared entry point every fresh Upstox
+    history fetch passes through (_history_to_dataframe) — this makes every
+    DataFrame in the app consistently tz-naive from the moment data enters it,
+    rather than patching each downstream comparison individually."""
+    try:
+        if hasattr(series, 'dt') and series.dt.tz is not None:
+            return series.dt.tz_localize(None)
+        return series
+    except Exception as e:
+        LOGGER.debug("Timestamp normalization skipped: %s", e)
+        return series
+
+
+def _history_to_dataframe(candles):
+    rows = []
+    for candle in candles or []:
+        if not isinstance(candle, (list, tuple)) or len(candle) < 6:
+            continue
+        rows.append(list(candle[:7]) + [np.nan] * max(0, 7 - len(candle)))
+    if not rows:
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume", "OI"])
+    df = pd.DataFrame(rows, columns=["Date", "Open", "High", "Low", "Close", "Volume", "OI"])
+    for c in ["Open", "High", "Low", "Close", "Volume", "OI"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df["Date"] = normalize_market_timestamp_series(df["Date"])  # ROOT-CAUSE FIX — see docstring above
+    df = df.dropna(subset=["Date", "Open", "High", "Low", "Close"])
+    prices = df[["Open", "High", "Low", "Close"]]
+    valid = (np.isfinite(prices).all(axis=1) & prices.gt(0).all(axis=1)
+             & df["High"].ge(prices.max(axis=1)) & df["Low"].le(prices.min(axis=1))
+             & (df["Volume"].isna() | (np.isfinite(df["Volume"]) & df["Volume"].ge(0))))
+    df = df.loc[valid].drop_duplicates(subset=["Date"], keep="last").set_index("Date").sort_index()
+    for c in ["Open", "High", "Low", "Close", "Volume", "OI"]:
+        if c not in df.columns:
+            df[c] = np.nan
+    return df[["Open", "High", "Low", "Close", "Volume", "OI"]]
