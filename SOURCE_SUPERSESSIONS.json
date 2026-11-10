@@ -24,8 +24,8 @@
     "scheduled_collector.py": [
       {
         "predecessor_legacy_sha256": "6be0f30152472309f3e83378f6053ed9f1a8b09e2c10be4aecef5343d7554dde",
-        "reason": "AUTO_STAGE2_COLLECTOR_2026-11-10.md",
-        "successor_raw_sha256": "ebaf27150b289df41f0cabd892f30f2ea081a6868fe37abb4a0597257660ecf7"
+        "reason": "COLLECTOR_HOLIDAY_SKIP_2026-11-10.md",
+        "successor_raw_sha256": "357855c17a4999e5aa07fd40c63520920cf97e4a8eb376e4da2ced27b6283af4"
       }
     ],
     "tests/test_archive_commissioning_hold.py": [
