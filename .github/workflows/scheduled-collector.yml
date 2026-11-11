@@ -66,4 +66,7 @@ jobs:
           # Shadow-only Stage-2 on the Stage-1 shortlist (scan mode). Off unless the
           # repository variable is set to 1; never places orders.
           SCHEDULED_STAGE2_SHADOW: ${{ vars.SCHEDULED_STAGE2_SHADOW }}
+          # Outcome labels for those shadow passes once their 15 sessions complete (scan mode).
+          # Off unless the repository variable is set to 1; writes shadow-only labels.
+          SCHEDULED_STAGE2_MATURATION: ${{ vars.SCHEDULED_STAGE2_MATURATION }}
         run: python scheduled_collector.py --mode "${{ inputs.mode }}"
