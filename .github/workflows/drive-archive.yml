@@ -76,16 +76,19 @@ jobs:
         run: >-
           python -c "import json; print(json.dumps({'status':'ARCHIVE_SCHEDULE_HELD_NO_IO','custody_commissioned':False,'database_connections':0,'drive_requests':0,'source_deletes':0}))"
   archive:
+    needs: on-time-check  # defined below
+    # `!cancelled()` lets archive run whether on-time-check succeeded, failed or was
+    # skipped (manual runs, the on-time dispatch); without it a skipped check skips archive.
     if: >-
-      (github.event_name == 'workflow_dispatch' && inputs.mode != 'nightly') ||
+      ((github.event_name == 'workflow_dispatch' && inputs.mode != 'nightly') ||
       ((github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'nightly'))
-      && vars.ARCHIVE_ENABLED == 'true' && vars.ARCHIVE_NIGHTLY_DELETE == 'true')
+      && vars.ARCHIVE_ENABLED == 'true' && vars.ARCHIVE_NIGHTLY_DELETE == 'true'))
+      && !cancelled()
     runs-on: ubuntu-24.04
     # A full proof over every batch (about an hour) precedes any prune.
     timeout-minutes: 180
     permissions:
       contents: read
-      actions: read  # used only by the on_time step below (late schedule)
     steps:
       - uses: actions/checkout@v5
         with:
@@ -97,16 +100,6 @@ jobs:
           cache-dependency-path: |
             requirements-archive.txt
             constraints.txt
-      - name: Late schedule only - did tonight's on-time archive job succeed?
-        id: on_time
-        if: github.event_name == 'schedule'
-        # Fail open: if this step breaks or times out, `skip` stays unset and the archive
-        # step runs. The only step given the Actions token in its environment.
-        continue-on-error: true
-        timeout-minutes: 3
-        env:
-          ACTIONS_READ_TOKEN: ${{ github.token }}
-        run: python archive_on_time_check.py
       - run: python -m pip install -r requirements-archive.txt
       - name: Archive outside the dashboard and scan processes
         env:
@@ -117,7 +110,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           ARCHIVE_ENABLED: ${{ vars.ARCHIVE_ENABLED }}
           NIGHTLY_DELETE: ${{ vars.ARCHIVE_NIGHTLY_DELETE }}
-          ON_TIME_SKIP: ${{ steps.on_time.outputs.skip }}
+          ON_TIME_SKIP: ${{ needs.on-time-check.outputs.skip }}
           REQUESTED_MODE: ${{ inputs.mode }}
           REQUESTED_TABLE: ${{ inputs.table }}
           NAV_CUTOFF: ${{ inputs.nav_cutoff }}
@@ -176,3 +169,24 @@ jobs:
               args += ['--proven-after', os.environ['PROVEN_AFTER'].strip()]
           raise SystemExit(main(args))
           PY
+  on-time-check:
+    # Late schedule only: did tonight's on-time archive job already succeed? Its own job,
+    # so it alone gets `actions: read` and the token. Fail open: continue-on-error, and
+    # a failed, timed-out or skipped check leaves `skip` empty, so `archive` still runs.
+    if: github.event_name == 'schedule' && vars.ARCHIVE_ENABLED == 'true' && vars.ARCHIVE_NIGHTLY_DELETE == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - id: check
+        env:
+          ACTIONS_READ_TOKEN: ${{ github.token }}
+        run: python3 archive_on_time_check.py

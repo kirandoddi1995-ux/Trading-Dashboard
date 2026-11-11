@@ -46,13 +46,14 @@ def _node_flags():
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 def test_dispatcher_typescript_tests_pass():
     """handler.test.ts (collector modes, archive target, pinned target set) passes on this node."""
+    # TAP reporter pinned: Node 23+ defaults to the "spec" reporter (CI runs Node 24), 22 to TAP.
     result = subprocess.run(
-        ["node", *_node_flags(), "--no-warnings", "--test", "handler.test.ts"],
+        ["node", *_node_flags(), "--no-warnings", "--test", "--test-reporter=tap", "handler.test.ts"],
         cwd=FUNCTION_DIR, capture_output=True, text=True, timeout=120,
     )
     assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-2000:]
-    assert re.search(r"^# pass (\d+)$", result.stdout, re.M).group(1) == "10"
-    assert re.search(r"^# fail 0$", result.stdout, re.M)
+    summary = dict(re.findall(r"^# (pass|fail) (\d+)$", result.stdout, re.M))
+    assert summary == {"pass": "10", "fail": "0"}, result.stdout[-2000:]
 
 
 def _http_post_without_body(sql, body_marker):
@@ -86,15 +87,15 @@ def test_sql_dispatch_wiring_is_the_collectors_except_the_body():
 
 
 def test_sql_checks_the_vacuum_job_before_changing_anything():
-    """Step 0 raises (changing nothing) when the hand-made VACUUM job is missing."""
-    precheck = SQL.index("raise exception 'nightly-vacuum-growing-tables not found")
+    """Step 0 raises (changing nothing) when the hand-made VACUUM job is missing or inactive."""
+    precheck = SQL.index("raise exception 'nightly-vacuum-growing-tables missing or inactive")
     assert precheck < SQL.index("select cron.unschedule(") < SQL.index("select cron.schedule(")
     assert precheck < SQL.index("select cron.alter_job(")
     assert (
         "do $precheck$\n"
         "begin\n"
-        "  if not exists (select 1 from cron.job where jobname = 'nightly-vacuum-growing-tables') then\n"
-        "    raise exception 'nightly-vacuum-growing-tables not found in cron.job: nothing changed';\n"
+        "  if not exists (select 1 from cron.job where jobname = 'nightly-vacuum-growing-tables' and active) then\n"
+        "    raise exception 'nightly-vacuum-growing-tables missing or inactive in cron.job: nothing changed';\n"
         "  end if;\n"
         "end\n"
         "$precheck$;\n") in SQL
@@ -107,7 +108,7 @@ RUN_NAME = ("run-name: >-\n"
 
 def _archive_job():
     """The archive job's YAML text."""
-    return WORKFLOW.split(f"\n  {check.ARCHIVE_JOB}:\n", 1)[1]
+    return _job(check.ARCHIVE_JOB)
 
 
 def _steps():
@@ -131,34 +132,55 @@ def test_run_name_titles_only_the_nightly_dispatch():
         assert titled is (event == "workflow_dispatch" and mode == "nightly"), (event, mode)
 
 
+def _job(name):
+    """One job's YAML text (up to the next job)."""
+    return re.split(r"\n  [a-z-]+:\n", WORKFLOW.split(f"\n  {name}:\n", 1)[1], maxsplit=1)[0].rstrip("\n")
+
+
 def test_jobs_permissions_and_token_scope_match_the_check_module():
-    """`archive` is the job id the check looks for; read-only Actions token; only one step holds it."""
-    assert f"\n  {check.ARCHIVE_JOB}:\n    if: >-" in WORKFLOW
+    """`archive` is the job id the check looks for; only `on-time-check` can read Actions or holds the token."""
+    assert f"\n  {check.ARCHIVE_JOB}:\n    needs: on-time-check  # defined below\n" in WORKFLOW
     assert "\n    name:" not in WORKFLOW  # job names are the job ids the check compares
-    job = _archive_job()
-    assert "    permissions:\n      contents: read\n      actions: read" in job
-    assert "write" not in job.split("steps:", 1)[0]
-    assert WORKFLOW.count("ACTIONS_READ_TOKEN") == 1 and "GITHUB_TOKEN" not in WORKFLOW
+    assert "    permissions:\n      contents: read\n    steps:" in _job("archive")
+    assert "    permissions:\n      contents: read\n      actions: read\n" in _job("on-time-check")
+    assert "write" not in WORKFLOW.split("\njobs:\n", 1)[1]
+
+
+def test_the_actions_token_exists_only_in_the_check_job():
+    """One env line, in on-time-check; no GITHUB_TOKEN; no ignored default-variable overrides."""
+    assert WORKFLOW.count("ACTIONS_READ_TOKEN") == 1 and "ACTIONS_READ_TOKEN" in _job("on-time-check")
+    assert "GITHUB_TOKEN" not in WORKFLOW
     # Default variables cannot be overridden (GitHub ignores it): the check reads the real ones.
     assert "GITHUB_REPOSITORY:" not in WORKFLOW and "GITHUB_RUN_ID:" not in WORKFLOW
 
 
-def test_the_on_time_check_is_its_own_fail_open_step_before_the_archive_step():
-    """Late schedule only, continue-on-error, 3-minute cap (a hang cannot eat the 180-minute job),
-    token in this step alone, output read by the archive step."""
-    assert _step("id: on_time") == (
-        "      - name: Late schedule only - did tonight's on-time archive job succeed?\n"
-        "        id: on_time\n"
-        "        if: github.event_name == 'schedule'\n"
-        "        # Fail open: if this step breaks or times out, `skip` stays unset and the archive\n"
-        "        # step runs. The only step given the Actions token in its environment.\n"
-        "        continue-on-error: true\n"
-        "        timeout-minutes: 3\n"
+def test_the_on_time_check_is_its_own_fail_open_least_privilege_job():
+    """Late schedule with both gates on; continue-on-error; 5-minute cap; output read by `archive`."""
+    assert _job("on-time-check") == (
+        "    # Late schedule only: did tonight's on-time archive job already succeed? Its own job,\n"
+        "    # so it alone gets `actions: read` and the token. Fail open: continue-on-error, and\n"
+        "    # a failed, timed-out or skipped check leaves `skip` empty, so `archive` still runs.\n"
+        "    if: github.event_name == 'schedule' && vars.ARCHIVE_ENABLED == 'true' && vars.ARCHIVE_NIGHTLY_DELETE == 'true'\n"
+        "    runs-on: ubuntu-24.04\n"
+        "    timeout-minutes: 5\n"
+        "    continue-on-error: true\n"
+        "    permissions:\n"
+        "      contents: read\n"
+        "      actions: read\n"
+        "    outputs:\n"
+        "      skip: ${{ steps.check.outputs.skip }}\n"
+        "    steps:\n"
+        "      - uses: actions/checkout@v5\n"
+        "        with:\n"
+        "          persist-credentials: false\n"
+        "      - id: check\n"
         "        env:\n"
         "          ACTIONS_READ_TOKEN: ${{ github.token }}\n"
-        "        run: python archive_on_time_check.py")
+        "        run: python3 archive_on_time_check.py")
+    # Without a status function GitHub adds success(): a skipped/failed check would skip archive.
+    assert _job_if("archive").endswith(" && !cancelled()")
     order = [next(i for i, step in enumerate(_steps()) if marker in step) for marker in
-             ("actions/checkout@v5", "actions/setup-python@v6", "id: on_time",
+             ("actions/checkout@v5", "actions/setup-python@v6",
               "pip install -r requirements-archive.txt", "python - <<'PY'")]
     assert order == sorted(order)
     assert "        with:\n          persist-credentials: false" in _step("actions/checkout@v5")
@@ -169,7 +191,7 @@ def test_archive_step_reads_each_gate_from_the_right_variable():
     archive_step = _step("python - <<'PY'")
     for line in ("EVENT_NAME: ${{ github.event_name }}", "ARCHIVE_ENABLED: ${{ vars.ARCHIVE_ENABLED }}",
                  "NIGHTLY_DELETE: ${{ vars.ARCHIVE_NIGHTLY_DELETE }}", "REQUESTED_MODE: ${{ inputs.mode }}",
-                 "ON_TIME_SKIP: ${{ steps.on_time.outputs.skip }}",
+                 "ON_TIME_SKIP: ${{ needs.on-time-check.outputs.skip }}",
                  "ARCHIVE_DELETE_ENABLED: ${{ vars.ARCHIVE_DELETE_ENABLED }}"):
         assert f"\n          {line}\n" in archive_step, line
     assert "ACTIONS_READ_TOKEN" not in archive_step and "urlopen" not in archive_step
@@ -182,10 +204,12 @@ def test_concurrency_and_job_limits_that_the_design_relies_on():
 
 
 def _job_if(job):
-    """The folded `if: >-` expression of one job, as a single line."""
-    section = WORKFLOW.split(f"\n  {job}:\n", 1)[1]
-    block = re.search(r"^    if: >-\n((?:      [^\n]*\n)+)", section, re.M).group(1)
-    return " ".join(line.strip() for line in block.splitlines())
+    """A job's `if:` expression (one line, or a folded `>-` block) as a single line."""
+    section = _job(job) + "\n"
+    folded = re.search(r"^    if: >-\n((?:      [^\n]*\n)+)", section, re.M)
+    if folded:
+        return " ".join(line.strip() for line in folded.group(1).splitlines())
+    return re.search(r"^    if: ([^\n]+)$", section, re.M).group(1)
 
 
 def _evaluate_if(expression, context):
@@ -196,7 +220,7 @@ def _evaluate_if(expression, context):
     """
     names = {"github.event_name": "event", "inputs.mode": "mode",
              "vars.ARCHIVE_ENABLED": "enabled", "vars.ARCHIVE_NIGHTLY_DELETE": "nightly"}
-    python = expression
+    python = expression.replace(" && !cancelled()", "")  # the run is never cancelled here
     for name, variable in names.items():
         python = python.replace(name, variable)
     python = python.replace("&&", " and ").replace("||", " or ")
@@ -207,12 +231,15 @@ def _evaluate_if(expression, context):
 
 
 def _expected_jobs(event, mode, enabled, nightly):
-    """Which jobs must run: manual modes always archive; nightly runs need both owner gates."""
+    """Which jobs must run: manual modes always archive; nightly runs need both owner gates;
+    only the late schedule asks the on-time check."""
     if event == "workflow_dispatch" and mode != "nightly":
         return {"archive"}
     if enabled.lower() != "true":
         return set()
-    return {"archive"} if nightly.lower() == "true" else {"scheduled-hold"}
+    if nightly.lower() != "true":
+        return {"scheduled-hold"}
+    return {"on-time-check", "archive"} if event == "schedule" else {"archive"}
 
 
 EVENTS = [("schedule", None)] + [("workflow_dispatch", mode) for mode in MANUAL_MODES + ["nightly"]]
@@ -225,7 +252,7 @@ GATE_VALUES = ["", "true", "false", "True", "TRUE"]
 def test_job_level_gates_run_exactly_the_expected_job(event, mode, enabled, nightly):
     """Held nightly runs never start `archive` (no checkout, no secrets), so they never count."""
     context = {"event": event, "mode": mode, "enabled": enabled, "nightly": nightly}
-    ran = {job for job in ("scheduled-hold", "archive") if _evaluate_if(_job_if(job), context)}
+    ran = {job for job in ("scheduled-hold", "on-time-check", "archive") if _evaluate_if(_job_if(job), context)}
     assert ran == _expected_jobs(event, mode, enabled, nightly)
 
 

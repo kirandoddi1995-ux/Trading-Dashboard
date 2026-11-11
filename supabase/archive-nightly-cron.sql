@@ -6,12 +6,13 @@
 -- and the Edge Function redeployed with the "archive-nightly" target.
 -- Contains secret NAMES only. Safe to re-run.
 
--- 0. Pre-check before any change: the VACUUM job moved in step 2 must exist
---    (it was created by hand and is not in the repo). Stops here, changing nothing.
+-- 0. Pre-check before any change: the VACUUM job moved in step 2 must exist and be
+--    active (it was created by hand and is not in the repo; alter_job below changes only
+--    its schedule). Stops here, changing nothing, so a disabled VACUUM is never left behind.
 do $precheck$
 begin
-  if not exists (select 1 from cron.job where jobname = 'nightly-vacuum-growing-tables') then
-    raise exception 'nightly-vacuum-growing-tables not found in cron.job: nothing changed';
+  if not exists (select 1 from cron.job where jobname = 'nightly-vacuum-growing-tables' and active) then
+    raise exception 'nightly-vacuum-growing-tables missing or inactive in cron.job: nothing changed';
   end if;
 end
 $precheck$;

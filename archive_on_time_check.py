@@ -2,9 +2,9 @@
 
 ARCHIVE_ON_TIME_DISPATCH_2026-11-10.md: Supabase Cron dispatches drive-archive.yml
 with mode=nightly on time (20:15 UTC). GitHub still fires the workflow's own
-20:15 UTC schedule, but 3.5-6.5 h late. That late run runs this module as its own
-step (`python archive_on_time_check.py`, the only step that holds the Actions token)
-and the archive step skips when the step wrote `skip=true`.
+20:15 UTC schedule, but 3.5-6.5 h late. That late run runs this module in its own
+job, `on-time-check` (`python3 archive_on_time_check.py`; the only job with
+`actions: read` and the token), and the archive job skips when it wrote `skip=true`.
 
 "Already did the retention" means all of:
   * a workflow_dispatch run of drive-archive.yml on main with status success,
@@ -125,9 +125,9 @@ def on_time_nightly_succeeded(
 def main(environ: Mapping[str, str] | None = None, **check_options: Any) -> int:
     """Workflow step: decide, then append `skip=true|false` to $GITHUB_OUTPUT. Exit 0.
 
-    The token comes from ACTIONS_READ_TOKEN (this step's env only). The step also
-    has `continue-on-error: true`, so even a crash here leaves `skip` unset and the
-    archive step runs. A failure here can never stop the late run's retention.
+    The token comes from ACTIONS_READ_TOKEN (this job's env only). The job also has
+    `continue-on-error: true`, so even a crash here leaves `skip` empty and the
+    archive job runs. A failure here can never stop the late run's retention.
     """
     environ = os.environ if environ is None else environ
     emit = check_options.pop("emit", print)

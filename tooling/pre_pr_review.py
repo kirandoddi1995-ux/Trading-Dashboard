@@ -11,7 +11,7 @@ calls the network. It reviews what the push would carry: the working tree and ev
 commit since the merge base with --base (default origin/main), so main's own newer
 changes are never blamed on the branch and a secret committed then removed still fails.
 
-    python -m pip install -r tooling/requirements-review.txt   # once
+    python -m pip install -r tooling/requirements-review.txt   # once (includes the repo's pytest pin)
     python tooling/pre_pr_review.py                             # diff vs origin/main
     python tooling/pre_pr_review.py --coverage tests/test_x.py tests/test_y.py
 
@@ -43,7 +43,7 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALL_HINT = "python -m pip install -r tooling/requirements-review.txt"
 COMPLEXITY_WARN = 10
 FAN_OUT_WARN = 12
-SECRET_PATTERNS = {
+LEAK_PATTERNS = {
     "GitHub token": re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"),
     "JWT": re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\."),
     "AWS key": re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
@@ -153,16 +153,34 @@ def _added_lines(diff: str) -> list[str]:
     return out
 
 
-def _committed_added_text(base: str) -> list[tuple[str, str]]:
-    """(path, line) each commit in base..HEAD adds versus its first parent, merges included
-    (text typed while resolving a merge), so a secret removed later still counts."""
-    out = []
-    for commit in git("rev-list", f"{base}..HEAD").split():
-        parent = f"{commit}^1"
-        paths = git("diff", "--name-only", "-z", "--no-renames", parent, commit, "--").split("\0")
-        for path in filter(None, paths):
-            out.extend((path, line) for line in _added_lines(git(*DIFF, parent, commit, "--", path)))
+def _merge_resolution_lines(combined_diff: str, parents: int) -> list[str]:
+    """Lines a merge's combined (--cc) diff shows as new against EVERY parent: text typed
+    while resolving the merge. Lines taken from one side (say main's own changes) are not."""
+    out, in_hunk, marker = [], False, "+" * parents
+    for line in combined_diff.splitlines():
+        in_hunk = in_hunk or line.startswith("@@")
+        if in_hunk and not line.startswith("@@") and line.startswith(marker):
+            out.append(line[parents:])
     return out
+
+
+def _commit_added_text(commit: str) -> list[tuple[str, str]]:
+    """(path, line) one commit adds: versus its parent, or for a merge only its resolution."""
+    parents = len(git("rev-list", "--parents", "-n", "1", commit).split()) - 1
+    if parents > 1:
+        paths = git("diff-tree", "--cc", "--no-commit-id", "--name-only", "-z", commit).split("\0")
+        return [(path, line) for path in filter(None, paths) for line in _merge_resolution_lines(
+            git("diff-tree", "-p", "--cc", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", commit, "--", path),
+            parents)]
+    parent = f"{commit}^1"
+    paths = git("diff", "--name-only", "-z", "--no-renames", parent, commit, "--").split("\0")
+    return [(path, line) for path in filter(None, paths) for line in _added_lines(git(*DIFF, parent, commit, "--", path))]
+
+
+def _committed_added_text(base: str) -> list[tuple[str, str]]:
+    """(path, line) added by each commit in base..HEAD, so a secret removed later still counts.
+    A merge contributes only what was typed while resolving it, never the merged side's lines."""
+    return [item for commit in git("rev-list", f"{base}..HEAD").split() for item in _commit_added_text(commit)]
 
 
 def added_text(base: str) -> list[tuple[str, str]]:
@@ -207,15 +225,20 @@ def python_complexity(node: ast.AST) -> int:
 
 
 def python_fan_out(node: ast.AST) -> int:
-    """Distinct called names (`f(...)`, `obj.method(...)`) in one function body."""
+    """Distinct called names (`f(...)`, `obj.method(...)`) in one function body (nested defs excluded)."""
     names = set()
-    for child in ast.walk(node):
+    stack = list(ast.iter_child_nodes(node))
+    while stack:
+        child = stack.pop()
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
         if isinstance(child, ast.Call):
             func = child.func
             if isinstance(func, ast.Name):
                 names.add(func.id)
             elif isinstance(func, ast.Attribute):
                 names.add(func.attr)
+        stack.extend(ast.iter_child_nodes(child))
     return len(names)
 
 
@@ -379,13 +402,32 @@ def _ts_qualified(node, name: str) -> str:
     return ".".join(reversed(parts))
 
 
-def _ts_documented(node) -> bool:
-    """True when a /** JSDoc */ comment directly precedes the function's statement."""
+def _ts_statement(node):
+    """The statement a function belongs to (`export const f = () => ...` for the arrow)."""
     anchor = node
     while anchor.parent is not None and anchor.parent.type in TS_DOC_WRAPPERS:
         anchor = anchor.parent
-    previous = anchor.prev_named_sibling
-    return previous is not None and previous.type == "comment" and previous.text.startswith(b"/**")
+    return anchor
+
+
+def _ts_leading_comment(node):
+    """The comment directly above the function's statement, or None."""
+    previous = _ts_statement(node).prev_named_sibling
+    return previous if previous is not None and previous.type == "comment" else None
+
+
+def _ts_documented(node) -> bool:
+    """True when a /** JSDoc */ comment directly precedes the function's statement."""
+    comment = _ts_leading_comment(node)
+    return comment is not None and comment.text.startswith(b"/**")
+
+
+def _ts_span(node) -> tuple[int, int]:
+    """(first, last) line of a function with its statement and leading comment, so an
+    edit to the JSDoc alone (say `/**` -> `/*`) still touches the function."""
+    comment = _ts_leading_comment(node)
+    first = (comment if comment is not None else _ts_statement(node)).start_point[0] + 1
+    return min(first, node.start_point[0] + 1), node.end_point[0] + 1
 
 
 def _ts_complexity(node) -> int:
@@ -436,9 +478,10 @@ def ts_units(path: str, lines: set[int], base: str = "origin/main") -> tuple[lis
     base_by_name = _ts_base_complexity(path, base)
     units = []
     for name, anonymous, node in functions:
-        start, end = node.start_point[0] + 1, node.end_point[0] + 1
-        if not set(range(start, end + 1)) & lines:
+        first, end = _ts_span(node)
+        if not set(range(first, end + 1)) & lines:
             continue
+        start = node.start_point[0] + 1
         units.append(Unit(path, name, start, end, _ts_complexity(node), _ts_documented(node),
                           base_complexity=base_by_name.get(name), anonymous=anonymous))
     fails = [f"{path}: TypeScript parse error near line {error_line}"] if error_line else []
@@ -471,19 +514,20 @@ def _coverage_report(tests: list[str], paths: list[str]) -> dict:
 
     Stops the gate if coverage.py is missing or the test run fails.
     """
-    workdir = Path(tempfile.mkdtemp())
-    rcfile = workdir / "coveragerc"
-    rcfile.write_text(f"[run]\ndata_file = {workdir / 'coverage.data'}\ndynamic_context = test_function\n")
-    run = subprocess.run([sys.executable, "-m", "coverage", "run", f"--rcfile={rcfile}",
-                          "--include=" + ",".join(paths), "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                          *tests], cwd=ROOT, capture_output=True, text=True)
-    if "No module named coverage" in run.stderr:
-        raise SystemExit(f"coverage is not installed: {INSTALL_HINT}")
-    if run.returncode != 0:
-        raise SystemExit(f"coverage test run failed (exit {run.returncode}); a failing test proves nothing:\n"
-                         + (run.stdout + run.stderr)[-2000:])
-    report = subprocess.run([sys.executable, "-m", "coverage", "json", f"--rcfile={rcfile}", "--show-contexts",
-                             "-o", "-"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    with tempfile.TemporaryDirectory(prefix="pre-pr-coverage-") as scratch:
+        workdir = Path(scratch)
+        rcfile = workdir / "coveragerc"
+        rcfile.write_text(f"[run]\ndata_file = {workdir / 'coverage.data'}\ndynamic_context = test_function\n")
+        run = subprocess.run([sys.executable, "-m", "coverage", "run", f"--rcfile={rcfile}",
+                              "--include=" + ",".join(paths), "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                              *tests], cwd=ROOT, capture_output=True, text=True)
+        if "No module named coverage" in run.stderr:
+            raise SystemExit(f"coverage is not installed: {INSTALL_HINT}")
+        if run.returncode != 0:
+            raise SystemExit(f"coverage test run failed (exit {run.returncode}); a failing test proves nothing:\n"
+                             + (run.stdout + run.stderr)[-2000:])
+        report = subprocess.run([sys.executable, "-m", "coverage", "json", f"--rcfile={rcfile}", "--show-contexts",
+                                 "-o", "-"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
     return json.loads(report)["files"]
 
 
@@ -553,10 +597,14 @@ def pyflakes_findings(python_files: list[str]) -> list[str]:
     return messages
 
 
-def secret_findings(base: str) -> list[str]:
-    """Added lines that look like a credential (one finding per kind and file)."""
+def leak_findings(base: str) -> list[str]:
+    """Added lines that look like a credential (one finding per kind and file).
+
+    A finding names the pattern and the file only, never the matched text, so the
+    report can be printed and pasted safely.
+    """
     return list(dict.fromkeys(f"SECRET-LIKE ({label}) added in {path}" for path, text in added_text(base)
-                              for label, pattern in SECRET_PATTERNS.items() if pattern.search(text)))
+                              for label, pattern in LEAK_PATTERNS.items() if pattern.search(text)))
 
 
 def coverage_findings(units: list[Unit], tests: list[str]) -> list[str]:
@@ -583,7 +631,7 @@ def review(base: str, coverage_tests: list[str] | None = None) -> tuple[list[str
     unit_fails, warns = unit_findings(units)
     fails += unit_fails
     fails += pyflakes_findings(sorted(path for path in lines if path.endswith(".py")))
-    fails += secret_findings(base)
+    fails += leak_findings(base)
     if coverage_tests:
         fails += coverage_findings(units, coverage_tests)
     return fails, warns, units

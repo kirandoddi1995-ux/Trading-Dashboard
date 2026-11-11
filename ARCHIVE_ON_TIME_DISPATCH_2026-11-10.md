@@ -22,9 +22,10 @@ The collector already gets on-time starts from Supabase Cron through the
   schedule's: when they are off, only the no-secrets, no-checkout `scheduled-hold`
   job runs and `archive` is skipped. The run shows as "Nightly archive (on-time
   dispatch)".
-- **Fallback:** the GitHub `schedule` stays. When it fires late, its own step runs
-  `archive_on_time_check.py` (read-only `actions: read`; the only step that holds the
-  token; `continue-on-error`). The archive step skips only when that step wrote
+- **Fallback:** the GitHub `schedule` stays. When it fires late, its own small job
+  `on-time-check` runs `archive_on_time_check.py` (the only job with `actions: read`
+  and the token; `continue-on-error`; 5 min). The archive job (`needs` it, with
+  `!cancelled()`) skips only when it wrote
   `skip=true`: an on-time nightly run on main, created in the last 20 h, whose
   `archive` job concluded success. A held on-time run never counts, and a nightly
   dispatch that reaches the archive job with its gates off fails (exit 3,

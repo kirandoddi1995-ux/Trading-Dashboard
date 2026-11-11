@@ -4,7 +4,7 @@
       {
         "predecessor_legacy_sha256": "5cc2b4dfc8751315e406285d26b7c2a65281102dad30a7042d66c727c6a2c138",
         "reason": "ARCHIVE_ON_TIME_DISPATCH_2026-11-10.md",
-        "successor_raw_sha256": "ff8b6982186d59b3b1f39d0149c14b55ede2af8371eb7abec9de13e1dc21c9fa"
+        "successor_raw_sha256": "892ff5786743eb8e6fcd1ab938f7c7dd243971a829cf562da32305420fabf023"
       }
     ],
     "archive_maintenance.py": [

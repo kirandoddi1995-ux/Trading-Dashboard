@@ -157,7 +157,7 @@ def test_growth_in_complexity_warns_but_does_not_fail(tmp_path, monkeypatch):
 ])
 def test_secret_patterns(text, label):
     """Each credential shape is recognised."""
-    assert gate.SECRET_PATTERNS[label].search(text)
+    assert gate.LEAK_PATTERNS[label].search(text)
 
 
 def test_test_gap_uses_body_lines_not_the_def_line(tmp_path, monkeypatch):
@@ -385,12 +385,15 @@ def test_missing_pyflakes_stops_the_gate_and_stderr_counts(monkeypatch):
 
 
 def test_coverage_needs_passing_tests_and_counts_only_test_contexts(monkeypatch):
-    """Scoped run with per-test contexts; import-time-only lines do not count; failing tests stop the gate."""
-    calls = []
+    """Scoped run with per-test contexts; import-time-only lines do not count; failing tests stop the gate;
+    the scratch directory is removed afterwards."""
+    calls, rc_texts = [], []
 
     def run(cmd, **kwargs):
-        """Answer the coverage run, then the JSON report with contexts."""
+        """Answer the coverage run, then the JSON report with contexts (reading the rcfile while it exists)."""
         calls.append(cmd)
+        rcfile = next(arg for arg in cmd if arg.startswith("--rcfile=")).split("=", 1)[1]
+        rc_texts.append(open(rcfile, encoding="utf-8").read())
         if "json" in cmd:
             return _Done('{"files": {"m.py": {"contexts": {"1": [""], "3": ["tests.t.test_x"], "4": ["", "t.y"]}}}}')
         return _Done()
@@ -400,8 +403,8 @@ def test_coverage_needs_passing_tests_and_counts_only_test_contexts(monkeypatch)
     assert calls[0][1:4] == ["-m", "coverage", "run"] and "--include=m.py,n.py" in calls[0]
     assert calls[0][-1] == "tests/t.py" and "--show-contexts" in calls[1]
     rcfile = next(arg for arg in calls[0] if arg.startswith("--rcfile=")).split("=", 1)[1]
-    with open(rcfile, encoding="utf-8") as handle:
-        assert "dynamic_context = test_function" in handle.read()
+    assert "dynamic_context = test_function" in rc_texts[0]
+    assert not os.path.exists(os.path.dirname(rcfile))  # no temp files left behind
     monkeypatch.setattr(gate.subprocess, "run", lambda cmd, **kwargs: _Done("1 failed", returncode=1))
     with pytest.raises(SystemExit, match="coverage test run failed"):
         gate.coverage_map(["tests/t.py"], ["m.py"])
@@ -467,9 +470,9 @@ def _join(*parts):
 ])
 def test_project_credential_shapes_are_recognised(text, label):
     """Shapes this project actually holds: DB URL, Drive OAuth JSON, Supabase, bots, model keys."""
-    assert gate.SECRET_PATTERNS[label].search(text)
+    assert gate.LEAK_PATTERNS[label].search(text)
     if label == "Anthropic key":
-        assert not gate.SECRET_PATTERNS["OpenAI-style key"].search(text)
+        assert not gate.LEAK_PATTERNS["OpenAI-style key"].search(text)
 
 
 @pytest.mark.parametrize("text", [
@@ -478,7 +481,7 @@ def test_project_credential_shapes_are_recognised(text, label):
 ])
 def test_ordinary_text_is_not_secret_like(text):
     """Placeholders and ordinary strings do not trip any pattern."""
-    assert not [label for label, pattern in gate.SECRET_PATTERNS.items() if pattern.search(text)]
+    assert not [label for label, pattern in gate.LEAK_PATTERNS.items() if pattern.search(text)]
 
 
 def test_glob_like_file_names_are_diffed_literally(tmp_path, monkeypatch):
@@ -613,7 +616,7 @@ def test_stub_functions_are_not_test_gaps(tmp_path, monkeypatch):
 ])
 def test_more_credential_shapes_are_recognised(text, label):
     """Supabase personal access tokens, Google API keys, Stripe live keys."""
-    assert gate.SECRET_PATTERNS[label].search(text)
+    assert gate.LEAK_PATTERNS[label].search(text)
 
 
 @needs_tree_sitter
@@ -714,3 +717,67 @@ def test_a_secret_both_committed_and_still_present_is_reported_once(tmp_path, mo
     _git(tmp_path, "commit", "-q", "-am", "still here")
     fails = gate.review("origin/main")[0]
     assert fails.count("SECRET-LIKE (GitHub token) added in a.txt") == 1
+
+
+def test_fan_out_does_not_count_calls_inside_nested_functions(tmp_path, monkeypatch):
+    """Callees added only to an inner function grow the inner unit, not the outer one."""
+    inner_calls = "\n".join(f"        f{i}()" for i in range(13))
+    source = f"def outer():\n    \"\"\"Doc.\"\"\"\n    def inner():\n        \"\"\"Doc.\"\"\"\n{inner_calls}\n    return inner\n"
+    _repo(tmp_path, monkeypatch, {"m.py": "x = 1\n"}, {"m.py": source})
+    by_name = {u.name: u.fan_out for u in gate.collect_units("origin/main")[0]}
+    assert by_name == {"outer": 0, "outer.inner": 13}
+
+
+@needs_tree_sitter
+def test_an_edit_to_the_jsdoc_alone_touches_the_function(tmp_path, monkeypatch):
+    """Turning /** into /* above an unchanged branching function must fail the gate."""
+    base = "/** Doc. */\nexport function f(x: number) {\n  return x ? 1 : 2;\n}\n"
+    _repo(tmp_path, monkeypatch, {"a.ts": base}, {"a.ts": base.replace("/** Doc. */", "/* Doc. */")})
+    fails, _, units = gate.review("origin/main")
+    assert [(u.name, u.start) for u in units] == [("f", 2)]
+    assert fails == ["DOCSTRING missing (complexity 2): a.ts:2 f"]
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+def test_merging_main_into_the_branch_does_not_blame_mains_own_lines(tmp_path, monkeypatch, conflict):
+    """A merge contributes only its resolution: main's secret-shaped line is not the branch's,
+    also when a conflict hunk keeps it next to the branch's own line."""
+    fixture = _join("ghp_", "M" * 30) + "\n"
+    _repo(tmp_path, monkeypatch, {"a.txt": "x\n"}, {})
+    _git(tmp_path, "checkout", "-q", "-b", "feature")
+    (tmp_path / ("a.txt" if conflict else "f.txt")).write_text("feature\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "feature work")
+    _git(tmp_path, "checkout", "-q", "main")
+    (tmp_path / ("a.txt" if conflict else "m.txt")).write_text(fixture)
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "main only")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(tmp_path, "checkout", "-q", "feature")
+    subprocess.run(["git", "merge", "-q", "--no-edit", "main"], cwd=tmp_path, capture_output=True)
+    if conflict:  # keep both sides' lines, add nothing new
+        (tmp_path / "a.txt").write_text(fixture + "feature\n")
+        _git(tmp_path, "commit", "-q", "-am", "merge main, keep both")
+    # Only the branch's own commit adds a line; the merge adds nothing of its own.
+    assert gate._committed_added_text(gate.merge_base("origin/main")) == [("a.txt" if conflict else "f.txt", "feature")]
+    assert not [f for f in gate.review("origin/main")[0] if f.startswith("SECRET-LIKE")]
+
+
+def test_python_functions_lists_every_def_in_source_order_with_qualified_names():
+    """Nested defs, methods and duplicate names (property getter + setter) all appear, in order."""
+    source = textwrap.dedent("""
+        def top():
+            def inner():
+                pass
+        class C:
+            @property
+            def v(self):
+                pass
+            @v.setter
+            def v(self, value):
+                pass
+        async def later():
+            pass
+    """)
+    assert [(name, node.lineno) for name, node in gate.python_functions(source)] == [
+        ("top", 2), ("top.inner", 3), ("C.v", 7), ("C.v", 10), ("later", 12)]
