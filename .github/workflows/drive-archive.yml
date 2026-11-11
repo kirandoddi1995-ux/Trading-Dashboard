@@ -1,13 +1,16 @@
 name: Verified Drive archive (nightly restore-proven retention when enabled)
+run-name: >-
+  ${{ (github.event_name == 'workflow_dispatch' && inputs.mode == 'nightly')
+  && 'Nightly archive (on-time dispatch)' || github.workflow }}
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: preview / export (no deletion, up to max batches per table) / restore-check (read-only, every batch) / delete (restore proof first) / prune-preserved (only an independently verified generation)
+        description: preview / export (no deletion, up to max batches per table) / restore-check (read-only, every batch) / delete (restore proof first) / prune-preserved (only an independently verified generation) / nightly (the scheduled retention run, sent on time by Supabase Cron; other inputs ignored)
         type: choice
         default: preview
-        options: [preview, export, restore-check, delete, prune-preserved]
+        options: [preview, export, restore-check, delete, prune-preserved, nightly]
       table:
         description: Approved source table
         type: choice
@@ -45,6 +48,9 @@ on:
         description: prune-preserved only - start no new batch after this many minutes (blank = no bound)
         type: string
         default: '150'
+  # Primary nightly trigger: Supabase Cron dispatches mode=nightly at 20:15 UTC
+  # (supabase/archive-nightly-cron.sql). GitHub delivers this schedule hours late;
+  # it stays only as a fallback and skips itself when the on-time run succeeded.
   schedule:
     - cron: '15 20 * * *'
 
@@ -57,9 +63,13 @@ concurrency:
 
 jobs:
   scheduled-hold:
-    # Nightly retention runs only when the owner sets ARCHIVE_NIGHTLY_DELETE=true
-    # after a passing manual restore-check. Otherwise the schedule stays a no-I/O hold.
-    if: github.event_name == 'schedule' && vars.ARCHIVE_ENABLED == 'true' && vars.ARCHIVE_NIGHTLY_DELETE != 'true'
+    # Nightly retention (the late schedule or the on-time mode=nightly dispatch) runs
+    # only when the owner sets ARCHIVE_NIGHTLY_DELETE=true after a passing manual
+    # restore-check. Otherwise it is this no-I/O hold and the archive job is skipped,
+    # so a held on-time run never counts as the night's retention.
+    if: >-
+      (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'nightly'))
+      && vars.ARCHIVE_ENABLED == 'true' && vars.ARCHIVE_NIGHTLY_DELETE != 'true'
     runs-on: ubuntu-24.04
     steps:
       - name: Report commissioning hold without credentials or source IO
@@ -67,11 +77,15 @@ jobs:
           python -c "import json; print(json.dumps({'status':'ARCHIVE_SCHEDULE_HELD_NO_IO','custody_commissioned':False,'database_connections':0,'drive_requests':0,'source_deletes':0}))"
   archive:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'schedule' && vars.ARCHIVE_ENABLED == 'true' && vars.ARCHIVE_NIGHTLY_DELETE == 'true')
+      (github.event_name == 'workflow_dispatch' && inputs.mode != 'nightly') ||
+      ((github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'nightly'))
+      && vars.ARCHIVE_ENABLED == 'true' && vars.ARCHIVE_NIGHTLY_DELETE == 'true')
     runs-on: ubuntu-24.04
     # A full proof over every batch (about an hour) precedes any prune.
     timeout-minutes: 180
+    permissions:
+      contents: read
+      actions: read  # used only by the on_time step below (late schedule)
     steps:
       - uses: actions/checkout@v5
         with:
@@ -83,6 +97,16 @@ jobs:
           cache-dependency-path: |
             requirements-archive.txt
             constraints.txt
+      - name: Late schedule only - did tonight's on-time archive job succeed?
+        id: on_time
+        if: github.event_name == 'schedule'
+        # Fail open: if this step breaks or times out, `skip` stays unset and the archive
+        # step runs. The only step given the Actions token in its environment.
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          ACTIONS_READ_TOKEN: ${{ github.token }}
+        run: python archive_on_time_check.py
       - run: python -m pip install -r requirements-archive.txt
       - name: Archive outside the dashboard and scan processes
         env:
@@ -91,7 +115,9 @@ jobs:
           DRIVE_ARCHIVE_FOLDER_ID: ${{ secrets.DRIVE_ARCHIVE_FOLDER_ID }}
           ARCHIVE_DELETE_ENABLED: ${{ vars.ARCHIVE_DELETE_ENABLED }}
           EVENT_NAME: ${{ github.event_name }}
+          ARCHIVE_ENABLED: ${{ vars.ARCHIVE_ENABLED }}
           NIGHTLY_DELETE: ${{ vars.ARCHIVE_NIGHTLY_DELETE }}
+          ON_TIME_SKIP: ${{ steps.on_time.outputs.skip }}
           REQUESTED_MODE: ${{ inputs.mode }}
           REQUESTED_TABLE: ${{ inputs.table }}
           NAV_CUTOFF: ${{ inputs.nav_cutoff }}
@@ -108,9 +134,25 @@ jobs:
           python - <<'PY'
           import os
           import json
-          if os.environ['EVENT_NAME'] == 'schedule':
-              if os.environ.get('NIGHTLY_DELETE') != 'true':
+
+          def gate_open(name):
+              """Owner variable is on, compared like the job-level `if:` (GitHub ignores case)."""
+              return os.environ.get(name, '').lower() == 'true'
+
+          nightly = os.environ['EVENT_NAME'] == 'schedule' or (
+              os.environ['EVENT_NAME'] == 'workflow_dispatch' and os.environ.get('REQUESTED_MODE') == 'nightly')
+          if nightly:
+              if not gate_open('NIGHTLY_DELETE') or (
+                      os.environ['EVENT_NAME'] == 'workflow_dispatch' and not gate_open('ARCHIVE_ENABLED')):
+                  if os.environ['EVENT_NAME'] == 'workflow_dispatch':
+                      # The job-level gates started this job, so they and this step disagree
+                      # (wiring broken). Fail: a successful archive job must mean retention ran.
+                      print(json.dumps({'status': 'NIGHTLY_GATE_MISMATCH', 'database_connections': 0, 'source_deletes': 0}))
+                      raise SystemExit(3)
                   print(json.dumps({'status': 'ARCHIVE_SCHEDULE_HELD_NO_IO', 'database_connections': 0, 'source_deletes': 0}))
+                  raise SystemExit(0)
+              if os.environ['EVENT_NAME'] == 'schedule' and os.environ.get('ON_TIME_SKIP') == 'true':
+                  print(json.dumps({'status': 'ARCHIVE_SCHEDULE_SKIPPED_ON_TIME_RUN_SUCCEEDED', 'source_deletes': 0}))
                   raise SystemExit(0)
               from archive_maintenance import main
               raise SystemExit(main(['--mode', 'delete', '--table', 'growing', '--max-batches', '100']))

@@ -56,3 +56,15 @@ limit 30;
 Do not remove the GitHub `schedule:` block until at least three real Supabase-scheduled dispatches have appeared as `workflow_dispatch`, started within five minutes of their intended IST time, and completed successfully. Include at least one `scan` and one non-scan mode in that verification set.
 
 Do not use GitHub's **Disable workflow** command during cutover; that would also disable `workflow_dispatch`. Cutover means removing only the `schedule:` event entries from the workflow YAML after verification.
+
+## Nightly archive target (added 10 Nov 2026)
+
+The same function also accepts `{"target": "archive-nightly"}`. It dispatches
+`drive-archive.yml` with `mode=nightly` only. The workflow and its inputs are fixed in
+the function; the caller can't choose them. `supabase/archive-nightly-cron.sql` schedules
+it at 20:15 UTC and moves the nightly VACUUM to 22:45 UTC. The GitHub `schedule:` in
+`drive-archive.yml` stays as a fallback and skips itself only when tonight's on-time
+run's `archive` job succeeded (`archive_on_time_check.py`; a held run does not count).
+Full steps and rollback: `ARCHIVE_ON_TIME_DISPATCH_2026-11-10.md`. Redeploy the function
+(Edge Functions → `dispatch-scheduled-collector` → Code → paste `index.ts` → Deploy,
+Verify JWT off) before running that SQL.

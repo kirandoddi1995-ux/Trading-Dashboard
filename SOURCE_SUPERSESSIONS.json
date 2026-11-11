@@ -3,8 +3,8 @@
     ".github/workflows/drive-archive.yml": [
       {
         "predecessor_legacy_sha256": "5cc2b4dfc8751315e406285d26b7c2a65281102dad30a7042d66c727c6a2c138",
-        "reason": "ROLLING_WINDOW_2026-11-07.md",
-        "successor_raw_sha256": "7a98d8a8ff12296a315d45494c749f13ad18f9d143748da05f90c00997565ba0"
+        "reason": "ARCHIVE_ON_TIME_DISPATCH_2026-11-10.md",
+        "successor_raw_sha256": "ff8b6982186d59b3b1f39d0149c14b55ede2af8371eb7abec9de13e1dc21c9fa"
       }
     ],
     "archive_maintenance.py": [
@@ -31,8 +31,8 @@
     "tests/test_archive_commissioning_hold.py": [
       {
         "predecessor_legacy_sha256": "8ea61e76bd842279790dd8dcb0db10d20f8c7ffbeffa4e2fc7e3f46cf5be13c7",
-        "reason": "ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md",
-        "successor_raw_sha256": "35a3720c19e6255ccca358ed1d2e135cf27084f3ad480ec210f12b08644fcabe"
+        "reason": "ARCHIVE_ON_TIME_DISPATCH_2026-11-10.md",
+        "successor_raw_sha256": "2f85bb2479f7a152905c4c19286c43577bd42e5396082508d418807fe705eac4"
       }
     ],
     "tests/test_archive_maintenance_sql.py": [

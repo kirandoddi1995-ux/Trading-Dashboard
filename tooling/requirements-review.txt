@@ -1,0 +1,5 @@
+# Local pre-PR review gate only (tooling/pre_pr_review.py). Not app, CI or archive dependencies.
+coverage==7.17.2
+pyflakes==3.2.0
+tree-sitter==0.26.1
+tree-sitter-typescript==0.23.2
