@@ -8,6 +8,7 @@ import datetime as dt
 import os
 from pathlib import Path
 import textwrap
+import urllib.request
 from unittest.mock import Mock
 
 import pytest
@@ -172,6 +173,7 @@ def _launcher():
 
 
 def test_actual_scheduled_launcher_holds_without_nightly_owner_variable(monkeypatch, capsys):
+    """The real launcher holds the schedule (no IO, no secrets) until nightly delete is on."""
     source, script = _launcher()
     monkeypatch.setenv('EVENT_NAME', 'schedule')
     monkeypatch.setenv('ARCHIVE_DELETE_ENABLED', 'true')
@@ -187,18 +189,23 @@ def test_actual_scheduled_launcher_holds_without_nightly_owner_variable(monkeypa
     assert 'secrets.' not in hold
     assert 'checkout' not in hold
     assert "vars.ARCHIVE_NIGHTLY_DELETE != 'true'" in hold
-    assert 'options: [preview, export, restore-check, delete, prune-preserved]' in source
+    assert 'options: [preview, export, restore-check, delete, prune-preserved, nightly]' in source
 
 
 def test_actual_scheduled_launcher_runs_restore_proven_growing_retention(monkeypatch):
+    """With the owner variable on and no Actions token, the schedule runs the retention (no API call)."""
     _, script = _launcher()
     monkeypatch.setenv('EVENT_NAME', 'schedule')
     monkeypatch.setenv('NIGHTLY_DELETE', 'true')
+    monkeypatch.delenv('ACTIONS_READ_TOKEN', raising=False)
+    requests = []
+    monkeypatch.setattr(urllib.request, 'urlopen', lambda *args, **kwargs: requests.append(args))
     main = Mock(return_value=0)
     monkeypatch.setattr(maintenance, 'main', main)
     with pytest.raises(SystemExit) as caught:
         exec(compile(script, '<synthetic-workflow>', 'exec'), {})
     assert caught.value.code == 0
+    assert requests == []
     main.assert_called_once_with(['--mode', 'delete', '--table', 'growing', '--max-batches', '100'])
 
 

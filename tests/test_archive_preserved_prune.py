@@ -230,9 +230,11 @@ def test_prune_mode_requires_the_full_generation_inputs(argv, capsys, monkeypatc
 
 
 def test_the_nightly_schedule_cannot_reach_prune_mode():
+    """The nightly block (schedule and on-time dispatch) only ever runs delete, never prune."""
     from pathlib import Path
     workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/drive-archive.yml').read_text()
-    scheduled = workflow[workflow.index("if os.environ['EVENT_NAME'] == 'schedule':"):
+    # The nightly block serves the GitHub schedule and the on-time mode=nightly dispatch.
+    scheduled = workflow[workflow.index("nightly = os.environ['EVENT_NAME'] == 'schedule'"):
                          workflow.index("if os.environ['EVENT_NAME'] != 'workflow_dispatch':")]
     assert "'--mode', 'delete'" in scheduled and 'prune' not in scheduled
     assert 'preserved' not in scheduled
