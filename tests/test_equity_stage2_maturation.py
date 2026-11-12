@@ -1448,12 +1448,12 @@ def test_a_failed_corporate_actions_answer_is_requested_once_per_stock(monkeypat
 
 @needs_sql
 def test_pending_query_leaves_out_passes_with_an_archived_basis_event(db):
-    """Archived non-dividend action after the decision day, up to today: out. A dividend (any type
-    naming one), an ex-date on or before the decision day, after today, or another stock's action:
-    still pending."""
+    """Archived action of a known non-dividend type after the decision day, up to today: out. A
+    dividend (any type naming one), an unknown type (reported later by basis_events), an ex-date on
+    or before the decision day, after today, or another stock's action: still pending."""
     day = TODAY - dt.timedelta(days=30)
     held = _seed(db, run="r30", symbol="INE111A01011", day=day)
-    kept = [_seed(db, run="r30", symbol=f"INE22{n}A01011", day=day) for n in range(6)]
+    kept = [_seed(db, run="r30", symbol=f"INE22{n}A01011", day=day) for n in range(8)]
 
     def archive(isin, kind, ex, amount=0.0):
         """One archived action row (the close-mode archive's columns)."""
@@ -1467,8 +1467,11 @@ def test_pending_query_leaves_out_passes_with_an_archived_basis_event(db):
     archive("INE999A01011", "Bonus", day + dt.timedelta(days=3))      # no pass of this stock
     archive("INE224A01011", "Split", TODAY)                           # today itself: out
     archive("INE225A01011", "Interim Dividend", day + dt.timedelta(days=3), amount=50.0)
+    archive("INE226A01011", "Demerger", day + dt.timedelta(days=3))   # unknown type: stays pending
+    archive("INE227A01011", " RIGHTS ISSUE ", day + dt.timedelta(days=3))   # known after trim: out
     pending = {r[0] for r in m.pending_shadow_passes(SqlRepo(db), today=TODAY)}
-    assert held not in pending and kept[4] not in pending and set(kept[:4]) | {kept[5]} <= pending
+    assert held not in pending and kept[4] not in pending and kept[7] not in pending
+    assert set(kept[:4]) | {kept[5], kept[6]} <= pending
 
 
 def test_the_anchor_compares_open_high_and_low_not_the_close():

@@ -49,7 +49,7 @@ Shadow-only. Never places, sizes or recommends an order. Off unless the reposito
     the entry (amount > 0) has any ex-date (`ex_date`, `expiry_date`, every "Ex ... date" detail; a dash or
     "NA" is no date) after the decision day and on or before the run day (an ex-date after the window still
     shifts it, because the history is adjusted to the fetch day); any type naming a dividend ("Interim
-    Dividend") is a dividend, here and in the pending query. What cannot be read, or a type other than
+    Dividend") is a dividend. What cannot be read, or a type other than
     Dividend, Bonus, Split and Rights Issue, holds it back and is reported (`unreadable_action`, run PARTIAL
     with the reason, so a renamed Upstox field or a new type cannot hold decisions back unseen): an action that
     is not an object, one in the window without a type or of an unknown type, a dividend in the window without
@@ -58,8 +58,10 @@ Shadow-only. Never places, sizes or recommends an order. Off unless the reposito
     4 types, every action dated, every "Ex ... date" detail equal to its `expiry_date`, so 0 reported. A non-200 or non-`success` answer is a failure, never a pass (asked once
     per stock per run, even when it fails). The held-back stock's actions are archived in `corporate_actions`
     (the close-mode archive's writer; the runtime role has INSERT/SELECT/UPDATE, no RLS on that table) and
-    the pending query leaves out passes with an archived non-dividend action in that window: a terminal
-    mark, so most take no later slot or request (exceptions in Limits);
+    the pending query leaves out passes with an archived Bonus, Split or Rights Issue in that window: a
+    terminal mark, so most take no later slot or request (exceptions in Limits). An archived action of any
+    other type (also from the close-mode archive) does not exclude: the pass is held back and reported each
+    run until it is 60 days old, so a new type never drops passes unseen;
   - basis (`basis_mismatch`): both histories must hold the decision day with the recorded entry (the scan's
     own quote, or its last close when it had none) inside its range (0.5%); the minutes' decision-day low and
     high must equal the daily bar's (0.5%: the entry and exit order come from the minutes, the anchor below
@@ -180,6 +182,12 @@ was held back as a non-dividend in silence and then excluded for good by the pen
 inside the type name in both, and a type outside the 4 known ones is reported; unreadable/undated rows
 measured on stored payloads (0 of 464); the range check's live rate listed as not measurable; doc wording;
 `nil/null/none` placeholders tested. Mutants: 5 of 5 killed.
+PR #88 bots: CodeRabbit (minor, fixed) - the pending query also excluded passes for an archived action of
+an unknown type, which the close-mode archive can write, so such a pass was dropped without a report ->
+only Bonus, Split and Rights Issue exclude now. Not changed: CodeRabbit's "archive the accepted ex-date" (cost
+only, 0 of 464 stored actions affected, the writer is shared close-mode code; in Limits), CodeAnt's
+cancelled-action note (in Limits), MergeHarbor's 3 test gaps (coverage: `_held_back`, `_basis_event`,
+`_ex_dates` 100% of statements run by this file's tests).
 Gemini notebook second opinion (12 points): no new defect. Covered already: ISIN change on a split, an
 ex-date on D or D-1, demerger gaps (fail closed), the terminal mark, the request budget (241 + 151 per scan);
 under T+1 the ex-date is the record date. Added to Limits: actions without a readable ex-date are re-checked

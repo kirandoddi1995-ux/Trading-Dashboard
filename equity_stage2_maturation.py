@@ -133,7 +133,7 @@ PENDING_SQL = f"""
       AND {_MISSING}
       AND NOT EXISTS (SELECT 1 FROM {SCHEMA}.corporate_actions c
                       WHERE c.isin = split_part(o.instrument_key, '|', 2)
-                        AND position('dividend' in lower(c.action_type)) = 0
+                        AND lower(trim(c.action_type)) = ANY(%s)
                         AND c.ex_date > o.as_of_date AND c.ex_date <= %s)
     ORDER BY o.as_of_date DESC, o.observation_id
 """
@@ -234,14 +234,17 @@ def parse_pending_row(row: tuple) -> dict:
 def pending_shadow_passes(repo, *, today: dt.date) -> list[tuple]:
     """(observation_id, as_of_date) of every shadow pass 22-60 days old missing a label; newest first.
 
-    Passes whose stock has an archived non-dividend corporate action after the decision day (up to
-    today) are left out: they can never be labelled, so they take no slot and no request.
+    Passes whose stock has an archived action of a known non-dividend type (KNOWN_ACTIONS) after the
+    decision day (up to today) are left out: they can never be labelled, so they take no slot and no
+    request. An archived action of any other type does not exclude: the pass reaches basis_events,
+    which holds it back and reports the type (a new type must not drop passes unseen).
     """
     versions = [shadow_target_version(policy) for policy in POLICIES]
     with repo.connect() as conn:
         return list(conn.execute(PENDING_SQL, (
             STAGE2_SHADOW_VERSION, today - dt.timedelta(days=RETRY_DAYS),
-            today - dt.timedelta(days=FIRST_ELIGIBLE_DAYS), versions, len(versions), today,
+            today - dt.timedelta(days=FIRST_ELIGIBLE_DAYS), versions, len(versions), list(KNOWN_ACTIONS),
+            today,
         )).fetchall())
 
 
@@ -515,7 +518,8 @@ def fetch_corporate_actions(client, token: str, instrument_key: str) -> list:
 
 
 # Non-dividend action types the corporate-actions feed lists (all 464 stored actions, 12 Nov, are
-# these or "Dividend"); any other type still holds a decision back, reported (see basis_events).
+# these or "Dividend"); any other type still holds a decision back, reported (see basis_events),
+# and only these exclude a pass in PENDING_SQL (lower-case, matched after trim).
 KNOWN_ACTIONS = ("bonus", "split", "rights issue")
 # A dash or "NA" in a date field means "no such date", not an unreadable one.
 _NO_DATE = re.compile(r"[-\u2013\u2014]*|n/?a|nil|null|none")
