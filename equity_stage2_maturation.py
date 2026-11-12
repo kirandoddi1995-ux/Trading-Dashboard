@@ -27,6 +27,28 @@ so that tight and wide stops are compared fairly:
 
 A label whose NIFTY evidence is missing is not stored (counted as `no_benchmark`, retried later).
 
+Price basis (corporate actions): the recorded entry, stop and target are on the price basis of
+the decision day, but Upstox history is back-adjusted to the day it is fetched. A split, bonus,
+rights issue or large dividend between the two would make the levels meaningless against the
+fetched bars (a 1:1 bonus halves the history: every stop looks hit). Two guards, both fail-closed:
+
+- events: the stock's Upstox corporate actions (one request per stock per run, before any history
+  request); a decision is held back (`corporate_action`) when any action other than a dividend
+  below 2% of the entry has an ex-date after the decision day and on or before the run day. The
+  held-back stock's actions are archived in `corporate_actions`, and PENDING_SQL leaves out
+  passes with an archived non-dividend action in that window, so they take no later slot;
+- basis (`basis_mismatch`): both histories must hold the decision day with the recorded entry
+  (the scan's own quote) inside its range, and one of the fetched daily bars just before the
+  decision day must equal the last completed bar the scan recorded (`latest_indicators` Open,
+  High and Low, within 0.1%; the close is left out because sources and revisions differ on it),
+  and the minutes' decision-day low and high must equal the daily bar's (0.5%). A rescale of the
+  daily history above 0.1%, or of the minutes alone above 0.5%, whatever the cause, fails these,
+  so events the feed does not list (a demerger) are caught whenever the provider adjusted them.
+  Actions the module cannot read hold the decision back and make the run PARTIAL.
+
+Not covered: an event the feed omits that the provider also did not adjust (the raw ex-date jump
+then sits inside the window).
+
 Each label is one append-only `prediction_targets` row under a shadow-only target version
 `stage2-shadow:<label version>:<policy>`, so the app's calibration, readiness counts and training
 (which read `net-excess-execution-v2`) never see them. Buy and Watch, the score and repeated scans
@@ -36,9 +58,10 @@ Why not a DECISION_EVALUATED event per pass (the spec's other Phase 5 option): t
 `pending_observations` would then pick the passes up and write production-version labels into the
 app's calibration evidence, and each event costs about 5 KB of never-deleted ledger.
 
-Upstox use: one NIFTY daily request per run plus, per stock and decision day, one daily and one
-one-minute history request (ending at the horizon's last session), and one NIFTY one-minute
-request per decision window, each after the 0.2 s pause the shadow Stage-2 uses; at most
+Upstox use: one NIFTY daily request per run plus, per stock, one corporate-actions request and,
+per stock and decision day, one daily and one one-minute history request (ending at the horizon's
+last session), and one NIFTY one-minute request per decision window, each after the 0.2 s pause
+the shadow Stage-2 uses; at most
 `MAX_DECISIONS_PER_RUN` decisions and `BUDGET_SECONDS` per run (checked between decisions; a
 budget stop makes the run PARTIAL). Only decisions whose 15 sessions have completed on the NIFTY
 calendar take one of those slots, so decisions still waiting (holiday clusters) never use one.
@@ -55,17 +78,19 @@ import json
 import logging
 import math
 import os
+import re
 import time
+import urllib.parse
 from typing import Callable, Mapping
 
 import pandas as pd
 
 from equity_stage2_collector import (
-    IST, NIFTY_KEY, REQUEST_PAUSE_SECONDS, STAGE2_SHADOW_VERSION, LeaseLost,
+    IST, NIFTY_KEY, REQUEST_PAUSE_SECONDS, STAGE2_SHADOW_VERSION, UPSTOX_API, LeaseLost,
 )
 # Exact-intraday labels always carry TARGET_VERSION: compute_forward_target never falls back there.
 from prediction_validation import TARGET_VERSION, TargetDefinition, compute_forward_target
-from production_repository import SCHEMA
+from production_repository import SCHEMA, _date_value
 
 LOGGER = logging.getLogger(__name__)
 
@@ -76,13 +101,23 @@ CHALLENGER = "atr15-stop-v1"
 POLICIES = (INCUMBENT, CHALLENGER)
 VERSION_PREFIX = "stage2-shadow"
 SHADOW_LABEL_VERSION = f"{TARGET_VERSION}.minute-aligned-v1"
-MAX_DECISIONS_PER_RUN = 60   # <= 181 history requests a run: Upstox allows 1000 per 30 min per API
+MAX_DECISIONS_PER_RUN = 60   # <= 241 requests a run: Upstox allows 1000 per 30 min per API
 BUDGET_SECONDS = 300.0
 FIRST_ELIGIBLE_DAYS = 22   # 15 sessions after the decision day, the run day's bar excluded
 RETRY_DAYS = 60            # stop retrying an unlabelled decision after this many days
 DEFAULT_COST_BPS = 30.0    # the existing maturation's fallback when no estimate was recorded
 STALE_BENCHMARK_DAYS = 6   # NSE closures never exceed this: an older last NIFTY bar is a stale answer
 BENCH_GAP = pd.Timedelta(minutes=5)   # furthest a NIFTY minute may sit from the stock's entry/exit minute
+LARGE_DIVIDEND = 0.02      # a dividend at least this share of the entry moves the price basis
+BASIS_TOLERANCE = 0.005    # recorded entry vs the fetched decision-day range: same basis, rounding only
+ANCHOR_TOLERANCE = 0.001   # the scan's last completed daily bar re-fetched: float rounding only
+# Trade-set prices only: a close can be the last trade or the official (last-30-minute) close and
+# differ by source or revision (AVTNPL 10 Nov: 100.14 Upstox vs 100.31 elsewhere, O/H/L equal).
+ANCHOR_FIELDS = ("Open", "High", "Low")
+ANCHOR_LOOKBACK = 2        # bars before the decision day searched for it: one session of feed lag at
+                           # scan time; more would let an older bar match after a rescale
+HISTORY_LEAD_DAYS = 10     # daily history starts this long before the decision day (anchor + holidays)
+ISIN_PATTERN = re.compile(r"IN[A-Z0-9]{9}[0-9]")
 FAILURE_DETAIL_LIMIT = 20
 
 _MISSING = f"""(SELECT count(*) FROM {SCHEMA}.prediction_targets t
@@ -96,6 +131,10 @@ PENDING_SQL = f"""
       AND o.entry IS NOT NULL AND o.stop IS NOT NULL AND o.target IS NOT NULL
       AND o.as_of_date BETWEEN %s AND %s
       AND {_MISSING}
+      AND NOT EXISTS (SELECT 1 FROM {SCHEMA}.corporate_actions c
+                      WHERE c.isin = split_part(o.instrument_key, '|', 2)
+                        AND lower(trim(c.action_type)) = ANY(%s)
+                        AND c.ex_date > o.as_of_date AND c.ex_date <= %s)
     ORDER BY o.as_of_date DESC, o.observation_id
 """
 
@@ -156,6 +195,17 @@ def challenger_levels(entry: float, atr: float, resistance20: float, resistance6
     return levels_for_stop(entry, atr, entry - 1.5 * atr, resistance20, resistance60, horizon_days)
 
 
+def _anchor(bar) -> dict | None:
+    """The scan's last completed daily bar (ANCHOR_FIELDS as recorded), or None if unreadable."""
+    if not isinstance(bar, Mapping):
+        return None
+    try:
+        values = {name: float(bar[name]) for name in ANCHOR_FIELDS}
+    except (KeyError, TypeError, ValueError):
+        return None
+    return values if all(math.isfinite(v) and v > 0 for v in values.values()) else None
+
+
 def parse_pending_row(row: tuple) -> dict:
     """One pending shadow pass with the decision inputs its ledger batch recorded (raises if absent)."""
     names = ("observation_id", "as_of_date", "instrument_key", "trading_symbol",
@@ -175,18 +225,26 @@ def parse_pending_row(row: tuple) -> dict:
         resistance20=float(levels["resistance20"]), resistance60=float(levels["resistance60"]),
         cost_bps=DEFAULT_COST_BPS if cost is None else float(cost),
         evaluated_at=pd.Timestamp(used["evaluated_at"]),
+        anchor=_anchor(inputs.get("latest_indicators")),
         stored_versions=set(item.get("stored_versions") or ()),
     )
     return item
 
 
 def pending_shadow_passes(repo, *, today: dt.date) -> list[tuple]:
-    """(observation_id, as_of_date) of every shadow pass 22-60 days old missing a label; newest first."""
+    """(observation_id, as_of_date) of every shadow pass 22-60 days old missing a label; newest first.
+
+    Passes whose stock has an archived action of a known non-dividend type (KNOWN_ACTIONS) after the
+    decision day (up to today) are left out: they can never be labelled, so they take no slot and no
+    request. An archived action of any other type does not exclude: the pass reaches basis_events,
+    which holds it back and reports the type (a new type must not drop passes unseen).
+    """
     versions = [shadow_target_version(policy) for policy in POLICIES]
     with repo.connect() as conn:
         return list(conn.execute(PENDING_SQL, (
             STAGE2_SHADOW_VERSION, today - dt.timedelta(days=RETRY_DAYS),
-            today - dt.timedelta(days=FIRST_ELIGIBLE_DAYS), versions, len(versions),
+            today - dt.timedelta(days=FIRST_ELIGIBLE_DAYS), versions, len(versions), list(KNOWN_ACTIONS),
+            today,
         )).fetchall())
 
 
@@ -321,6 +379,51 @@ def _execution_adjusted(label: dict, minutes: pd.DataFrame, bench_daily: pd.Data
             "benchmark_return": bench, "excess_return": net - bench, "positive_excess": int(net - bench > 0)}
 
 
+def _basis_problem(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFrame) -> str | None:
+    """Why the fetched history is not on the recorded price basis, or None.
+
+    1. Both the daily and the one-minute history must hold the decision day, and the recorded
+       entry (the scan's quote, or its last close without one) must lie inside that day's range
+       in each (BASIS_TOLERANCE): a coarse check that catches large rescales in either feed. The
+       two feeds' decision-day low and high must also agree within BASIS_TOLERANCE, so the
+       minutes are on the daily feed's basis.
+    2. Exact anchor: the scan recorded its last completed daily bar (`latest_indicators`, the
+       same Upstox series); one of the fetched bars just before the decision day must match it
+       within ANCHOR_TOLERANCE on Open, High and Low. A history back-adjusted for any later
+       split, bonus, rights issue, demerger or dividend by more than the tolerance matches none.
+       A pass without a readable recorded bar is a problem too (every Stage-2 pass records one).
+    """
+    as_of, entry = pd.Timestamp(decision["as_of_date"]), float(decision["entry"])
+    ranges = {}
+    for name, frame in (("daily", daily), ("minutes", minutes)):
+        day = frame.loc[frame.index.normalize() == as_of] if not frame.empty else frame
+        if day.empty:
+            return f"no decision-day bars in the {name} history"
+        low, high = float(day["Low"].min()), float(day["High"].max())
+        # NaN bounds fail both comparisons: an unreadable range is a problem, not a pass.
+        if not low * (1 - BASIS_TOLERANCE) <= entry <= high * (1 + BASIS_TOLERANCE):
+            return f"recorded entry {entry} outside the {name} decision-day range {low}-{high}"
+        ranges[name] = (low, high)
+    # The anchor below checks the daily feed; the minutes (entry and exit order) must be on the
+    # same basis: their decision-day range equals the daily bar's (a rescale of either fails it).
+    ratios = [ranges["minutes"][i] / ranges["daily"][i] for i in (0, 1)]
+    if not all(abs(ratio - 1) <= BASIS_TOLERANCE for ratio in ratios):
+        return f"the minute and daily decision-day ranges differ (low ratio {ratios[0]:.4f}, high ratio {ratios[1]:.4f})"
+    anchor = decision.get("anchor")
+    if anchor is None:
+        # Every Stage-2 pass records its last completed bar; without it the basis cannot be proven.
+        return "no recorded last completed bar to check the price basis against"
+    prior = daily.loc[daily.index.normalize() < as_of].tail(ANCHOR_LOOKBACK)
+    if prior.empty:
+        return "no daily bar before the decision day to check the price basis against"
+    for _, bar in prior.iterrows():
+        # NaN never matches: abs(nan) <= tolerance is False.
+        if all(abs(float(bar[name]) / value - 1) <= ANCHOR_TOLERANCE for name, value in anchor.items()):
+            return None
+    ratio = float(prior["Low"].iloc[-1]) / anchor["Low"]
+    return f"the scan's last completed bar is not in the fetched daily history (low ratio {ratio:.4f})"
+
+
 def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFrame,
                    benchmark: pd.DataFrame | None, benchmark_minutes: pd.DataFrame | None,
                    today: dt.date, notes: dict | None = None) -> dict[str, dict | None]:
@@ -329,10 +432,20 @@ def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFr
     `benchmark` and `benchmark_minutes` are NIFTY's daily and one-minute bars. A policy maps to
     None when its levels are invalid, the evidence is incomplete or ambiguous
     (compute_forward_target refuses to label it) or the NIFTY evidence does not cover the holding
-    window (counted in `notes["no_benchmark"]`); later runs retry it.
+    window (counted in `notes["no_benchmark"]`); both map to None when the history is not on the
+    recorded price basis (`notes["basis_mismatch"]`). Later runs retry it.
     """
     daily, minutes = _before(daily, today), _before(minutes, today)
     bench_daily, bench_minutes = _before(benchmark, today), _before(benchmark_minutes, today)
+    problem = _basis_problem(decision, daily=daily, minutes=minutes)
+    if problem is not None:
+        LOGGER.warning("Stage-2 maturation: %s %s", decision.get("trading_symbol"), problem)
+        if notes is not None:
+            notes["basis_mismatch"] = notes.get("basis_mismatch", 0) + 1
+            notes.setdefault("basis_problems", []).append(
+                {"observation_id": decision.get("observation_id"), "error_kind": "BasisMismatch",
+                 "message": problem[:200]})
+        return {policy: None for policy in POLICIES}
     levels = {
         INCUMBENT: (decision["stop"], decision["target"]),
         CHALLENGER: challenger_levels(decision["entry"], decision["atr"],
@@ -371,6 +484,160 @@ class ProviderRejected(RuntimeError):
     """The daily history request for one instrument got an HTTP 4xx (not auth, not rate limit)."""
 
 
+def isin_of(instrument_key: str) -> str:
+    """The ISIN inside an NSE equity instrument key ('NSE_EQ|INE002A01018'); ValueError otherwise."""
+    isin = str(instrument_key).partition("|")[2]
+    if not ISIN_PATTERN.fullmatch(isin):
+        raise ValueError(f"no ISIN in instrument key {instrument_key!r}")
+    return isin
+
+
+def fetch_corporate_actions(client, token: str, instrument_key: str) -> list:
+    """Upstox corporate actions of one stock: the endpoint scheduled_collector.update_corporate_actions
+    archives (past ~year plus announced ex-dates; 1,162 ISINs answered 200, 523 of them empty).
+
+    A rejected token raises PermissionError; a key without an ISIN, any other non-200 answer or a
+    changed schema raises ValueError: a decision is never labelled without this evidence.
+    """
+    isin = isin_of(instrument_key)
+    response = client.get(
+        f"{UPSTOX_API}/v2/fundamentals/{urllib.parse.quote(isin, safe='')}/corporate-actions",
+        headers={"Accept": "application/json", "Authorization": f"Bearer {token}"}, timeout=(5, 20),
+    )
+    if response.status_code in {401, 403}:
+        raise PermissionError("Upstox rejected the Analytics Token")
+    if response.status_code != 200:
+        raise ValueError(f"Corporate-actions API returned HTTP {response.status_code}")
+    payload = response.json()
+    if not isinstance(payload, Mapping) or payload.get("status") != "success" or "data" not in payload:
+        raise ValueError("Upstox corporate-actions answer is not a success")
+    actions = [] if payload["data"] is None else payload["data"]
+    if not isinstance(actions, list):
+        raise ValueError("Upstox corporate-actions schema changed")
+    return actions
+
+
+# Non-dividend action types the corporate-actions feed lists (all 464 stored actions, 12 Nov, are
+# these or "Dividend"); any other type still holds a decision back, reported (see basis_events),
+# and only these exclude a pass in PENDING_SQL (lower-case, matched after trim).
+KNOWN_ACTIONS = ("bonus", "split", "rights issue")
+# A dash or "NA" in a date field means "no such date", not an unreadable one.
+_NO_DATE = re.compile(r"[-\u2013\u2014]*|n/?a|nil|null|none")
+
+
+def _ex_dates(item: Mapping) -> list:
+    """Every ex-date an action carries: `ex_date`, `expiry_date` (the field the archived rows
+    use) and each 'Ex ... date' detail (all agree in the 911 archived rows); unparsable ones come
+    back as None, placeholders (_NO_DATE) are left out."""
+    raw = [item.get("ex_date"), item.get("expiry_date")]
+    raw += [d.get("value") for d in item.get("event_details") or ()
+            if isinstance(d, Mapping) and re.fullmatch(r"ex\b.*\bdate", str(d.get("name") or "").strip().lower())]
+    return [_date_value(value) for value in raw
+            if value is not None and not _NO_DATE.fullmatch(str(value).strip().lower())]
+
+
+def _dividend_amount(item: Mapping) -> float | None:
+    """The dividend per share, or None when it cannot be read (missing, not a number, negative)."""
+    try:
+        amount = float(item.get("amount"))
+    except (TypeError, ValueError):
+        return None
+    return amount if math.isfinite(amount) and amount >= 0 else None
+
+
+def _basis_event(item, decision: Mapping, today: dt.date) -> tuple[str, bool] | None:
+    """(reason, unreadable) when one corporate action holds the decision back, else None.
+
+    `unreadable` marks a hold-back that rests on data this module cannot read (the action, its
+    type, a dividend's amount or its ex-dates) or a type it does not know, rather than on a dated
+    event of a known type: see basis_events. Any type naming a dividend ("Interim Dividend") is one.
+    """
+    if not isinstance(item, Mapping):
+        return "unreadable action", True
+    name = str(item.get("name") or item.get("type") or "").strip()
+    dividend = "dividend" in name.lower()
+    amount = _dividend_amount(item) if dividend else None
+    if dividend and amount is not None and 0 < amount < LARGE_DIVIDEND * float(decision["entry"]):
+        return None                                   # a small dividend never moves the basis
+    dates = _ex_dates(item)
+    inside = sorted(d for d in dates if d is not None and decision["as_of_date"] < d <= today)
+    if inside:
+        reason = f"{name or 'action'} ex {inside[0].isoformat()}"
+        if not name:
+            return f"{reason} of an unreadable type", True
+        if dividend and amount is None:
+            return f"{reason} with an unreadable amount", True
+        if not dividend and name.lower() not in KNOWN_ACTIONS:
+            return f"{reason} of an unknown type", True
+        return reason, False                          # amount 0: not announced yet, held back
+    if not dates or None in dates:
+        return f"{name or 'action'} without a readable ex-date", True
+    return None
+
+
+def basis_events(actions: list, decision: Mapping, today: dt.date) -> list[tuple[str, bool]]:
+    """(reason, unreadable) per corporate action that holds the decision back.
+
+    Every action except a dividend below LARGE_DIVIDEND of the entry counts (splits, bonuses,
+    rights, and any type not known here), when any of its ex-dates is after the decision day and
+    on or before the run day: the provider back-adjusts history up to the day it is fetched, so
+    an ex-date after the window still shifts it. Fail closed on what cannot be read or is not
+    known: an action, its type, an unknown type or a dividend's amount in the window, or an
+    unparsable ex-date when no ex-date in the window is readable. Those are `unreadable` and make
+    the run PARTIAL (a renamed field or a new type must not hold decisions back unseen).
+    """
+    return [event for event in (_basis_event(item, decision, today) for item in actions) if event]
+
+
+def _held_back(repo, cache: dict, decision: Mapping, *, client, token: str, today: dt.date,
+               fetch_actions: Callable, sleep: Callable[[float], None],
+               check_lease: Callable[[], None] | None, notes: dict) -> bool:
+    """True (logged) when a price-basis corporate action since the decision day holds it back.
+
+    A hold-back on unreadable data is counted in `notes["unreadable_action"]` and listed in
+    `notes["basis_problems"]` (the run turns PARTIAL with the reason).
+
+    The stock's corporate actions are fetched once per run, shared by all its decisions (a failed
+    answer too: it is raised again, not re-requested). A held-back stock's actions are archived
+    in `corporate_actions` (the close-mode archive's table and writer), which PENDING_SQL reads:
+    a non-dividend action in the window keeps the decision out of later runs' selection.
+    """
+    key = ("corporate_actions", decision["instrument_key"])
+    if key not in cache:
+        sleep(REQUEST_PAUSE_SECONDS)
+        try:
+            cache[key] = fetch_actions(client, token, decision["instrument_key"])
+        except PermissionError:
+            raise
+        except Exception as exc:
+            cache[key] = exc
+    if isinstance(cache[key], Exception):
+        raise cache[key]
+    events = basis_events(cache[key], decision, today)
+    if events and ("archived", key) not in cache:
+        cache[("archived", key)] = True
+        _guard(check_lease)
+        try:
+            # Best effort: the hold-back stands without it; the mark only saves later runs a slot.
+            repo.archive_corporate_actions(isin_of(decision["instrument_key"]),
+                                           [item for item in cache[key] if isinstance(item, Mapping)])
+        except Exception as exc:
+            LOGGER.warning("Stage-2 maturation: corporate-actions archive write skipped: %s",
+                           type(exc).__name__)
+    unreadable = [reason for reason, bad in events if bad]
+    if unreadable:
+        LOGGER.warning("Stage-2 maturation: %s held back on unreadable corporate actions (%s)",
+                       decision.get("trading_symbol"), "; ".join(unreadable[:3]))
+        notes["unreadable_action"] = notes.get("unreadable_action", 0) + 1
+        notes.setdefault("basis_problems", []).append(
+            {"observation_id": decision.get("observation_id"), "error_kind": "UnreadableCorporateAction",
+             "message": "; ".join(unreadable[:3])[:200]})
+    elif events:
+        LOGGER.info("Stage-2 maturation: %s held back (%s)", decision.get("trading_symbol"),
+                    "; ".join(reason for reason, _ in events[:3]))
+    return bool(events)
+
+
 def _history(cache: dict, decision: Mapping, *, client, token: str, today: dt.date,
              fetch_daily: Callable, fetch_minutes: Callable, sleep: Callable[[float], None]):
     """(daily, minutes, horizon end, NIFTY minutes) for a stock and decision day, once per run.
@@ -383,8 +650,8 @@ def _history(cache: dict, decision: Mapping, *, client, token: str, today: dt.da
         as_of = decision["as_of_date"]
         sleep(REQUEST_PAUSE_SECONDS)
         try:
-            daily = fetch_daily(client, token, decision["instrument_key"], as_of - dt.timedelta(days=5),
-                                today - dt.timedelta(days=1))
+            daily = fetch_daily(client, token, decision["instrument_key"],
+                                as_of - dt.timedelta(days=HISTORY_LEAD_DAYS), today - dt.timedelta(days=1))
         except Exception as exc:
             # Only the per-instrument daily request: NIFTY already proved that endpoint works.
             if _provider_rejected(exc):
@@ -443,6 +710,9 @@ def _report(repo, summary: dict, failures: list[dict], check_lease: Callable[[],
             "scheduled_stage2_maturation", "ERROR" if summary["status"] == "FAILED" else "WARNING",
             "STAGE2_MATURATION_FAILED",
             f"Shadow Stage-2 maturation {summary['status']}: {summary['failed']} decision failures"
+            + (f", {summary['basis_mismatch']} price-basis mismatches" if summary.get("basis_mismatch") else "")
+            + (f", {summary['unreadable_action']} held back on unreadable corporate actions"
+               if summary.get("unreadable_action") else "")
             + (f", stopped by {summary['stopped']}" if summary.get("stopped") else ""),
             {"summary": summary, "failures": failures[:FAILURE_DETAIL_LIMIT]},
         )
@@ -485,6 +755,7 @@ def _provider_rejected(exc: Exception) -> bool:
 
 def mature_shadow_passes(repo, client, token: str, *, today: dt.date,
                          fetch_daily: Callable, fetch_minutes: Callable,
+                         fetch_actions: Callable = fetch_corporate_actions,
                          check_lease: Callable[[], None] | None = None,
                          environ: Mapping[str, str] | None = None,
                          sleep: Callable[[float], None] = time.sleep,
@@ -493,16 +764,20 @@ def mature_shadow_passes(repo, client, token: str, *, today: dt.date,
 
     `fetch_daily(client, token, key, from_date, to_date)` and
     `fetch_minutes(client, token, key, from_date, to_date)` are the collector's Upstox history
-    fetchers (injected: this module must not import scheduled_collector). A rejected token
+    fetchers (injected: this module must not import scheduled_collector); `fetch_actions(client,
+    token, instrument_key)` defaults to this module's corporate-actions request. A rejected token
     (PermissionError) or an empty or stale NIFTY benchmark stops the run as FAILED; an HTTP 4xx on one
     instrument's daily request is counted as `provider_rejected` (a 4xx on the minute request is a failure); any other per-decision error (including a
-    malformed row or inputs missing from the ledger batch) is counted as failed and the run goes on.
+    malformed row, inputs missing from the ledger batch or an unreadable corporate-actions answer) is
+    counted as failed and the run goes on. A decision whose stock had a price-basis corporate action
+    since the decision day is held back before any history request (`corporate_action`).
     """
     if not maturation_enabled(environ):
         return {"status": "DISABLED", "reason": f"{ENABLE_ENV} is not enabled"}
     started = clock()
     summary = {"status": "SUCCESS", "pending": 0, "awaiting_sessions": 0, "selected": 0, "stored": 0,
                "already_stored": 0, "deferred": 0, "unlabelled": 0, "no_benchmark": 0,
+               "corporate_action": 0, "unreadable_action": 0, "basis_mismatch": 0,
                "provider_rejected": 0, "failed": 0, "stopped": None}
     failures: list[dict] = []
     try:
@@ -518,6 +793,11 @@ def mature_shadow_passes(repo, client, token: str, *, today: dt.date,
             _guard(check_lease)
             try:
                 decision = parse_pending_row(row)
+                if _held_back(repo, cache, decision, client=client, token=token, today=today,
+                              fetch_actions=fetch_actions, sleep=sleep, check_lease=check_lease,
+                              notes=summary):
+                    summary["corporate_action"] += 1
+                    continue
                 history = _history(cache, decision, client=client, token=token, today=today,
                                    fetch_daily=fetch_daily, fetch_minutes=fetch_minutes, sleep=sleep)
                 _mature_one(repo, decision, history=history, benchmark=benchmark, today=today,
@@ -535,6 +815,9 @@ def mature_shadow_passes(repo, client, token: str, *, today: dt.date,
     except Exception as exc:
         LOGGER.error("Stage-2 shadow maturation failed: %s", type(exc).__name__)
         summary.update(status="FAILED", error_type=type(exc).__name__)
+    # A basis mismatch is rare when the anchor works (an event the feed does not list) and total
+    # when it does not (a restated feed): each one is reported, so neither can pass unseen.
+    failures.extend(summary.pop("basis_problems", []))
     _report(repo, summary, failures, check_lease)
     summary["seconds"] = round(clock() - started, 1)
     return summary
