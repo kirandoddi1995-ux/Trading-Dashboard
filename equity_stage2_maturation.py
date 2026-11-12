@@ -6,26 +6,37 @@ next: the existing maturation (`scheduled_collector.update_matured_targets`) onl
 decisions that carry a DECISION_EVALUATED event, and only in `close` mode, which is switched off.
 
 When `SCHEDULED_STAGE2_MATURATION` is on, every scan run labels shadow passes whose 15-session
-horizon has completed, under two frozen level policies on the same decision:
+exit session has completed, under two frozen level policies on the same decision:
 
 - `incumbent-levels-v1`: the stop and target the decision was recorded with
   (`derive_long_trade_levels`: stop = min(entry - 1.5 ATR, 20-day low - 0.15 ATR)).
 - `atr15-stop-v1`: the research challenger, stop = entry - 1.5 ATR with the same target logic.
 
-Label `SHADOW_LABEL_VERSION`: `prediction_validation.compute_forward_target` (the production
-label: entry at the first one-minute open after the decision, minute-ordered stop/target touches,
-stop first on ties, net of the decision's estimated round-trip costs), with two execution changes
-so that tight and wide stops are compared fairly:
+Label `SHADOW_LABEL_VERSION`: the app's own trade plan (`trade_contracts.build_trade_timing`,
+what the app shows with every decision), executed on the stock's one-minute bars, net of the
+decision's estimated round-trip costs:
 
-- a stop touched by a minute bar that opens below it fills at that open (a gap through the stop),
-  not at the stop. Targets stay filled at the target (conservative);
-- the NIFTY benchmark covers the stock's own holding window, on NIFTY one-minute bars: from the
-  open of the entry minute to the close of the exit minute (to the daily close for a time exit).
-  The production label measures NIFTY from the entry day's 09:15 open to the outcome day's close,
-  which for a 10:07 decision adds NIFTY's first hour and, for a stop or target exit, the rest of
-  that day to the excess return.
+- entry at the open of the first minute bar that starts after the decision time and within the
+  entry window the app showed (15 minutes, never past 15:15) on the decision day; no such bar =
+  no trade (`no_fill`, no label), never a later day;
+- exit at the first bar that reaches the stop (stop first when a bar reaches both; filled at the
+  bar's open when it opened below the stop, a gap through it) or the target (filled at the
+  target), else at 15:15 on the 15th regular session after the decision day (the app's mandatory
+  exit; build_trade_timing counts weekdays, NIFTY's bars apply holidays, special sessions such as
+  Muhurat never count), priced within 5 minutes of 15:15;
+- every session of that window must have the stock's daily bar (neither feed: `no_trading`; only
+  the minutes: a reported gap) and valid minute bars, and each session's minutes and daily bar must agree on whether a level was
+  reached, up to the outcome (else `window_problem`, reported): no touch only one feed shows;
+- the NIFTY benchmark covers the same minutes: from the open of the entry minute to the open of
+  the exit minute when the stock exits at a bar's open (15:15 time exit, gap stop), else to the
+  close of the exit minute (a stop or target inside the bar, a last-close time exit).
 
-A label whose NIFTY evidence is missing is not stored (counted as `no_benchmark`, retried later).
+Both policies are labelled from one fetch and stored together, or not at all (a missing NIFTY
+window for either, `no_benchmark`, retries both later), so a pair never mixes two fetches.
+The production label (`prediction_validation.compute_forward_target`, `net-excess-execution-v2`)
+is unchanged: it reads minute bars only on days whose daily bar shows a touch, lets an in-session
+entry slip to a later day and ends a time exit after the 14th session, which is why it is not
+used here (the earlier shadow version built on it never stored a label).
 
 Price basis (corporate actions): the recorded entry, stop and target are on the price basis of
 the decision day, but Upstox history is back-adjusted to the day it is fetched. A split, bonus,
@@ -88,9 +99,9 @@ import pandas as pd
 from equity_stage2_collector import (
     IST, NIFTY_KEY, REQUEST_PAUSE_SECONDS, STAGE2_SHADOW_VERSION, UPSTOX_API, LeaseLost,
 )
-# Exact-intraday labels always carry TARGET_VERSION: compute_forward_target never falls back there.
-from prediction_validation import TARGET_VERSION, TargetDefinition, compute_forward_target
+from nifty_session_calendar import SPECIAL
 from production_repository import SCHEMA, _date_value
+from trade_contracts import INTRADAY_TIME_EXIT, build_trade_timing
 
 LOGGER = logging.getLogger(__name__)
 
@@ -100,7 +111,10 @@ INCUMBENT = "incumbent-levels-v1"
 CHALLENGER = "atr15-stop-v1"
 POLICIES = (INCUMBENT, CHALLENGER)
 VERSION_PREFIX = "stage2-shadow"
-SHADOW_LABEL_VERSION = f"{TARGET_VERSION}.minute-aligned-v1"
+# The app's own trade plan, executed on one-minute bars (see label_decision). Replaces
+# "net-excess-execution-v2.minute-aligned-v1", which no stored label ever used.
+SHADOW_LABEL_VERSION = "net-excess-app-contract-v1"
+ENTRY_QUALITY = "app_contract_first_minute_in_entry_window"
 MAX_DECISIONS_PER_RUN = 60   # <= 241 requests a run: Upstox allows 1000 per 30 min per API
 BUDGET_SECONDS = 300.0
 FIRST_ELIGIBLE_DAYS = 22   # 15 sessions after the decision day, the run day's bar excluded
@@ -206,6 +220,15 @@ def _anchor(bar) -> dict | None:
     return values if all(math.isfinite(v) and v > 0 for v in values.values()) else None
 
 
+def _recorded_time(value) -> pd.Timestamp | None:
+    """A recorded timezone-aware timestamp, or None when absent or unreadable."""
+    try:
+        stamp = pd.Timestamp(value) if value else None
+    except (TypeError, ValueError):
+        return None
+    return stamp if stamp is not None and stamp.tzinfo is not None else None
+
+
 def parse_pending_row(row: tuple) -> dict:
     """One pending shadow pass with the decision inputs its ledger batch recorded (raises if absent)."""
     names = ("observation_id", "as_of_date", "instrument_key", "trading_symbol",
@@ -226,6 +249,7 @@ def parse_pending_row(row: tuple) -> dict:
         cost_bps=DEFAULT_COST_BPS if cost is None else float(cost),
         evaluated_at=pd.Timestamp(used["evaluated_at"]),
         anchor=_anchor(inputs.get("latest_indicators")),
+        entry_valid_until=_recorded_time((inputs.get("timing") or {}).get("entry_valid_until")),
         stored_versions=set(item.get("stored_versions") or ()),
     )
     return item
@@ -268,7 +292,7 @@ def completed_decisions(pending: list[tuple], benchmark: pd.DataFrame, *, today:
     rest, ties within a decision day reshuffled each day: decisions closest to RETRY_DAYS go first,
     and a block of same-day decisions that stays unlabelled cannot hold the same slots every day.
     """
-    sessions = sorted(set(benchmark.index.normalize()))
+    sessions = [pd.Timestamp(d) for d in _regular(benchmark.index)]
     done, awaiting = [], 0
     for observation_id, as_of in pending:
         if sum(1 for d in sessions if d > pd.Timestamp(as_of)) >= HORIZON_SESSIONS:
@@ -283,15 +307,6 @@ def completed_decisions(pending: list[tuple], benchmark: pd.DataFrame, *, today:
     return [observation_id for observation_id, _ in done], awaiting
 
 
-def _signal_timestamp(evaluated_at: pd.Timestamp) -> pd.Timestamp | None:
-    """Decision time in IST if inside the cash session, else None (next-open entry rule)."""
-    at = evaluated_at.tz_convert(IST) if evaluated_at.tzinfo else evaluated_at.tz_localize(IST)
-    at = at.tz_localize(None)
-    opens, closes = at.replace(hour=9, minute=15, second=0, microsecond=0), \
-        at.replace(hour=15, minute=30, second=0, microsecond=0)
-    return at if opens <= at <= closes else None
-
-
 def _before(frame: pd.DataFrame | None, today: dt.date) -> pd.DataFrame:
     """Completed evidence only: drop anything stamped on or after the run's IST date."""
     if frame is None or frame.empty:
@@ -299,84 +314,197 @@ def _before(frame: pd.DataFrame | None, today: dt.date) -> pd.DataFrame:
     return frame.loc[frame.index.normalize() < pd.Timestamp(today)]
 
 
-def horizon_end(decision: Mapping, daily: pd.DataFrame, today: dt.date) -> dt.date | None:
-    """Date of the HORIZON_SESSIONS-th completed session after the decision day, or None if not yet."""
-    sessions = sorted({d for d in _before(daily, today).index.normalize() if d > pd.Timestamp(decision["as_of_date"])})
-    return sessions[HORIZON_SESSIONS - 1].date() if len(sessions) >= HORIZON_SESSIONS else None
+def _regular(index: pd.DatetimeIndex) -> list[dt.date]:
+    """Sorted weekday dates of `index` without the special sessions (see regular_sessions)."""
+    return sorted({d.date() for d in index.normalize() if d.weekday() < 5 and str(d.date()) not in SPECIAL})
 
 
-def _exit_bar(label: dict, minutes: pd.DataFrame, stop: float, target: float) -> pd.Series | None:
-    """The minute bar that ended a stop or target label (its `.name` is the minute).
+def regular_sessions(benchmark: pd.DataFrame | None, today: dt.date) -> list[dt.date]:
+    """Completed regular NSE sessions: NIFTY's bar dates before today, weekdays only, without the
+    special sessions `nifty_session_calendar.SPECIAL` lists (Muhurat, budget weekends, DR drills).
 
-    The first bar on the outcome day, at or after entry, that reaches the stop or the target:
-    the bar compute_forward_target stopped on.
+    The app counts weekdays for its exit day; NIFTY's bars apply the holidays. A special session
+    never counts towards the horizon (its bars still sit on the label's minute path).
     """
-    day = minutes.loc[minutes.index.normalize() == pd.Timestamp(label["outcome_date"])]
-    if label.get("entry_timestamp"):
-        day = day.loc[day.index >= pd.Timestamp(label["entry_timestamp"])]
-    touched = day.loc[(day["Low"].astype(float) <= stop) | (day["High"].astype(float) >= target)]
-    return None if touched.empty else touched.iloc[0]
+    return _regular(_before(benchmark, today).index)
 
 
-def _benchmark_return(label: dict, exit_at: pd.Timestamp | None, bench_daily: pd.DataFrame,
-                      bench_minutes: pd.DataFrame) -> float | None:
-    """NIFTY over the stock's holding window, or None when that evidence is missing or bad.
+def exit_session(as_of: dt.date, benchmark: pd.DataFrame | None, today: dt.date) -> dt.date | None:
+    """The HORIZON_SESSIONS-th completed regular session after the decision day, or None if not yet.
 
-    From the open of the first NIFTY minute at or after the stock's entry minute to the close of
-    the NIFTY minute at (or just before) the exit minute, each at most BENCH_GAP away and in that
-    order; a time exit (`exit_at` None) ends at NIFTY's daily close on the label's last session,
-    as the stock's exit does. For a next-open entry (a decision outside the session) the entry
-    minute is the last of the five opening minutes the entry price averages: a few minutes of
-    NIFTY, not its whole first hour.
+    The app's mandatory exit day; completed_decisions selects on the same count (regular_sessions),
+    so selection, the fetch range and the label window agree.
     """
-    if not label.get("entry_timestamp") or bench_minutes.empty:
+    sessions = [d for d in regular_sessions(benchmark, today) if d > as_of]
+    return sessions[HORIZON_SESSIONS - 1] if len(sessions) >= HORIZON_SESSIONS else None
+
+
+def _naive_ist(value) -> pd.Timestamp:
+    """A timestamp as a naive IST wall-clock time (the bars' own convention)."""
+    at = pd.Timestamp(value)
+    return at.tz_convert(IST).tz_localize(None) if at.tzinfo else at
+
+
+def trade_contract(decision: Mapping, benchmark: pd.DataFrame, today: dt.date) -> tuple[dict | None, str]:
+    """(the app's trade plan for this decision, "" ) or (None, why not).
+
+    `build_trade_timing` is what the app showed: enter within ENTRY_WINDOW_MINUTES of the decision
+    (never past 15:15), exit at the stop or target, else no later than 15:15 on the 15th session.
+    Entry is the open of the first minute bar that starts after the decision time and by the end
+    of that window (a bar that started before the decision could not be bought at its open);
+    the exit session comes from the NIFTY calendar. `sessions` is every session from the
+    decision day to the exit session: the window both labels and the benchmark use.
+    """
+    decided_at = _naive_ist(decision["evaluated_at"])
+    as_of = decision["as_of_date"]
+    if decided_at.date() != as_of:
+        return None, f"decision time {decided_at} is not on the decision day {as_of}"
+    timing = build_trade_timing(decision["evaluated_at"], horizon_sessions=HORIZON_SESSIONS)
+    if not timing["entry_window_open"]:
+        return None, "no_entry_window"
+    # The window the app showed (recorded with the decision), else the same function's answer.
+    entry_until = decision.get("entry_valid_until") or timing["entry_valid_until"]
+    end = exit_session(as_of, benchmark, today)
+    if end is None:
+        return None, "awaiting"
+    calendar = regular_sessions(benchmark, today)
+    if as_of not in calendar:
+        return None, f"the decision day {as_of} is not a regular NIFTY session"
+    return {"decided_at": decided_at, "entry_until": _naive_ist(entry_until),
+            "exit_at": pd.Timestamp(dt.datetime.combine(end, INTRADAY_TIME_EXIT)),
+            "sessions": [d for d in calendar if as_of <= d <= end]}, ""
+
+
+def _bars_valid(frame: pd.DataFrame) -> bool:
+    """Unique, ordered, finite, positive and internally consistent OHLC bars."""
+    if not (frame.index.is_unique and frame.index.is_monotonic_increasing):
+        return False
+    values = frame[["Open", "High", "Low", "Close"]].astype(float)
+    if not (values.map(math.isfinite).all().all() and (values > 0).all().all()):
+        return False
+    return bool((values["High"] >= values[["Open", "Close", "Low"]].max(axis=1)).all()
+                and (values["Low"] <= values[["Open", "Close"]].min(axis=1)).all())
+
+
+def _window_problem(contract: dict, daily: pd.DataFrame, minutes: pd.DataFrame) -> tuple[str, str] | None:
+    """(kind, message) when the window's bars cannot carry a label, else None.
+
+    kind "no_trading": a session with neither a daily nor a minute bar (the stock did not trade:
+    suspended or halted). kind "missing": a data gap or a bad bar (one feed has the session and
+    the other not, or invalid bars), reported. A special-session day inside the window (it never
+    counts, see regular_sessions) is checked the same way when the stock has bars on it (those
+    bars sit on the minute path); without any it is not part of the window.
+    """
+    days, minute_days = daily.index.normalize(), minutes.index.normalize()
+    for session in _path_days(contract, daily, minutes):   # a special day only when it has bars
+        stamp = pd.Timestamp(session)
+        if not (days == stamp).any():
+            if (minute_days == stamp).any():
+                return "missing", f"no daily bar on {session} (minute bars present)"
+            return "no_trading", f"no daily bar on {session}"
+        if not (minute_days == stamp).any():
+            return "missing", f"no minute bars on {session}"
+        if not (_bars_valid(daily.loc[days == stamp]) and _bars_valid(minutes.loc[minute_days == stamp])):
+            return "missing", f"invalid bars on {session}"
+    return None
+
+
+def _path_days(contract: dict, daily: pd.DataFrame, minutes: pd.DataFrame) -> list[dt.date]:
+    """The window's regular sessions plus any other day inside it that has the stock's bars."""
+    first, last = contract["sessions"][0], contract["sessions"][-1]
+    stamped = {d.date() for d in daily.index.normalize()} | {d.date() for d in minutes.index.normalize()}
+    return sorted(set(contract["sessions"]) | {d for d in stamped if first < d < last})
+
+
+def _walk(contract: dict, minutes: pd.DataFrame, stop: float, target: float) -> dict | str:
+    """The trade on one-minute bars, or "no_fill" / "outside_levels" / "no_exit_bar".
+
+    Entry: see trade_contract. Then bar by bar until the 15:15 exit: a bar whose low reaches the
+    stop ends it (stop first when one bar reaches both), filled at the stop, or at the bar's open
+    when it opened below the stop (a gap through it); a bar whose high reaches the target ends it
+    at the target (conservative, even after a gap up). Otherwise the time exit sells at the open
+    of the first bar from 15:15 on the exit day, or at the close of its last bar before 15:15,
+    either within BENCH_GAP of 15:15 (else "no_exit_bar": the feed stops early or the stock did
+    not trade near the exit; never an exit hours early). `exit_on_open` says which price the
+    benchmark must match.
+    """
+    at = minutes.index
+    # The entry window never leaves the decision day (build_trade_timing caps it at 15:15).
+    entry_bars = minutes.loc[(at > contract["decided_at"]) & (at <= contract["entry_until"])]
+    if entry_bars.empty:
+        return "no_fill"
+    entry_at, entry = entry_bars.index[0], float(entry_bars.iloc[0]["Open"])
+    if not stop < entry < target:
+        return "outside_levels"
+    exit_at = contract["exit_at"]
+    path = minutes.loc[(at >= entry_at) & (at < exit_at)]
+    stopped = path["Low"].to_numpy(dtype=float) <= stop
+    touched = stopped | (path["High"].to_numpy(dtype=float) >= target)
+    if touched.any():
+        first = int(touched.argmax())
+        stamp, opened = path.index[first], float(path["Open"].iloc[first])
+        if stopped[first]:
+            gap = opened < stop   # never the entry bar: its open is the entry, above the stop
+            return {"entry_at": entry_at, "entry": entry, "outcome": "stop", "exit_at": stamp,
+                    "exit": opened if gap else float(stop), "exit_on_open": gap,
+                    "fill": "gap_open" if gap else "stop"}
+        return {"entry_at": entry_at, "entry": entry, "outcome": "target", "exit_at": stamp,
+                "exit": float(target), "exit_on_open": False, "fill": "target"}
+    after = minutes.loc[(at >= exit_at) & (at <= exit_at + BENCH_GAP)]
+    if not after.empty:
+        return {"entry_at": entry_at, "entry": entry, "outcome": "horizon", "exit_at": after.index[0],
+                "exit": float(after.iloc[0]["Open"]), "exit_on_open": True, "fill": "time_exit_open"}
+    before = minutes.loc[(at < exit_at) & (at >= exit_at - BENCH_GAP)]
+    if before.empty:
+        return "no_exit_bar"
+    return {"entry_at": entry_at, "entry": entry, "outcome": "horizon", "exit_at": before.index[-1],
+            "exit": float(before.iloc[-1]["Close"]), "exit_on_open": False, "fill": "time_exit_last_close"}
+
+
+def _touch_problem(contract: dict, daily: pd.DataFrame, minutes: pd.DataFrame, stop: float,
+                   target: float, until: dt.date) -> str | None:
+    """A session up to the outcome where the daily and minute bars disagree on a stop or target touch.
+
+    Each session's whole-day minute range must reach a level exactly when its daily bar does: a
+    touch only one feed shows (a missed minute stop, a bad print) makes the path ambiguous.
+    """
+    days, minute_days = daily.index.normalize(), minutes.index.normalize()
+    for session in (d for d in _path_days(contract, daily, minutes) if d <= until):
+        stamp = pd.Timestamp(session)
+        bar, day = daily.loc[days == stamp].iloc[0], minutes.loc[minute_days == stamp]
+        checks = (("stop", float(bar["Low"]) <= stop, float(day["Low"].min()) <= stop),
+                  ("target", float(bar["High"]) >= target, float(day["High"].max()) >= target))
+        for name, daily_hit, minute_hit in checks:
+            if daily_hit != minute_hit:
+                return (f"the daily and minute bars disagree on the {name} touch on {session} "
+                        f"(daily {'hit' if daily_hit else 'no hit'})")
+    return None
+
+
+def _nifty_return(bench_minutes: pd.DataFrame, entry_at: pd.Timestamp, exit_at: pd.Timestamp,
+                  exit_on_open: bool) -> tuple[float, pd.Timestamp, pd.Timestamp] | None:
+    """(NIFTY return, start minute, end minute) over the stock's own holding window, or None.
+
+    From the open of the first NIFTY minute at or after the entry minute to the open of the first
+    minute at or after the exit minute (an exit at a bar open) or the close of the last minute at
+    or before it (an exit inside a bar), each at most BENCH_GAP away and never reversed.
+    """
+    if bench_minutes is None or bench_minutes.empty:
         return None
-    entry_at, at = pd.Timestamp(label["entry_timestamp"]), bench_minutes.index
-    # Within BENCH_GAP of a session minute: the window cannot reach another day.
+    at = bench_minutes.index
     start = bench_minutes.loc[(at >= entry_at) & (at <= entry_at + BENCH_GAP), "Open"]
     if start.empty:
         return None
-    if exit_at is None:
-        last = pd.Timestamp(label["label_end_date"])
-        end = bench_daily.loc[bench_daily.index.normalize() == last, "Close"] if not bench_daily.empty \
-            else pd.Series(dtype=float)
+    if exit_on_open:
+        end = bench_minutes.loc[(at >= exit_at) & (at <= exit_at + BENCH_GAP), "Open"].head(1)
     else:
-        end = bench_minutes.loc[(at <= exit_at) & (at >= max(exit_at - BENCH_GAP, start.index[0])), "Close"]
+        end = bench_minutes.loc[(at <= exit_at) & (at >= max(exit_at - BENCH_GAP, start.index[0])), "Close"].tail(1)
     if end.empty:
         return None
-    base, final = float(start.iloc[0]), float(end.iloc[-1])
+    base, final = float(start.iloc[0]), float(end.iloc[0])
     if not (math.isfinite(base) and math.isfinite(final) and base > 0 and final > 0):
         return None
-    return final / base - 1.0
-
-
-def _execution_adjusted(label: dict, minutes: pd.DataFrame, bench_daily: pd.DataFrame,
-                        bench_minutes: pd.DataFrame, stop: float, target: float,
-                        notes: dict | None) -> dict | None:
-    """The shadow label: gap-down stop fill at the bar open, NIFTY over the holding window.
-
-    None (no label, retried later) when the exit bar or a positive gap price is missing, or the
-    NIFTY evidence is (counted in `notes["no_benchmark"]`). A NaN open keeps the stop fill.
-    """
-    bar, exit_price, fill = None, float(label["exit"]), {}
-    if label["outcome"] != "horizon":
-        bar = _exit_bar(label, minutes, stop, target)
-        if bar is None:
-            return None
-        opened = float(bar["Open"])
-        if label["outcome"] == "stop" and math.isfinite(opened) and opened < stop:
-            if opened <= 0:
-                return None
-            exit_price, fill = opened, {"stop_fill": "gap_open"}
-    bench = _benchmark_return(label, None if bar is None else bar.name, bench_daily, bench_minutes)
-    if bench is None:
-        if notes is not None:
-            notes["no_benchmark"] = notes.get("no_benchmark", 0) + 1
-        return None
-    gross = exit_price / float(label["entry"]) - 1.0
-    net = gross - float(label["cost_bps"]) / 10_000.0
-    return {**label, **fill, "exit": exit_price, "gross_return": gross, "net_return": net,
-            "benchmark_return": bench, "excess_return": net - bench, "positive_excess": int(net - bench > 0)}
+    return final / base - 1.0, start.index[0], end.index[0]
 
 
 def _basis_problem(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFrame) -> str | None:
@@ -400,7 +528,8 @@ def _basis_problem(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFr
         if day.empty:
             return f"no decision-day bars in the {name} history"
         low, high = float(day["Low"].min()), float(day["High"].max())
-        # NaN bounds fail both comparisons: an unreadable range is a problem, not a pass.
+        if not all(math.isfinite(value) and value > 0 for value in (entry, low, high)) or low > high:
+            return f"invalid {name} decision-day range or recorded entry"
         if not low * (1 - BASIS_TOLERANCE) <= entry <= high * (1 + BASIS_TOLERANCE):
             return f"recorded entry {entry} outside the {name} decision-day range {low}-{high}"
         ranges[name] = (low, high)
@@ -424,19 +553,42 @@ def _basis_problem(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFr
     return f"the scan's last completed bar is not in the fetched daily history (low ratio {ratio:.4f})"
 
 
+def _problem(notes: dict | None, decision: Mapping, kind: str, message: str) -> None:
+    """Count and list a label-window problem (reported: the run turns PARTIAL with the reason)."""
+    LOGGER.warning("Stage-2 maturation: %s %s", decision.get("trading_symbol"), message)
+    if notes is not None:
+        notes["window_problem"] = notes.get("window_problem", 0) + 1
+        notes.setdefault("basis_problems", []).append(
+            {"observation_id": decision.get("observation_id"), "error_kind": kind, "message": message[:200]})
+
+
+def _count(notes: dict | None, key: str) -> None:
+    """Count a quiet, expected reason for no label."""
+    if notes is not None:
+        notes[key] = notes.get(key, 0) + 1
+
+
 def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFrame,
                    benchmark: pd.DataFrame | None, benchmark_minutes: pd.DataFrame | None,
                    today: dt.date, notes: dict | None = None) -> dict[str, dict | None]:
-    """Labels per policy for one decision whose horizon has completed (see horizon_end).
+    """Labels per policy for one decision whose exit session has completed (see exit_session).
 
-    `benchmark` and `benchmark_minutes` are NIFTY's daily and one-minute bars. A policy maps to
-    None when its levels are invalid, the evidence is incomplete or ambiguous
-    (compute_forward_target refuses to label it) or the NIFTY evidence does not cover the holding
-    window (counted in `notes["no_benchmark"]`); both map to None when the history is not on the
-    recorded price basis (`notes["basis_mismatch"]`). Later runs retry it.
+    `benchmark` and `benchmark_minutes` are NIFTY's daily and one-minute bars. The label executes
+    the app's own trade plan (trade_contract, _walk) on the stock's one-minute bars, net of the
+    decision's estimated round-trip costs, against NIFTY over the same minutes.
+
+    Both policies share the decision, the entry and one fetch, and are labelled together or not
+    at all: every policy maps to None when the history is off the recorded price basis
+    (`basis_mismatch`), the window's bars are missing, invalid or disagree on a touch
+    (`window_problem`, reported), the stock did not trade on a session (`no_trading`), no bar
+    traded in the entry window (`no_fill`), or either policy's NIFTY window is missing
+    (`no_benchmark`): a later run retries with fresh bars for both. Only a policy whose own
+    levels are invalid, or that the actual entry price is not strictly inside
+    (`outside_levels`), maps to None alone: that never changes on a retry.
     """
     daily, minutes = _before(daily, today), _before(minutes, today)
     bench_daily, bench_minutes = _before(benchmark, today), _before(benchmark_minutes, today)
+    none = {policy: None for policy in POLICIES}
     problem = _basis_problem(decision, daily=daily, minutes=minutes)
     if problem is not None:
         LOGGER.warning("Stage-2 maturation: %s %s", decision.get("trading_symbol"), problem)
@@ -445,28 +597,68 @@ def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFr
             notes.setdefault("basis_problems", []).append(
                 {"observation_id": decision.get("observation_id"), "error_kind": "BasisMismatch",
                  "message": problem[:200]})
-        return {policy: None for policy in POLICIES}
+        return none
+    contract, why = trade_contract(decision, bench_daily, today)
+    if contract is None:
+        if why == "no_entry_window":
+            _count(notes, "no_fill")
+        elif why != "awaiting":
+            _problem(notes, decision, "WindowProblem", why)
+        return none
+    window = _window_problem(contract, daily, minutes)
+    if window is not None:
+        if window[0] == "no_trading":
+            _count(notes, "no_trading")
+        else:
+            _problem(notes, decision, "WindowProblem", window[1])
+        return none
     levels = {
         INCUMBENT: (decision["stop"], decision["target"]),
         CHALLENGER: challenger_levels(decision["entry"], decision["atr"],
                                       decision["resistance20"], decision["resistance60"]),
     }
-    definition = TargetDefinition(HORIZON_SESSIONS, round_trip_cost_bps=decision["cost_bps"],
-                                  entry_rule="exact_intraday")
     labels = {}
     for policy, level in levels.items():
-        label = None
-        if level is not None:
-            # benchmark=None: its day-bar NIFTY window is replaced by the holding-window one below.
-            label = compute_forward_target(
-                daily, decision["as_of_date"], definition, stop=level[0], target=level[1],
-                benchmark=None, intraday=minutes,
-                signal_timestamp=_signal_timestamp(decision["evaluated_at"]),
-            )
-        if label is not None:
-            label = _execution_adjusted(label, minutes, bench_daily, bench_minutes, *level, notes)
-        labels[policy] = None if label is None else {
-            **label, "target_version": shadow_target_version(policy), "stop": level[0], "target": level[1]}
+        if level is None:
+            labels[policy] = None
+            continue
+        trade = _walk(contract, minutes, *level)
+        if trade == "no_fill":
+            _count(notes, "no_fill")
+            return none
+        if trade == "outside_levels":
+            _count(notes, "outside_levels")
+            labels[policy] = None
+            continue
+        if trade == "no_exit_bar":
+            _problem(notes, decision, "WindowProblem",
+                     f"no minute bar within {BENCH_GAP.seconds // 60} minutes of the "
+                     f"{contract['exit_at']:%Y-%m-%d %H:%M} time exit")
+            return none
+        touch = _touch_problem(contract, daily, minutes, *level, until=trade["exit_at"].date())
+        if touch is not None:
+            _problem(notes, decision, "TouchDisagreement", touch)
+            return none
+        bench = _nifty_return(bench_minutes, trade["entry_at"], trade["exit_at"], trade["exit_on_open"])
+        if bench is None:
+            _count(notes, "no_benchmark")
+            return none
+        gross = trade["exit"] / trade["entry"] - 1.0
+        net = gross - float(decision["cost_bps"]) / 10_000.0
+        labels[policy] = {
+            "target_version": shadow_target_version(policy), "horizon_sessions": HORIZON_SESSIONS,
+            "entry_date": contract["sessions"][0].isoformat(),
+            "label_end_date": contract["sessions"][-1].isoformat(),
+            "outcome_date": trade["exit_at"].date().isoformat(), "outcome": trade["outcome"],
+            "target_before_stop": int(trade["outcome"] == "target"),
+            "entry": trade["entry"], "exit": trade["exit"], "fill": trade["fill"],
+            "entry_timestamp": trade["entry_at"].isoformat(), "exit_timestamp": trade["exit_at"].isoformat(),
+            "benchmark_start": bench[1].isoformat(), "benchmark_end": bench[2].isoformat(),
+            "gross_return": gross, "net_return": net, "benchmark_return": bench[0],
+            "excess_return": net - bench[0], "positive_excess": int(net - bench[0] > 0),
+            "cost_bps": float(decision["cost_bps"]), "entry_quality": ENTRY_QUALITY,
+            "stop": level[0], "target": level[1],
+        }
     return labels
 
 
@@ -511,7 +703,7 @@ def fetch_corporate_actions(client, token: str, instrument_key: str) -> list:
     payload = response.json()
     if not isinstance(payload, Mapping) or payload.get("status") != "success" or "data" not in payload:
         raise ValueError("Upstox corporate-actions answer is not a success")
-    actions = [] if payload["data"] is None else payload["data"]
+    actions = payload["data"]   # Upstox answers [] for no actions (233 of 563 stored, 0 null): null is unreadable
     if not isinstance(actions, list):
         raise ValueError("Upstox corporate-actions schema changed")
     return actions
@@ -557,10 +749,17 @@ def _basis_event(item, decision: Mapping, today: dt.date) -> tuple[str, bool] | 
     name = str(item.get("name") or item.get("type") or "").strip()
     dividend = "dividend" in name.lower()
     amount = _dividend_amount(item) if dividend else None
-    if dividend and amount is not None and 0 < amount < LARGE_DIVIDEND * float(decision["entry"]):
-        return None                                   # a small dividend never moves the basis
     dates = _ex_dates(item)
     inside = sorted(d for d in dates if d is not None and decision["as_of_date"] < d <= today)
+    if dividend and amount is not None and 0 < amount < LARGE_DIVIDEND * float(decision["entry"]):
+        # A small dividend never moves the basis, but only one clear date proves it is the
+        # dividend it says: an unreadable date, or dates that disagree with one in the window,
+        # is reported; dates that all lie outside the window do not matter.
+        if not dates or None in dates:
+            return f"{name} without a readable ex-date", True
+        if inside and len(set(dates)) > 1:
+            return f"{name} with conflicting ex-dates", True
+        return None
     if inside:
         reason = f"{name or 'action'} ex {inside[0].isoformat()}"
         if not name:
@@ -639,11 +838,13 @@ def _held_back(repo, cache: dict, decision: Mapping, *, client, token: str, toda
 
 
 def _history(cache: dict, decision: Mapping, *, client, token: str, today: dt.date,
-             fetch_daily: Callable, fetch_minutes: Callable, sleep: Callable[[float], None]):
-    """(daily, minutes, horizon end, NIFTY minutes) for a stock and decision day, once per run.
+             fetch_daily: Callable, fetch_minutes: Callable, sleep: Callable[[float], None],
+             benchmark: pd.DataFrame):
+    """(daily, minutes, exit session, NIFTY minutes) for a stock and decision day, once per run.
 
     Minutes (the stock's, then NIFTY's for the same window, shared by every stock with that
-    window) are fetched only once the horizon has completed, from the decision day to its end.
+    window) are fetched only once the exit session (exit_session, NIFTY calendar) has completed,
+    from the decision day to it.
     """
     key = (decision["instrument_key"], decision["as_of_date"])
     if key not in cache:
@@ -657,7 +858,8 @@ def _history(cache: dict, decision: Mapping, *, client, token: str, today: dt.da
             if _provider_rejected(exc):
                 raise ProviderRejected(str(exc)) from exc
             raise
-        end = horizon_end(decision, daily, today)
+        # An empty answer (HTTP 200, no candles: a renamed or delisted key) stays quietly deferred.
+        end = None if _before(daily, today).empty else exit_session(as_of, benchmark, today)
         minutes = bench_minutes = None
         if end is not None:
             sleep(REQUEST_PAUSE_SECONDS)
@@ -677,7 +879,13 @@ def _history(cache: dict, decision: Mapping, *, client, token: str, today: dt.da
 
 def _mature_one(repo, decision: Mapping, *, history: tuple, benchmark: pd.DataFrame, today: dt.date,
                 check_lease: Callable[[], None] | None, summary: dict) -> None:
-    """Label one decision under both policies and store the labels it does not have yet."""
+    """Label one decision under both policies and store, together, the labels it does not have yet.
+
+    label_decision returns every policy's label from one fetch or none of them (see there), so a
+    pair is never mixed from two fetches. shortcut: the two inserts are separate statements, so
+    a crash between them leaves one policy stored and the next run labels the other from fresh
+    bars; upgrade to a single-transaction insert in production_repository if that is ever seen.
+    """
     daily, minutes, end, bench_minutes = history
     if end is None:
         summary["deferred"] += 1
@@ -711,6 +919,7 @@ def _report(repo, summary: dict, failures: list[dict], check_lease: Callable[[],
             "STAGE2_MATURATION_FAILED",
             f"Shadow Stage-2 maturation {summary['status']}: {summary['failed']} decision failures"
             + (f", {summary['basis_mismatch']} price-basis mismatches" if summary.get("basis_mismatch") else "")
+            + (f", {summary['window_problem']} label-window problems" if summary.get("window_problem") else "")
             + (f", {summary['unreadable_action']} held back on unreadable corporate actions"
                if summary.get("unreadable_action") else "")
             + (f", stopped by {summary['stopped']}" if summary.get("stopped") else ""),
@@ -777,6 +986,7 @@ def mature_shadow_passes(repo, client, token: str, *, today: dt.date,
     started = clock()
     summary = {"status": "SUCCESS", "pending": 0, "awaiting_sessions": 0, "selected": 0, "stored": 0,
                "already_stored": 0, "deferred": 0, "unlabelled": 0, "no_benchmark": 0,
+               "no_fill": 0, "no_trading": 0, "outside_levels": 0, "window_problem": 0,
                "corporate_action": 0, "unreadable_action": 0, "basis_mismatch": 0,
                "provider_rejected": 0, "failed": 0, "stopped": None}
     failures: list[dict] = []
@@ -799,7 +1009,8 @@ def mature_shadow_passes(repo, client, token: str, *, today: dt.date,
                     summary["corporate_action"] += 1
                     continue
                 history = _history(cache, decision, client=client, token=token, today=today,
-                                   fetch_daily=fetch_daily, fetch_minutes=fetch_minutes, sleep=sleep)
+                                   fetch_daily=fetch_daily, fetch_minutes=fetch_minutes, sleep=sleep,
+                                   benchmark=benchmark)
                 _mature_one(repo, decision, history=history, benchmark=benchmark, today=today,
                             check_lease=check_lease, summary=summary)
             except (LeaseLost, PermissionError):
