@@ -1,4 +1,5 @@
-# Local pre-PR review gate only (tooling/pre_pr_review.py). Not app, CI or archive dependencies.
+# Pre-PR review gate only (tooling/pre_pr_review.py), run locally and by quality.yml's pre-pr-review
+# job on pull requests. Not app, test-suite or archive dependencies.
 # pytest is pinned through the repo's constraints so the gate's --coverage run uses the same
 # pytest as the test suite (a different pytest on the path breaks some tests).
 -c ../constraints.txt

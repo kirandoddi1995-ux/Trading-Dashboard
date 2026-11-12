@@ -781,3 +781,21 @@ def test_python_functions_lists_every_def_in_source_order_with_qualified_names()
     """)
     assert [(name, node.lineno) for name, node in gate.python_functions(source)] == [
         ("top", 2), ("top.inner", 3), ("C.v", 7), ("C.v", 10), ("later", 12)]
+
+
+def test_ci_runs_the_gate_on_pull_requests_without_secrets_or_injected_refs():
+    """quality.yml's pre-pr-review job: PRs only, full history for the merge base, audited
+    review tools, the workflow's read-only token, and the base ref passed through env, never
+    interpolated into the script."""
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[1] / ".github/workflows/quality.yml").read_text(encoding="utf-8")
+    assert "\npermissions:\n  contents: read\n" in text
+    job = text[text.index("\n  pre-pr-review:\n"):]
+    assert "\n    if: github.event_name == 'pull_request'\n" in job and "permissions" not in job
+    assert "      - uses: actions/checkout@v5\n        with:\n          fetch-depth: 0\n" in job
+    assert "run: python -m pip install -r tooling/requirements-review.txt pip-audit\n" in job
+    assert "run: python -m pip_audit -r tooling/requirements-review.txt\n" in job
+    assert ("        env:\n          BASE_REF: ${{ github.base_ref }}\n"
+            '        run: python tooling/pre_pr_review.py --base "origin/$BASE_REF"\n') in job
+    runs = [line for line in job.splitlines() if line.strip().startswith("run:")]
+    assert not any("${{" in line for line in runs) and "secrets." not in job
