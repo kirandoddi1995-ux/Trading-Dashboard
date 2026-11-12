@@ -51,6 +51,7 @@ BUDGETS = (
         ("resilience_state_events", 2, "latest per control plus 7 days"),
         ("runtime_attestations", 2, "active releases plus 7 days"),
         ("scanner_observations", 25, "3 days plus unresolved references"),
+        ("stage2_shadow_dispositions", 4, "one row per shadow pass; final after 60 days; cold export before budget"),
         ("schema_migrations", .25, "never prune installed schema ledger"),
         ("universe_membership", 12, "current/latest complete plus hot referenced dates"),
         ("universe_membership_versions", 25, "current versions plus hot references; cold exact PIT lookup"),

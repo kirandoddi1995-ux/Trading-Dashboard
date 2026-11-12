@@ -80,6 +80,20 @@ Half the slots go to the newest completed decisions, half to the oldest (ties wi
 reshuffled daily): new decisions never wait behind ones that stay unlabelled (ambiguous evidence;
 retried until `RETRY_DAYS` old), and the ones closest to expiry go first. Every failure except a
 lost lease is contained: the scan's own evidence is already committed and stays the run's result.
+
+Dispositions (`save_dispositions`, table `stage2_shadow_dispositions`, DDL
+`sql/stage2_shadow_dispositions.sql`, run by the owner): at the end of a run, every decision it
+attempted gets one row per label version, upserted with what that attempt concluded (`labelled`,
+or the reason it was not: the summary counter it moved, see `disposition`), every conclusion the
+decision has had (`reasons`), the counters and messages behind the last one, and the attempt
+count. The run summary only counts reasons; the table keeps which decision had which reason, so
+held, failed and expired passes can be listed (`sql/stage2_shadow_dispositions_report.sql`) and
+the passes ever rejected by a check counted, also when a retry labelled them. A run stopped by a
+rejected token keeps the rows of the decisions before it; a lost lease or a killed job writes none
+(the report starts from the shadow passes and takes "labelled" from the stored labels, so a pass
+labelled then is still final, and a pass with no row shows as `no_record`). It
+records, it never selects: retries, exclusions and expiry are unchanged. A failed disposition
+write makes the run PARTIAL (`DispositionWriteFailed`); the labels already stored stand.
 """
 from __future__ import annotations
 
@@ -100,7 +114,7 @@ from equity_stage2_collector import (
     IST, NIFTY_KEY, REQUEST_PAUSE_SECONDS, STAGE2_SHADOW_VERSION, UPSTOX_API, LeaseLost,
 )
 from nifty_session_calendar import SPECIAL
-from production_repository import SCHEMA, _date_value
+from production_repository import SCHEMA, _date_value, _executemany
 from trade_contracts import INTRADAY_TIME_EXIT, build_trade_timing
 
 LOGGER = logging.getLogger(__name__)
@@ -167,6 +181,30 @@ DECISIONS_SQL = f"""
     WHERE o.observation_id = ANY(%s) AND c.value->>'decision_id' = o.observation_id
     ORDER BY o.as_of_date DESC, o.observation_id
 """
+
+# One row per decision and label version; each attempt replaces the conclusion, adds it to the
+# conclusions seen (first-seen order) and counts itself.
+DISPOSITION_SQL = f"""
+    INSERT INTO {SCHEMA}.stage2_shadow_dispositions AS d
+        (observation_id, label_version, disposition, reasons, detail, attempts, first_at, last_at)
+    SELECT v.observation_id, v.label_version, v.disposition, ARRAY[v.disposition], v.detail::jsonb,
+           1, now(), now()
+    FROM (VALUES (%s, %s, %s, %s)) AS v(observation_id, label_version, disposition, detail)
+    ON CONFLICT (observation_id, label_version) DO UPDATE SET
+        disposition = EXCLUDED.disposition, detail = EXCLUDED.detail,
+        reasons = CASE WHEN EXCLUDED.disposition = ANY(d.reasons) THEN d.reasons
+                       ELSE d.reasons || EXCLUDED.disposition END,
+        attempts = d.attempts + 1, last_at = EXCLUDED.last_at
+"""
+
+# A decision's disposition when it is not labelled: the first summary counter it moved, in this
+# order (the most specific reason first: an unreadable action also counts as corporate_action).
+NOT_LABELLED = ("unreadable_action", "corporate_action", "provider_rejected", "failed", "deferred",
+                "basis_mismatch", "window_problem", "no_trading", "no_fill", "no_benchmark",
+                "invalid_levels", "outside_levels")
+# Label counts, never a reason: `unlabelled` moves with every policy left without a label, so it
+# names a decision only when nothing else moved (a reason counted later is named, not hidden by it).
+LABEL_COUNTS = ("stored", "already_stored", "unlabelled")
 
 
 def maturation_enabled(environ: Mapping[str, str] | None = None) -> bool:
@@ -583,7 +621,7 @@ def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFr
     (`window_problem`, reported), the stock did not trade on a session (`no_trading`), no bar
     traded in the entry window (`no_fill`), or either policy's NIFTY window is missing
     (`no_benchmark`): a later run retries with fresh bars for both. Only a policy whose own
-    levels are invalid, or that the actual entry price is not strictly inside
+    levels are invalid (`invalid_levels`), or that the actual entry price is not strictly inside
     (`outside_levels`), maps to None alone: that never changes on a retry.
     """
     daily, minutes = _before(daily, today), _before(minutes, today)
@@ -620,6 +658,7 @@ def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFr
     labels = {}
     for policy, level in levels.items():
         if level is None:
+            _count(notes, "invalid_levels")
             labels[policy] = None
             continue
         trade = _walk(contract, minutes, *level)
@@ -922,11 +961,76 @@ def _report(repo, summary: dict, failures: list[dict], check_lease: Callable[[],
             + (f", {summary['window_problem']} label-window problems" if summary.get("window_problem") else "")
             + (f", {summary['unreadable_action']} held back on unreadable corporate actions"
                if summary.get("unreadable_action") else "")
-            + (f", stopped by {summary['stopped']}" if summary.get("stopped") else ""),
+            + (f", stopped by {summary['stopped']}" if summary.get("stopped") else "")
+            + (f", dispositions not written ({summary['disposition_error']})"
+               if summary.get("disposition_error") else ""),
             {"summary": summary, "failures": failures[:FAILURE_DETAIL_LIMIT]},
         )
     except Exception as exc:
         LOGGER.warning("Stage-2 maturation quality-event write skipped: %s", type(exc).__name__)
+
+
+def _counters(summary: dict) -> dict:
+    """The run summary's counters, to diff one decision's attempt against."""
+    return {key: value for key, value in summary.items() if type(value) is int}
+
+
+def _disposition_row(observation_id: str, name: str, counts: dict, notes: list[dict]) -> tuple:
+    """(observation_id, label version, disposition, detail JSON); messages naming the decision, at most 3."""
+    # jsonb rejects a NUL character, and one bad row would lose the whole run's batch.
+    messages = [f"{note.get('error_kind')}: {note.get('message')}".replace("\x00", "")[:200]
+                for note in notes if note.get("observation_id") == observation_id][:3]
+    detail = {"counts": counts, **({"messages": messages} if messages else {})}
+    return (observation_id, SHADOW_LABEL_VERSION, name, json.dumps(detail, sort_keys=True))
+
+
+def disposition(observation_id: str, before: dict, summary: dict, failures: list[dict]) -> tuple:
+    """One decision's disposition row from the summary counters its attempt moved.
+
+    Every path through a decision moves at least one counter, so a reason added later can never
+    go unrecorded: `labelled` when every policy now has its label (stored this run or before),
+    else the first moved counter in NOT_LABELLED, else the first other moved counter that is not
+    in LABEL_COUNTS (a reason counted later, e.g. by _count), else `unlabelled`.
+    `before` is _counters(summary) at the attempt's start; messages are the reported problems
+    and failures naming the decision (a run attempts each decision once).
+    """
+    after = _counters(summary)
+    moved = {key: after[key] - before.get(key, 0) for key in after if after[key] != before.get(key, 0)}
+    if moved.get("stored", 0) + moved.get("already_stored", 0) == len(POLICIES):
+        name = "labelled"
+    else:
+        other = (key for key in moved if key not in LABEL_COUNTS)
+        name = next((key for key in NOT_LABELLED if moved.get(key)), next(other, "unlabelled"))
+    return _disposition_row(observation_id, name, moved, summary.get("basis_problems", []) + failures)
+
+
+def save_dispositions(repo, rows: list[tuple], check_lease: Callable[[], None] | None) -> None:
+    """Upsert a run's disposition rows in one transaction (no connection when there are none)."""
+    if not rows:
+        return
+    _guard(check_lease)
+    with repo.connect() as conn:
+        _executemany(conn, DISPOSITION_SQL, rows)
+        conn.commit()
+
+
+def _record_dispositions(repo, rows: list[tuple], summary: dict, failures: list[dict],
+                         check_lease: Callable[[], None] | None) -> None:
+    """save_dispositions for the run; a failure is loud, not fatal (only LeaseLost raises).
+
+    The labels already stored stand; the run turns PARTIAL with `DispositionWriteFailed` and
+    `summary["disposition_error"]`, so a missing table or grant cannot go unseen.
+    """
+    try:
+        save_dispositions(repo, rows, check_lease)
+        summary["dispositions"] = len(rows)
+    except LeaseLost:
+        raise
+    except Exception as exc:
+        LOGGER.warning("Stage-2 maturation: disposition write failed: %s", type(exc).__name__)
+        summary["disposition_error"] = type(exc).__name__
+        failures.append({"observation_id": None, "error_kind": "DispositionWriteFailed",
+                         "message": f"{type(exc).__name__}: {exc}"[:200]})
 
 
 def _select(repo, client, token: str, *, today: dt.date, fetch_daily: Callable,
@@ -979,21 +1083,27 @@ def mature_shadow_passes(repo, client, token: str, *, today: dt.date,
     instrument's daily request is counted as `provider_rejected` (a 4xx on the minute request is a failure); any other per-decision error (including a
     malformed row, inputs missing from the ledger batch or an unreadable corporate-actions answer) is
     counted as failed and the run goes on. A decision whose stock had a price-basis corporate action
-    since the decision day is held back before any history request (`corporate_action`).
+    since the decision day is held back before any history request (`corporate_action`). Every
+    attempted decision's disposition is upserted at the end (save_dispositions; a failed write
+    makes the run PARTIAL).
     """
     if not maturation_enabled(environ):
         return {"status": "DISABLED", "reason": f"{ENABLE_ENV} is not enabled"}
     started = clock()
     summary = {"status": "SUCCESS", "pending": 0, "awaiting_sessions": 0, "selected": 0, "stored": 0,
                "already_stored": 0, "deferred": 0, "unlabelled": 0, "no_benchmark": 0,
-               "no_fill": 0, "no_trading": 0, "outside_levels": 0, "window_problem": 0,
+               "no_fill": 0, "no_trading": 0, "outside_levels": 0, "invalid_levels": 0, "window_problem": 0,
                "corporate_action": 0, "unreadable_action": 0, "basis_mismatch": 0,
                "provider_rejected": 0, "failed": 0, "stopped": None}
     failures: list[dict] = []
+    dispositions: list[tuple] = []
     try:
         _guard(check_lease)
         benchmark, rows = _select(repo, client, token, today=today, fetch_daily=fetch_daily, sleep=sleep,
                                   summary=summary, failures=failures)
+        # Selected decisions missing from their ledger batch (the only failures _select records).
+        dispositions += [_disposition_row(item["observation_id"], "failed", {"failed": 1}, [item])
+                         for item in failures]
         cache: dict = {}
         for row in rows:
             if clock() - started > BUDGET_SECONDS:
@@ -1001,18 +1111,19 @@ def mature_shadow_passes(repo, client, token: str, *, today: dt.date,
                 summary.update(stopped="BUDGET", status="PARTIAL")
                 break
             _guard(check_lease)
+            before = _counters(summary)
             try:
                 decision = parse_pending_row(row)
                 if _held_back(repo, cache, decision, client=client, token=token, today=today,
                               fetch_actions=fetch_actions, sleep=sleep, check_lease=check_lease,
                               notes=summary):
                     summary["corporate_action"] += 1
-                    continue
-                history = _history(cache, decision, client=client, token=token, today=today,
-                                   fetch_daily=fetch_daily, fetch_minutes=fetch_minutes, sleep=sleep,
-                                   benchmark=benchmark)
-                _mature_one(repo, decision, history=history, benchmark=benchmark, today=today,
-                            check_lease=check_lease, summary=summary)
+                else:
+                    history = _history(cache, decision, client=client, token=token, today=today,
+                                       fetch_daily=fetch_daily, fetch_minutes=fetch_minutes, sleep=sleep,
+                                       benchmark=benchmark)
+                    _mature_one(repo, decision, history=history, benchmark=benchmark, today=today,
+                                check_lease=check_lease, summary=summary)
             except (LeaseLost, PermissionError):
                 raise
             except ProviderRejected:
@@ -1021,11 +1132,13 @@ def mature_shadow_passes(repo, client, token: str, *, today: dt.date,
                 summary["failed"] += 1
                 failures.append({"observation_id": row[0], "error_kind": type(exc).__name__,
                                  "message": str(exc)[:200]})
+            dispositions.append(disposition(row[0], before, summary, failures))
     except LeaseLost:
         raise
     except Exception as exc:
         LOGGER.error("Stage-2 shadow maturation failed: %s", type(exc).__name__)
         summary.update(status="FAILED", error_type=type(exc).__name__)
+    _record_dispositions(repo, dispositions, summary, failures, check_lease)
     # A basis mismatch is rare when the anchor works (an event the feed does not list) and total
     # when it does not (a restated feed): each one is reported, so neither can pass unseen.
     failures.extend(summary.pop("basis_problems", []))
