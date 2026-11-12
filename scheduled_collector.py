@@ -38,6 +38,7 @@ from prediction_validation import TARGET_VERSION, TargetDefinition, compute_forw
 from production_repository import ProductionRepository
 from decision_evidence import DecisionEvidenceSpine
 from equity_stage2_collector import run_shadow_stage2
+from equity_stage2_maturation import mature_shadow_passes
 from nifty_session_calendar import cash_session
 from scanner_funnel import stage1_prefilter
 from prospective_collection import (
@@ -242,6 +243,12 @@ def _market_status_or_holiday_skip(repo, client, token: str, current: dt.datetim
 
 
 def _scheduled_stage1(repo, client, token: str, run_id: str, *, now=None, lease=None) -> dict:
+    """One scheduled scan: PIT universe, quotes, Stage-1 funnel and evidence, then the shadow steps.
+
+    Order: Stage-1 batch and rows, order books, shadow Stage-2 (SCHEDULED_STAGE2_SHADOW), shadow
+    maturation (SCHEDULED_STAGE2_MATURATION). Both shadow steps return summaries and raise only
+    LeaseLost, so Stage-1 evidence stays the run's result. Never places orders.
+    """
     current = now or dt.datetime.now(IST)
     if not is_nse_scan_window(current):
         return {"status": "SKIPPED", "reason": "Outside conservative NSE scan window"}
@@ -422,11 +429,19 @@ def _scheduled_stage1(repo, client, token: str, run_id: str, *, now=None, lease=
         market_open=str(market_status.get("status", "")).upper() == "NORMAL_OPEN",
         stage1_top_n=top_n, check_lease=(lease.assert_valid if lease is not None else None),
     )
+    # Shadow maturation (off unless SCHEDULED_STAGE2_MATURATION is on) labels earlier shadow
+    # passes whose 15-session horizon has completed; contained like the step above.
+    stage2_maturation = mature_shadow_passes(
+        repo, client, token, today=current.astimezone(IST).date(),
+        fetch_daily=fetch_daily_history, fetch_minutes=fetch_historical_minutes,
+        check_lease=(lease.assert_valid if lease is not None else None),
+    )
     return {
         "status": "SUCCESS", "universe": universe_result, "quotes": quote_count,
         "quote_coverage": coverage, "scanner_observations": stored,
         "shortlisted": len(selected), "funnel": stats, "market_status": market_status,
         "order_book_shadow": shadow, "stage2_shadow": stage2_shadow,
+        "stage2_maturation": stage2_maturation,
     }
 
 
@@ -1001,6 +1016,11 @@ def resolve_mode(requested: str, now=None) -> str:
 
 
 def run(mode: str, *, nav_file=None) -> dict:
+    """Run one collector mode under the fenced lease and record it as a collection run.
+
+    The run is PARTIAL when a contained step (targets, shadow features, corporate actions, shadow
+    Stage-2 or its maturation) reports failures; an uncontained error marks it FAILED and re-raises.
+    """
     mode = resolve_mode(mode)
     token = analytics_token()
     repo = ProductionRepository(
@@ -1022,6 +1042,7 @@ def run(mode: str, *, nav_file=None) -> dict:
                 result["scheduled_stage1"] = scan_result
                 record_count += int(scan_result.get("scanner_observations", 0))
                 record_count += int((scan_result.get("stage2_shadow") or {}).get("scanner_observations", 0))
+                record_count += int((scan_result.get("stage2_maturation") or {}).get("stored", 0))
             if mode == "global":
                 lease.assert_valid()
                 global_result = _global_cue_shadow(
@@ -1090,8 +1111,8 @@ def run(mode: str, *, nav_file=None) -> dict:
                 or result.get("prospective_shadow", {}).get("status") in {"PARTIAL", "FAILED"}
                 or result.get("global_cue_shadow", {}).get("status") in {"PARTIAL", "FAILED"}
                 or result.get("corporate_actions", {}).get("failed", 0)
-                or (result.get("scheduled_stage1", {}).get("stage2_shadow") or {}).get("status")
-                in {"PARTIAL", "FAILED"}
+                or any((result.get("scheduled_stage1", {}).get(step) or {}).get("status")
+                       in {"PARTIAL", "FAILED"} for step in ("stage2_shadow", "stage2_maturation"))
             ) else "SUCCESS"
             result["status"] = run_status
             repo.finish_run(run_id, status=run_status, record_count=record_count, metadata=result)
