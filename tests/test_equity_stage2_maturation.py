@@ -95,7 +95,9 @@ def _custom_path(mods: dict[int, dict[int, tuple[float, float]]], base: float = 
 
 def _candidate(**over):
     """A shadow pass as the Stage-2 ledger batch records it (only the fields maturation reads)."""
-    inputs = {"atr_val": 2.0, "levels": {"support20": 79.0, "resistance20": 103.0, "resistance60": 103.0}}
+    # latest_indicators: the scan's last completed bar = the synthetic paths' flat pre-D0 bar
+    inputs = {"atr_val": 2.0, "levels": {"support20": 79.0, "resistance20": 103.0, "resistance60": 103.0},
+              "latest_indicators": {"Open": 100.0, "High": 100.0, "Low": 100.0, "Close": 100.0, "EMA_20": 99.0}}
     used = {"stage2_pass": True, "evaluated_at": EVALUATED.astimezone(dt.timezone.utc).isoformat(),
             "signal_action": "Watch", "equity_capture": {"inputs": inputs}}
     candidate = {"instrument_key": "NSE_EQ|SYN", "decision_id": "obs-1", "costs": {"round_trip_bps": 20.0},
@@ -301,17 +303,33 @@ class Repo:
         """Quality index entry."""
         self.events.append(args)
 
+    def archive_corporate_actions(self, isin, actions):
+        """The corporate-actions archive (terminal mark for held-back decisions)."""
+        self.archived = [*getattr(self, "archived", []), (isin, list(actions))]
+        return len(actions)
+
 
 class Fetch:
     """Upstox history fakes; `fail` maps an instrument to an exception; `log` is shared with sleep.
 
-    NIFTY gets the same bars unless `bench_minutes` is set."""
+    NIFTY gets the same bars unless `bench_minutes` is set; `actions` maps an instrument to its
+    corporate actions (none by default)."""
 
     def __init__(self, fail=None):
         """Synthetic path with a session-5 spike."""
         self.daily, self.minutes = _path(jump_day=5)
         self.bench_minutes = None
+        self.actions = {}
         self.calls, self.fail, self.log = [], fail or {}, []
+
+    def corporate(self, client, token, key):
+        """Corporate actions of one instrument (an exception in `actions` is raised)."""
+        self.calls.append(("actions", key))
+        self.log.append("actions")
+        found = self.actions.get(key, [])
+        if isinstance(found, Exception):
+            raise found
+        return found
 
     def day(self, client, token, key, start, end):
         """Daily bars from start to end."""
@@ -341,6 +359,7 @@ def _run(monkeypatch, rows, *, fetch=None, environ=ENABLED, check_lease=None, cl
     _select(monkeypatch, rows)
     summary = m.mature_shadow_passes(
         repo, None, "token", today=TODAY, fetch_daily=fetch.day, fetch_minutes=fetch.minute,
+        fetch_actions=fetch.corporate,
         check_lease=check_lease, environ=environ, sleep=lambda s: fetch.log.append(("sleep", s)),
         **({"clock": clock} if clock else {}))
     return summary, repo, fetch
@@ -361,11 +380,12 @@ def test_run_stores_both_policy_labels_with_a_pause_before_every_request(monkeyp
     assert sorted(s[:3] for s in repo.saved) == sorted([("obs-1", INC, "horizon"), ("obs-1", CH, "target")])
     assert all(s[3]["excess_return"] is not None for s in repo.saved)
     pause = ("sleep", s2.REQUEST_PAUSE_SECONDS)
-    assert fetch.log == [pause, "daily", pause, "daily", pause, "minutes", pause, "minutes"]
-    assert [c[1] for c in fetch.calls] == [m.NIFTY_KEY, "NSE_EQ|SYN", "NSE_EQ|SYN", m.NIFTY_KEY]
+    assert fetch.log == [pause, "daily", pause, "actions", pause, "daily", pause, "minutes", pause, "minutes"]
+    assert [c[1] for c in fetch.calls] == [m.NIFTY_KEY, "NSE_EQ|SYN", "NSE_EQ|SYN", "NSE_EQ|SYN", m.NIFTY_KEY]
     after = fetch.daily.loc[fetch.daily.index > pd.Timestamp(D0)].index
-    assert fetch.calls[1][2:] == (D0 - dt.timedelta(days=5), TODAY - dt.timedelta(days=1))
-    assert fetch.calls[2][2:] == fetch.calls[3][2:] == (D0, after[14].date())   # NIFTY: same window
+    assert fetch.calls[1] == ("actions", "NSE_EQ|SYN")             # before any stock history
+    assert fetch.calls[2][2:] == (D0 - dt.timedelta(days=m.HISTORY_LEAD_DAYS), TODAY - dt.timedelta(days=1))
+    assert fetch.calls[3][2:] == fetch.calls[4][2:] == (D0, after[14].date())   # NIFTY: same window
     assert repo.events == []
 
 
@@ -374,7 +394,8 @@ def test_two_scans_of_one_stock_day_share_one_history_fetch(monkeypatch):
     second = _candidate(decision_id="obs-2")
     second["inputs_used"]["evaluated_at"] = "2026-11-02T09:09:00+00:00"
     summary, repo, fetch = _run(monkeypatch, [_row(), _row(obs="obs-2", candidate=second)])
-    assert summary["stored"] == 4 and [c[0] for c in fetch.calls] == ["daily", "daily", "minutes", "minutes"]
+    assert summary["stored"] == 4
+    assert [c[0] for c in fetch.calls] == ["daily", "actions", "daily", "minutes", "minutes"]
 
 
 def test_an_already_stored_policy_is_not_written_again(monkeypatch):
@@ -488,7 +509,7 @@ def test_a_rejected_token_stops_the_run(monkeypatch):
     fetch = Fetch(fail={"NSE_EQ|DENIED": PermissionError("Upstox rejected the Analytics Token")})
     summary, repo, fetch = _run(monkeypatch, [_row(obs="o-d", key="NSE_EQ|DENIED"), _row()], fetch=fetch)
     assert summary["status"] == "FAILED" and summary["error_type"] == "PermissionError"
-    assert len(fetch.calls) == 2 and repo.saved == [] and len(repo.events) == 1
+    assert len(fetch.calls) == 3 and repo.saved == [] and len(repo.events) == 1
 
 
 def _lease_valid_for(checks: int):
@@ -509,6 +530,7 @@ def _fenced_run(monkeypatch, checks):
     _select(monkeypatch, [_row()])
     with pytest.raises(s2.LeaseLost):
         m.mature_shadow_passes(repo, None, "t", today=TODAY, fetch_daily=fetch.day, fetch_minutes=fetch.minute,
+                               fetch_actions=fetch.corporate,
                                check_lease=_lease_valid_for(checks), environ=ENABLED, sleep=lambda s: None)
     return repo, fetch
 
@@ -517,7 +539,7 @@ def test_a_lease_lost_before_the_write_stops_with_nothing_saved(monkeypatch):
     """Checks 1-2 pass (run start, decision start); the pre-write check fails: nothing saved."""
     repo, fetch = _fenced_run(monkeypatch, 2)
     assert repo.saved == [] and repo.events == []
-    assert [c[0] for c in fetch.calls] == ["daily", "daily", "minutes", "minutes"]
+    assert [c[0] for c in fetch.calls] == ["daily", "actions", "daily", "minutes", "minutes"]
 
 
 def test_a_lease_lost_at_a_decision_start_stops_before_its_requests(monkeypatch):
@@ -574,7 +596,8 @@ def test_a_selected_decision_missing_from_its_ledger_batch_is_a_failure(monkeypa
     repo, fetch = Repo(), Fetch()
     _select(monkeypatch, [_row(obs="obs-gone"), _row()], missing={"obs-gone"})
     summary = m.mature_shadow_passes(repo, None, "t", today=TODAY, fetch_daily=fetch.day,
-                                     fetch_minutes=fetch.minute, environ=ENABLED, sleep=lambda s_: None)
+                                     fetch_minutes=fetch.minute, fetch_actions=fetch.corporate,
+                                     environ=ENABLED, sleep=lambda s_: None)
     assert summary["failed"] == 1 and summary["stored"] == 2 and summary["status"] == "PARTIAL"
     assert repo.events[0][4]["failures"][0]["error_kind"] == "MissingDecisionInputs"
 
@@ -669,7 +692,8 @@ def test_one_stock_on_two_decision_days_gets_two_histories(monkeypatch):
     later["inputs_used"]["evaluated_at"] = "2026-11-03T04:39:00+00:00"
     summary, _, fetch = _run(monkeypatch, [_row(), _row(obs="obs-2", day=D0 + dt.timedelta(days=1),
                                                          candidate=later)])
-    assert [c[0] for c in fetch.calls] == ["daily", "daily", "minutes", "minutes", "daily", "minutes", "minutes"]
+    # corporate actions once per stock, history once per stock-day
+    assert [c[0] for c in fetch.calls] == ["daily", "actions", "daily", "minutes", "minutes", "daily", "minutes", "minutes"]
 
 
 def test_a_pre_signal_dip_on_the_entry_day_is_not_the_stop_fill():
@@ -909,6 +933,9 @@ def db():
             columns = ",".join(f"{n} {k}" for n, k in SPECS[table].items())
             pg.execute(f"CREATE TABLE quant_app.{table} ({columns}, PRIMARY KEY({key}))")
         pg.send({"script": f"CREATE TABLE quant_app.prediction_targets ({ddl});"})
+        actions = re.search(r"CREATE TABLE IF NOT EXISTS \{SCHEMA\}\.corporate_actions \((.*?)\n\s*\)\n",
+                            source, re.S).group(1).replace("{SCHEMA}", "quant_app").replace("{{}}", "{}")
+        pg.send({"script": f"CREATE TABLE quant_app.corporate_actions ({actions});"})
         yield pg
     finally:
         pg.send({"close": True})
@@ -1094,3 +1121,430 @@ def test_report_counts_every_pass_of_a_day_once_any_of_it_is_labelled(db):
     assert table[("all", m.CHALLENGER, "ALL", "ALL")][:2] == (3, 0)
     # by score band: OLD <50, SAME 60-70 (unlabelled, same day as LAB), LAB 70+; OTHER (50-60) absent
     assert {k[3] for k in table if k[:3] == ("all", m.INCUMBENT, "Buy")} == {"ALL", "<50", "60-70", "70+"}
+
+
+# ---------- corporate actions / price basis ----------
+
+def _action(name, ex, *, amount=0.0, ratio=None, ex_label=None, top_level=True):
+    """An Upstox corporate action shaped like the archived rows (expiry_date = ex-date)."""
+    item = {"name": name, "ratio": ratio, "amount": amount,
+            "event_details": [{"name": "Announcement date", "value": "13 Jul 2026"}]}
+    if ex is not None:
+        text = ex.strftime("%d %b %Y")
+        if top_level:
+            item["expiry_date"] = text
+        item["event_details"].append({"name": ex_label or f"Ex {name.lower()} date", "value": text})
+    return item
+
+
+def test_isin_comes_from_an_nse_equity_key_only():
+    """The ISIN after the '|'; index keys and synthetic keys are refused."""
+    assert m.isin_of("NSE_EQ|INE002A01018") == "INE002A01018"
+    for key in ("NSE_EQ|SYN", "NSE_INDEX|Nifty 50", "INE002A01018", "NSE_EQ|INE002A0101X"):
+        with pytest.raises(ValueError):
+            m.isin_of(key)
+
+
+class _Client:
+    """requests.Session fake: one canned answer, the request recorded."""
+
+    def __init__(self, status=200, payload=None):
+        """Answer with `status` and `payload`."""
+        self.status, self.payload, self.requests = status, payload, []
+
+    def get(self, url, headers, timeout):
+        """Record the request; return the canned answer."""
+        self.requests.append((url, headers))
+        return type("R", (), {"status_code": self.status, "json": lambda _self: self.payload})()
+
+
+def test_fetch_corporate_actions_reads_the_archived_endpoint_and_fails_closed():
+    """200 list -> actions; data null -> none; auth -> PermissionError; anything else -> ValueError."""
+    client = _Client(payload={"status": "success", "data": [_action("Bonus", D0)]})
+    assert m.fetch_corporate_actions(client, "tok", "NSE_EQ|INE002A01018")[0]["name"] == "Bonus"
+    url, headers = client.requests[0]
+    assert url == f"{s2.UPSTOX_API}/v2/fundamentals/INE002A01018/corporate-actions"
+    assert headers["Authorization"] == "Bearer tok"
+    empty = {"status": "success", "data": None}
+    assert m.fetch_corporate_actions(_Client(payload=empty), "t", "NSE_EQ|INE002A01018") == []
+    for status in (401, 403):
+        with pytest.raises(PermissionError):
+            m.fetch_corporate_actions(_Client(status=status), "t", "NSE_EQ|INE002A01018")
+    for client in (_Client(status=500), _Client(payload={"status": "success", "data": {}}), _Client(payload=[]),
+                   _Client(payload={"status": "success"}), _Client(payload={"data": []}),
+                   _Client(payload={"status": "error", "data": None})):
+        with pytest.raises(ValueError):
+            m.fetch_corporate_actions(client, "t", "NSE_EQ|INE002A01018")
+    silent = _Client()
+    with pytest.raises(ValueError):
+        m.fetch_corporate_actions(silent, "t", "NSE_EQ|SYN")
+    assert silent.requests == []                                     # no request without an ISIN
+    import inspect
+    default = inspect.signature(m.mature_shadow_passes).parameters["fetch_actions"].default
+    assert default is m.fetch_corporate_actions                      # the collector passes none
+
+
+def test_basis_events_window_is_after_the_decision_day_up_to_the_run_day():
+    """Ex-date on the decision day or after the run day: no event; strictly between: event."""
+    decision = _decision()
+    day = lambda n: D0 + dt.timedelta(days=n)                         # noqa: E731
+    assert m.basis_events([_action("Bonus", D0)], decision, TODAY) == []
+    assert m.basis_events([_action("Bonus", day(-3))], decision, TODAY) == []
+    assert m.basis_events([_action("Bonus", TODAY + dt.timedelta(days=1))], decision, TODAY) == []
+    assert m.basis_events([_action("Bonus", day(1))], decision, TODAY) == [(f"Bonus ex {day(1)}", False)]
+    assert m.basis_events([_action("Split", TODAY)], decision, TODAY) == [(f"Split ex {TODAY}", False)]
+    # after the 15-session window but before the run: history is back-adjusted to the fetch day
+    assert m.basis_events([_action("Rights Issue", TODAY - dt.timedelta(days=2))], decision, TODAY)
+
+
+def test_basis_events_skip_small_dividends_and_fail_closed_on_the_rest():
+    """Dividend < 2% of entry never counts (even undated); a large or 0-amount one does; any other
+    or unknown type counts; what cannot be read counts and is marked unreadable."""
+    decision, inside = _decision(), D0 + dt.timedelta(days=3)       # entry 100
+    outside = (TODAY + dt.timedelta(days=10)).strftime("%d %b %Y")
+    events = lambda *items: m.basis_events(list(items), decision, TODAY)   # noqa: E731
+    assert events(_action("Dividend", inside, amount=1.5)) == []
+    assert events(_action("DIVIDEND", inside, amount=1.5)) == []    # the type is matched case-blind
+    assert events(_action("Dividend", None, amount=1.99)) == []
+    assert events(_action("Dividend", inside, amount=2.0)) == [(f"Dividend ex {inside}", False)]
+    assert events(_action("Dividend", inside, amount=0.0)) == [(f"Dividend ex {inside}", False)]  # not announced
+    for amount in (None, -50.0, "", "n/a", float("nan"), float("inf")):
+        assert events(_action("Dividend", inside, amount=amount)) == [
+            (f"Dividend ex {inside} with an unreadable amount", True)], amount
+    renamed = {"name": "Dividend", "amt": 5, "expiry_date": inside.strftime("%d %b %Y")}
+    assert events(renamed) == [(f"Dividend ex {inside} with an unreadable amount", True)]
+    untyped = {"type": "", "expiry_date": inside.strftime("%d %b %Y")}
+    assert events(untyped) == [(f"action ex {inside} of an unreadable type", True)]
+    assert events(_action("Demerger", inside)) == [(f"Demerger ex {inside} of an unknown type", True)]
+    for known in ("Bonus", "Split", "Rights Issue", "SPLIT"):
+        assert events(_action(known, inside)) == [(f"{known} ex {inside}", False)], known
+    # any type naming a dividend is one: small ones pass, large ones hold back quietly
+    assert events(_action("Interim Dividend", inside, amount=1.0)) == []
+    assert events(_action("Special dividend", inside, amount=5.0)) == [(f"Special dividend ex {inside}", False)]
+    assert events(_action("Split", None)) == [("Split without a readable ex-date", True)]
+    garbled = _action("Bonus", inside)
+    garbled["expiry_date"] = "soon"                                  # the detail's date is in the window
+    assert events(garbled) == [(f"Bonus ex {inside}", False)]
+    garbled_old = _action("Bonus", D0 - dt.timedelta(days=240))
+    garbled_old["expiry_date"] = "soon"
+    assert events(garbled_old) == [("Bonus without a readable ex-date", True)]
+    # a dash or NA is "no such date": an old split with one is not held back
+    for blank in ("-", " -- ", "NA", "N/A", "\u2013", "nil", "NULL", "None"):
+        old = _action("Split", D0 - dt.timedelta(days=240))
+        old["event_details"].append({"name": "Ex rights date", "value": blank})
+        assert events(old) == [], blank
+    # any of its dates in the window counts: expiry_date outside, the named ex-date inside
+    split_dates = _action("Rights Issue", inside, ex_label="Ex rights date")
+    split_dates["expiry_date"] = outside
+    assert events(split_dates) == [(f"Rights Issue ex {inside}", False)]
+    top_ex = {"name": "Split", "ex_date": inside.strftime("%d %b %Y"), "expiry_date": outside}
+    assert events(top_ex) == [(f"Split ex {inside}", False)]         # the top-level ex_date is read
+    top_only = _action("Split", inside)
+    top_only["event_details"] = []
+    assert events(top_only) == [(f"Split ex {inside}", False)]
+    assert events("junk") == [("unreadable action", True)]
+    # ex-date only in event_details (no top-level field), as the Bonus rows carry it
+    only_details = _action("Bonus", inside, ex_label="Ex Bonus date", top_level=False)
+    assert events(only_details) == [(f"Bonus ex {inside}", False)]
+
+
+def _scaled(frame, factor):
+    """A history back-adjusted by `factor` (prices only)."""
+    out = frame.copy()
+    out[["Open", "High", "Low", "Close"]] = out[["Open", "High", "Low", "Close"]] * factor
+    return out
+
+
+def test_a_back_adjusted_history_gives_no_label():
+    """A 1:1 bonus after the decision halves the fetched history: entry 100 is outside the decision
+    day's range, so neither policy is labelled (every stop would look hit)."""
+    daily, minutes = _path()
+    notes = {}
+    labels = m.label_decision(_decision(), daily=_scaled(daily, 0.5), minutes=_scaled(minutes, 0.5),
+                              benchmark=daily, benchmark_minutes=minutes, today=TODAY, notes=notes)
+    assert labels == {m.INCUMBENT: None, m.CHALLENGER: None} and notes["basis_mismatch"] == 1
+    (problem,) = notes["basis_problems"]
+    assert problem["error_kind"] == "BasisMismatch" and "outside the daily decision-day range" in problem["message"]
+
+
+def test_the_basis_check_reads_daily_and_minutes_separately_within_half_a_percent():
+    """Only the minute feed rescaled -> caught; a 0.4% rounding gap passes, 0.6% does not; NaN fails."""
+    daily, minutes = _path()
+    assert m._basis_problem(_decision(), daily=daily, minutes=_scaled(minutes, 0.9)).startswith(
+        "recorded entry 100.0 outside the minutes")
+    # the range check alone: the recorded bar is taken from the same rescaled history
+    day_high = float(daily.loc[pd.Timestamp(D0), "High"])
+    near = _scaled(daily, 100.0 / (day_high * 1.004))
+    assert m._basis_problem(_anchored(near), daily=near, minutes=minutes) is None
+    far = _scaled(daily, 100.0 / (day_high * 1.006))
+    assert "daily" in m._basis_problem(_anchored(far), daily=far, minutes=minutes)
+    blank = daily.copy()
+    blank.loc[pd.Timestamp(D0), ["Low", "High"]] = np.nan
+    assert m._basis_problem(_decision(), daily=blank, minutes=minutes) is not None
+    no_day = daily.drop(pd.Timestamp(D0))
+    assert m._basis_problem(_decision(), daily=no_day, minutes=minutes) == "no decision-day bars in the daily history"
+    assert m._basis_problem(_decision(), daily=daily, minutes=minutes.iloc[0:0]) == (
+        "no decision-day bars in the minutes history")
+    above = _scaled(daily, 100.0 / (float(daily.loc[pd.Timestamp(D0), "Low"]) * 0.98))  # entry under the low
+    assert "daily" in m._basis_problem(_anchored(above), daily=above, minutes=minutes)
+
+
+def test_a_corporate_action_holds_the_decision_back_before_any_history_request(monkeypatch):
+    """A bonus since the decision day: counted, nothing stored, no stock history fetched."""
+    fetch, key = Fetch(), "NSE_EQ|INE002A01018"
+    bonus = _action("Bonus", D0 + dt.timedelta(days=4), ratio="1:1")
+    fetch.actions[key] = [bonus]
+    summary, repo, _ = _run(monkeypatch, [_row(key=key), _row(obs="obs-2", key=key)], fetch=fetch)
+    assert (summary["corporate_action"], summary["stored"], summary["status"]) == (2, 0, "SUCCESS")
+    assert [c[0] for c in fetch.calls] == ["daily", "actions"]      # NIFTY, then one actions call
+    assert repo.saved == [] and repo.events == []
+    assert repo.archived == [("INE002A01018", [bonus])]              # terminal mark, written once
+
+
+def test_a_hold_back_on_unreadable_corporate_actions_makes_the_run_partial(monkeypatch):
+    """A renamed amount field holds dividends back: never silent (PARTIAL, reason per decision);
+    a readable dated event in the same run stays quiet."""
+    fetch, key, other = Fetch(), "NSE_EQ|INE002A01018", "NSE_EQ|INE467B01029"
+    fetch.actions[key] = [{"name": "Dividend", "amt": 5, "expiry_date": (D0 + dt.timedelta(days=4)).strftime("%d %b %Y")}]
+    fetch.actions[other] = [_action("Bonus", D0 + dt.timedelta(days=4))]
+    summary, repo, _ = _run(monkeypatch, [_row(key=key), _row(obs="obs-2", key=other)], fetch=fetch)
+    assert (summary["corporate_action"], summary["unreadable_action"], summary["stored"]) == (2, 1, 0)
+    (_source, severity, _code, message, detail), = repo.events
+    assert summary["status"] == "PARTIAL" and severity == "WARNING"
+    assert message == ("Shadow Stage-2 maturation PARTIAL: 0 decision failures, "
+                       "1 held back on unreadable corporate actions")
+    (failure,) = detail["failures"]
+    assert failure["observation_id"] == "obs-1" and failure["error_kind"] == "UnreadableCorporateAction"
+    assert failure["message"] == f"Dividend ex {D0 + dt.timedelta(days=4)} with an unreadable amount"
+    assert "basis_problems" not in summary
+
+
+def test_the_minutes_must_be_on_the_daily_feeds_basis():
+    """Only the minute feed rescaled x0.97 (entry still inside its range, daily anchor intact): the
+    minute and daily decision-day ranges differ -> no label. Within 0.5% passes, 0.6% does not."""
+    daily, minutes = _custom_path({0: {100: (99.0, 104.0)}})
+    decision = _anchored(daily)
+    assert m._basis_problem(decision, daily=daily, minutes=_scaled(minutes, 0.97)) == (
+        "the minute and daily decision-day ranges differ (low ratio 0.9700, high ratio 0.9700)")
+    assert m._basis_problem(decision, daily=daily, minutes=_scaled(minutes, 0.996)) is None
+    assert m._basis_problem(decision, daily=daily, minutes=_scaled(minutes, 1.006)) is not None
+    narrow = minutes.copy()                       # a missing high minute (only the high differs)
+    day = narrow.index.normalize() == pd.Timestamp(D0)
+    narrow.loc[day, "High"] = narrow.loc[day, "High"].clip(upper=102.0)
+    assert "high ratio 0.9808" in m._basis_problem(decision, daily=daily, minutes=narrow)
+    notes = {}
+    labels = m.label_decision(decision, daily=daily, minutes=_scaled(minutes, 0.97), benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY, notes=notes)
+    assert labels == {m.INCUMBENT: None, m.CHALLENGER: None} and notes["basis_mismatch"] == 1
+
+
+def test_a_back_adjusted_history_in_a_run_is_counted_and_not_stored(monkeypatch):
+    """No event in the feed but the history was rescaled: basis_mismatch, both policies unlabelled."""
+    fetch = Fetch()
+    fetch.daily, fetch.minutes = _scaled(fetch.daily, 0.5), _scaled(fetch.minutes, 0.5)
+    fetch.bench_minutes = _path(jump_day=5)[1]
+    summary, repo, _ = _run(monkeypatch, [_row()], fetch=fetch)
+    assert (summary["basis_mismatch"], summary["unlabelled"], summary["stored"]) == (1, 2, 0)
+    assert repo.saved == [] and "basis_problems" not in summary
+    # never silent: a restated feed would drop every label, so each mismatch is reported (PARTIAL)
+    (_source, severity, _code, message, detail), = repo.events
+    assert summary["status"] == "PARTIAL" and severity == "WARNING"
+    assert message == "Shadow Stage-2 maturation PARTIAL: 0 decision failures, 1 price-basis mismatches"
+    assert detail["failures"][0]["error_kind"] == "BasisMismatch"
+
+
+def test_an_unreadable_corporate_actions_answer_is_a_failure_and_a_rejected_token_stops_the_run(monkeypatch):
+    """HTTP 500 / changed schema: that decision fails (PARTIAL), no history fetched for it.
+    A rejected token on this request stops the run as FAILED."""
+    fetch = Fetch()
+    fetch.actions["NSE_EQ|SYN"] = ValueError("Corporate-actions API returned HTTP 500")
+    summary, repo, _ = _run(monkeypatch, [_row()], fetch=fetch)
+    assert (summary["failed"], summary["stored"], summary["status"]) == (1, 0, "PARTIAL")
+    assert [c[0] for c in fetch.calls] == ["daily", "actions"]
+    assert repo.events[0][4]["failures"][0]["message"] == "Corporate-actions API returned HTTP 500"
+    fetch = Fetch()
+    fetch.actions["NSE_EQ|SYN"] = PermissionError("Upstox rejected the Analytics Token")
+    summary, _, _ = _run(monkeypatch, [_row()], fetch=fetch)
+    assert summary["status"] == "FAILED" and summary["error_type"] == "PermissionError"
+
+
+def _anchored(daily, *, back=1, **kw):
+    """A decision recording the scan's last completed bar: the `back`-th bar before D0 in `daily`."""
+    bar = daily.loc[daily.index < pd.Timestamp(D0)].iloc[-back]
+    candidate = _candidate(instrument_key=kw.get("key", "NSE_EQ|SYN"), decision_id=kw.get("obs", "obs-1"))
+    candidate["inputs_used"]["equity_capture"]["inputs"]["latest_indicators"] = {
+        **{name: float(bar[name]) for name in ("Open", "High", "Low", "Close")}, "EMA_20": 1.0}
+    return m.parse_pending_row(_row(candidate=candidate, **kw))
+
+
+def test_the_exact_anchor_catches_a_small_rescale_inside_the_day_range():
+    """Decision day 99-104, history back-adjusted x0.97 (demerger-sized): the entry still lies in
+    the day's range, but the scan's last completed bar no longer matches -> no label."""
+    daily, minutes = _custom_path({0: {100: (99.0, 104.0)}})
+    decision = _anchored(daily)
+    assert decision["anchor"] == {name: float(daily.loc[daily.index < pd.Timestamp(D0), name].iloc[-1])
+                                  for name in ("Open", "High", "Low")}
+    assert m._basis_problem(decision, daily=daily, minutes=minutes) is None
+    small = m._basis_problem(decision, daily=_scaled(daily, 0.97), minutes=_scaled(minutes, 0.97))
+    assert small == "the scan's last completed bar is not in the fetched daily history (low ratio 0.9700)"
+    # a pass without a readable recorded bar cannot be proven on basis: no label (x0.97 passes the ranges)
+    bare = _candidate()
+    bare["inputs_used"]["equity_capture"]["inputs"]["latest_indicators"] = {"Open": 100.0, "High": None, "Low": 1}
+    unproven = m.parse_pending_row(_row(candidate=bare))
+    assert unproven["anchor"] is None
+    assert m._basis_problem(unproven, daily=_scaled(daily, 0.97), minutes=_scaled(minutes, 0.97)) == (
+        "no recorded last completed bar to check the price basis against")
+    notes = {}
+    labels = m.label_decision(decision, daily=_scaled(daily, 0.97), minutes=_scaled(minutes, 0.97),
+                              benchmark=daily, benchmark_minutes=minutes, today=TODAY, notes=notes)
+    assert labels == {m.INCUMBENT: None, m.CHALLENGER: None} and notes["basis_mismatch"] == 1
+
+
+def test_the_anchor_matches_a_bar_a_lagging_scan_feed_ended_on_and_fails_closed_without_bars():
+    """The scan's history ended one session early: that bar is still found. Within 0.1% passes;
+    0.11% off, a NaN bar, a zero recorded price, or no bar before the decision day fails."""
+    daily, minutes = _custom_path({})
+    prior = daily.index[daily.index < pd.Timestamp(D0)]
+    daily.loc[prior[-1], ["Open", "High", "Low", "Close"]] = [100.4, 100.9, 100.2, 100.6]
+    lagging = _anchored(daily, back=2)
+    assert m._basis_problem(lagging, daily=daily, minutes=minutes) is None
+    exact = _anchored(daily)
+    assert m._basis_problem(exact, daily=_scaled(daily, 1.0009), minutes=minutes) is None
+    assert m._basis_problem(exact, daily=_scaled(daily, 1.0011), minutes=minutes) is not None
+    assert m._basis_problem(exact, daily=_scaled(daily, 1.002), minutes=minutes) is not None
+    blank = daily.copy()
+    blank.loc[prior, "Low"] = np.nan
+    assert m._basis_problem(exact, daily=blank, minutes=minutes) is not None
+    revised = daily.copy()                                           # only the close re-stated: same basis
+    revised.loc[prior[-1], "Close"] = 100.9
+    assert m._basis_problem(exact, daily=revised, minutes=minutes) is None
+    assert m._basis_problem(exact, daily=daily.loc[daily.index >= pd.Timestamp(D0)], minutes=minutes) == (
+        "no daily bar before the decision day to check the price basis against")
+    for field in ("Open", "Low"):                                    # 0 is no price: no anchor
+        bar = {"Open": 100.4, "High": 100.9, "Low": 100.2, field: 0.0}
+        assert m._anchor(bar) is None, field
+    assert m._anchor({"Open": 100.4, "High": 100.9, "Low": 100.2}) == {"Open": 100.4, "High": 100.9, "Low": 100.2}
+
+
+def test_label_decision_checks_each_feed_on_its_own():
+    """Only the minute feed rescaled, or only the daily feed: either gives no label."""
+    daily, minutes = _custom_path({0: {100: (99.0, 104.0)}})
+    decision = _anchored(daily)
+    for frames in ({"daily": daily, "minutes": _scaled(minutes, 0.5)},
+                   {"daily": _scaled(daily, 0.97), "minutes": minutes}):
+        notes = {}
+        labels = m.label_decision(decision, **frames, benchmark=daily, benchmark_minutes=minutes,
+                                  today=TODAY, notes=notes)
+        assert labels == {m.INCUMBENT: None, m.CHALLENGER: None} and notes["basis_mismatch"] == 1
+
+
+def test_a_failed_corporate_actions_answer_is_requested_once_per_stock(monkeypatch):
+    """Two decisions of one stock, the answer fails: one request, both counted as failed."""
+    fetch = Fetch()
+    fetch.actions["NSE_EQ|SYN"] = ValueError("Corporate-actions API returned HTTP 502")
+    summary, _, _ = _run(monkeypatch, [_row(), _row(obs="obs-2")], fetch=fetch)
+    assert summary["failed"] == 2 and [c[0] for c in fetch.calls] == ["daily", "actions"]
+
+
+@needs_sql
+def test_pending_query_leaves_out_passes_with_an_archived_basis_event(db):
+    """Archived non-dividend action after the decision day, up to today: out. A dividend (any type
+    naming one), an ex-date on or before the decision day, after today, or another stock's action:
+    still pending."""
+    day = TODAY - dt.timedelta(days=30)
+    held = _seed(db, run="r30", symbol="INE111A01011", day=day)
+    kept = [_seed(db, run="r30", symbol=f"INE22{n}A01011", day=day) for n in range(6)]
+
+    def archive(isin, kind, ex, amount=0.0):
+        """One archived action row (the close-mode archive's columns)."""
+        db.execute("INSERT INTO quant_app.corporate_actions VALUES (%s,%s,%s,NULL,%s,NULL,'Upstox',now(),'{}'::jsonb)",
+                   (isin, kind, ex, amount))
+    archive("INE111A01011", "Bonus", day + dt.timedelta(days=3))
+    archive("INE220A01011", "Dividend", day + dt.timedelta(days=3), amount=50.0)
+    archive("INE221A01011", "Split", day)
+    archive("INE222A01011", "Split", TODAY + dt.timedelta(days=1))
+    archive("INE223A01011", "Rights Issue", day - dt.timedelta(days=1))
+    archive("INE999A01011", "Bonus", day + dt.timedelta(days=3))      # no pass of this stock
+    archive("INE224A01011", "Split", TODAY)                           # today itself: out
+    archive("INE225A01011", "Interim Dividend", day + dt.timedelta(days=3), amount=50.0)
+    pending = {r[0] for r in m.pending_shadow_passes(SqlRepo(db), today=TODAY)}
+    assert held not in pending and kept[4] not in pending and set(kept[:4]) | {kept[5]} <= pending
+
+
+def test_the_anchor_compares_open_high_and_low_not_the_close():
+    """A re-stated close alone (official vs last trade) keeps the basis; 0.2% off on any of
+    Open, High or Low breaks it; only the 2 bars before the decision day are searched."""
+    daily, minutes = _custom_path({})
+    prior = daily.index[daily.index < pd.Timestamp(D0)]
+    daily.loc[prior[-1], ["Open", "High", "Low", "Close"]] = [100.4, 100.9, 100.2, 100.6]
+    decision = _anchored(daily)
+    closed = daily.copy()
+    closed.loc[prior[-1], "Close"] = 101.6
+    assert m._basis_problem(decision, daily=closed, minutes=minutes) is None
+    for field in ("Open", "High", "Low"):
+        moved = daily.copy()
+        moved.loc[prior[-1], field] = float(daily.loc[prior[-1], field]) * 1.002
+        assert m._basis_problem(decision, daily=moved, minutes=minutes) is not None, field
+    # the recorded bar three sessions back would match only with an unbounded search
+    old = daily.copy()
+    old.loc[prior[-3], ["Open", "High", "Low", "Close"]] = [101.5, 102.0, 101.0, 101.8]
+    far_back = _anchored(old, back=3)
+    assert m._basis_problem(far_back, daily=old, minutes=minutes) is not None
+    assert m._basis_problem(_anchored(old, back=2), daily=old, minutes=minutes) is None
+
+
+def test_ex_date_labels_with_hyphens_or_no_type_are_read():
+    """'Ex date' and 'Ex-date' are ex-dates too (an expiry date is not one)."""
+    decision, inside = _decision(), D0 + dt.timedelta(days=3)
+    for label in ("Ex date", "Ex-date", "EX DIVIDEND DATE"):
+        item = _action("Bonus", inside, ex_label=label, top_level=False)
+        assert m.basis_events([item], decision, TODAY) == [(f"Bonus ex {inside}", False)], label
+    expiry_only = {"name": "Bonus", "event_details": [{"name": "Expiry date", "value": inside.strftime("%d %b %Y")}]}
+    assert m.basis_events([expiry_only], decision, TODAY) == [("Bonus without a readable ex-date", True)]
+
+
+class _FailingArchive(Repo):
+    """A repository whose corporate-actions archive write fails."""
+
+    def archive_corporate_actions(self, isin, actions):
+        """Simulate a database error."""
+        raise RuntimeError("connection reset")
+
+
+def test_a_failed_archive_write_still_holds_the_decision_back(monkeypatch):
+    """The terminal mark is best effort: the hold-back stands and the archive failure alone is no
+    run failure; junk actions never reach the archive (and are reported: PARTIAL)."""
+    key, fetch = "NSE_EQ|INE002A01018", Fetch()
+    fetch.actions[key] = [_action("Split", D0 + dt.timedelta(days=4)), "junk"]
+    repo = _FailingArchive()
+    _select(monkeypatch, [_row(key=key)])
+    summary = m.mature_shadow_passes(repo, None, "t", today=TODAY, fetch_daily=fetch.day,
+                                     fetch_minutes=fetch.minute, fetch_actions=fetch.corporate,
+                                     environ=ENABLED, sleep=lambda s_: None)
+    assert (summary["corporate_action"], summary["failed"], summary["unreadable_action"]) == (1, 0, 1)
+    assert summary["status"] == "PARTIAL"
+    clean = dict(fetch.actions)
+    fetch.actions = {key: [_action("Split", D0 + dt.timedelta(days=4))]}
+    _select(monkeypatch, [_row(key=key)])
+    summary = m.mature_shadow_passes(_FailingArchive(), None, "t", today=TODAY, fetch_daily=fetch.day,
+                                     fetch_minutes=fetch.minute, fetch_actions=fetch.corporate,
+                                     environ=ENABLED, sleep=lambda s_: None)
+    assert (summary["corporate_action"], summary["failed"], summary["status"]) == (1, 0, "SUCCESS")
+    fetch.actions = clean
+    good = Repo()
+    _select(monkeypatch, [_row(key=key)])
+    m.mature_shadow_passes(good, None, "t", today=TODAY, fetch_daily=fetch.day, fetch_minutes=fetch.minute,
+                           fetch_actions=fetch.corporate, environ=ENABLED, sleep=lambda s_: None)
+    assert [len(actions) for _, actions in good.archived] == [1]
+
+
+def test_a_lease_lost_before_the_archive_write_writes_nothing(monkeypatch):
+    """Checks 1-2 pass (run start, decision start); the check before the archive write fails."""
+    key, fetch, repo = "NSE_EQ|INE002A01018", Fetch(), Repo()
+    fetch.actions[key] = [_action("Bonus", D0 + dt.timedelta(days=4))]
+    _select(monkeypatch, [_row(key=key)])
+    with pytest.raises(s2.LeaseLost):
+        m.mature_shadow_passes(repo, None, "t", today=TODAY, fetch_daily=fetch.day, fetch_minutes=fetch.minute,
+                               fetch_actions=fetch.corporate, check_lease=_lease_valid_for(2),
+                               environ=ENABLED, sleep=lambda s_: None)
+    assert not hasattr(repo, "archived") and repo.events == []

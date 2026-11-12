@@ -38,6 +38,43 @@ Shadow-only. Never places, sizes or recommends an order. Off unless the reposito
     measures NIFTY from the entry day's 09:15 open to the outcome day's close: for a 10:07 decision that adds
     NIFTY's first hour, and for a stop or target exit the rest of that day, to the "excess".
   A label whose NIFTY evidence is missing is not stored (`no_benchmark`, retried).
+- Price basis (added 12 Nov, branch `stage2-corporate-action-guard`). The recorded entry, stop and target are
+  on the decision day's price basis, but Upstox history is back-adjusted to the day it is fetched (the Aug
+  2025 HDFCBANK bonus shows in 2022 bars, research 3 Nov). A split, bonus, rights issue or large dividend in
+  between makes the levels meaningless against the fetched bars (a 1:1 bonus halves the history: every stop
+  looks hit). Two fail-closed guards:
+  - events: the stock's Upstox corporate actions (`/v2/fundamentals/{isin}/corporate-actions`, the endpoint
+    the close-mode archive already used: 1,162 ISINs answered 200, 523 empty), one request per stock per run,
+    before any history request. Held back (`corporate_action`) when any action except a dividend below 2% of
+    the entry (amount > 0) has any ex-date (`ex_date`, `expiry_date`, every "Ex ... date" detail; a dash or
+    "NA" is no date) after the decision day and on or before the run day (an ex-date after the window still
+    shifts it, because the history is adjusted to the fetch day); any type naming a dividend ("Interim
+    Dividend") is a dividend, here and in the pending query. What cannot be read, or a type other than
+    Dividend, Bonus, Split and Rights Issue, holds it back and is reported (`unreadable_action`, run PARTIAL
+    with the reason, so a renamed Upstox field or a new type cannot hold decisions back unseen): an action that
+    is not an object, one in the window without a type or of an unknown type, a dividend in the window without
+    a readable amount (missing, not a number, negative), or an unparsable ex-date when no ex-date in the window
+    is readable. Measured on the 464 stored actions of 330 ISINs (`feature_observations`, 12 Nov): only those
+    4 types, every action dated, every "Ex ... date" detail equal to its `expiry_date`, so 0 reported. A non-200 or non-`success` answer is a failure, never a pass (asked once
+    per stock per run, even when it fails). The held-back stock's actions are archived in `corporate_actions`
+    (the close-mode archive's writer; the runtime role has INSERT/SELECT/UPDATE, no RLS on that table) and
+    the pending query leaves out passes with an archived non-dividend action in that window: a terminal
+    mark, so most take no later slot or request (exceptions in Limits);
+  - basis (`basis_mismatch`): both histories must hold the decision day with the recorded entry (the scan's
+    own quote, or its last close when it had none) inside its range (0.5%); the minutes' decision-day low and
+    high must equal the daily bar's (0.5%: the entry and exit order come from the minutes, the anchor below
+    checks the daily feed); and one of the 2 daily bars before the decision day (2: a scan feed
+    one session behind still matches) must equal the scan's own last completed bar (`latest_indicators`
+    Open/High/Low within 0.1%; the close is left out: AVTNPL's 10 Nov close is 100.14 on Upstox, 100.31
+    elsewhere, O/H/L identical, so sources and revisions differ on it). A rescale above 0.1% fails that match
+    whatever its factor (a 3% demerger factor inside the day's range is caught), so events the feed does not
+    list are caught whenever the provider adjusted them. A pass without a readable bar is a mismatch, not a
+    pass (all 93 live passes on 11-12 Nov carry it). Each mismatch is logged with its reason, and any mismatch
+    makes the run PARTIAL with the reasons in the quality event (so a false positive is loud on the first
+    labelling run, about 3 Dec; nothing is stored for it). Daily history now starts 10 days before the
+    decision day.
+  - the archive write is best effort: if it fails the decision is still held back this run (and asked again
+    next run); a lost lease stops the run before the write.
 - Storage: append-only `prediction_targets` rows (immutable by trigger), `target_version`
   `stage2-shadow:net-excess-execution-v2.minute-aligned-v1:<policy>`. The app's calibration, readiness count and training read
   `net-excess-execution-v2` only, so they never see these. No new table, grant or policy: the runtime role
@@ -45,8 +82,8 @@ Shadow-only. Never places, sizes or recommends an order. Off unless the reposito
   About 2 rows per pass (~39 passes per trading day today).
 - Upstox: 1 NIFTY daily request per run; per stock-day 1 daily + 1 one-minute request (ending at the
   horizon's last session; both scans of a stock-day share them); 1 NIFTY one-minute request per decision
-  window (shared by every stock with that window); each after a 0.2 s pause; at most 60 decisions (181
-  requests) and 300 s per run (checked between decisions; a budget stop makes the run PARTIAL, the rest is
+  window (shared by every stock with that window); 1 corporate-actions request per stock; each after a 0.2 s
+  pause; at most 60 decisions (241 requests) and 300 s per run (checked between decisions; a budget stop makes the run PARTIAL, the rest is
   retried). With the shadow step's 151 requests a scan stays below half of Upstox's documented 1000 requests
   per 30 minutes per API (25/s, 250/min); capacity 120
   decisions a day against ~39 new passes a day. A lost lease stops the run before any write; a
@@ -118,6 +155,37 @@ surviving mutants it listed (exact NIFTY window, daily close for time exits, win
 session and label decoys in SQL). Direct tests added for `_guard`, `_mature_one` and the execution adjustment. Not changed: the switch accepts
 `1/true/yes/on` like the shadow Stage-2 switch (all explicit opt-ins); Graphify coupling notes are advisory.
 
+## Review of the price-basis guard (12 Nov)
+First adversarial pass: no blocker, 1 major (a held-back decision was asked again every run until it aged
+out, taking slots and requests) + 5 minor. Fixed: the terminal mark (archive + pending-query exclusion),
+failed answers cached per stock, `status` checked, every "Ex ... date" detail read, dividend amount > 0.
+Second pass: no blocker, 1 major (a basis mismatch was only counted, so a systematically wrong anchor would
+hold every decision back in silence) + 2 minor + nits. Fixed: mismatches make the run PARTIAL with reasons;
+the archive write is best effort and lease-checked; a missing anchor is a mismatch; the anchor compares
+O/H/L over the 2 bars before the decision day; ex-date labels with hyphens or no type word. Not measurable
+here (Upstox is not reachable from the review sandbox): the anchor's and the minute/daily range check's
+false-positive rates on live data (the pre-open auction open against the 09:15 minute, missing minutes on
+illiquid stocks; 0.5% should absorb ordinary cases, a news-day auction gap may not); the PARTIAL run makes
+either visible on the first labelling run. Targeted mutants for both passes' fixes: all killed.
+Third pass: no blocker, 1 major (the fail-closed hold-backs on unreadable data, a renamed `amount` or a dash
+in a date, were as silent as round 2's mismatches and never terminal: a schema change would hold back every
+stock with any action, run SUCCESS) + 2 minor + 3 nits. Fixed: unreadable hold-backs make the run PARTIAL with
+reasons (`unreadable_action`), a dash or "NA" is no date, a readable in-window date wins over an unreadable
+one; the minutes' decision-day range must equal the daily bar's (a minute-only x0.97 rescale was labelled);
+docs (archive date order, entry fallback, the in-window detail date in Limits); tests for the 4 surviving
+mutants (top-level `ex_date`, a 0.11% rescale, a zero anchor price, an upper-case DIVIDEND). Round-3 mutants:
+20 of 20 killed.
+Fourth pass: no blocker, no major; 2 minor + 2 nits. Fixed: a type naming a dividend ("Interim Dividend")
+was held back as a non-dividend in silence and then excluded for good by the pending query -> dividend matched
+inside the type name in both, and a type outside the 4 known ones is reported; unreadable/undated rows
+measured on stored payloads (0 of 464); the range check's live rate listed as not measurable; doc wording;
+`nil/null/none` placeholders tested. Mutants: 5 of 5 killed.
+Gemini notebook second opinion (12 points): no new defect. Covered already: ISIN change on a split, an
+ex-date on D or D-1, demerger gaps (fail closed), the terminal mark, the request budget (241 + 151 per scan);
+under T+1 the ex-date is the record date. Added to Limits: actions without a readable ex-date are re-checked
+like large dividends. Kept: a basis mismatch makes the run PARTIAL (round 2's major); if live mismatches
+are frequent, review the anchor tolerance before that becomes noise.
+
 ## Limits
 - One-minute evidence (the stock's and NIFTY's) must be available from Upstox for the label to be exact;
   otherwise the decision is retried, never labelled from daily bars.
@@ -128,7 +196,27 @@ session and label decoys in SQL). Direct tests added for `_guard`, `_mature_one`
 - The challenger's levels use the recorded `resistance20/60` (rounded to 0.01); the ATR is exact.
 - Labels are hypothetical outcomes of every pass, not a portfolio: capital and overlapping positions are
   not modelled.
-- No corporate-action guard: a split or bonus inside the 15 sessions would give a wrong label (backlog).
+- Corporate actions: an event that the Upstox feed omits and the provider also did not adjust for (a raw
+  ex-date jump inside the window) is not caught; Upstox listed only Dividend, Bonus, Split and Rights Issue
+  in the archived rows. A decision held back only for a large dividend, or for an action whose ex-date the
+  archive writer does not read (it reads `ex_date`, `expiry_date` and the "ex date", "ex dividend date" and
+  "ex split date" details, and skips an undated row, so nothing excludes the pass), is re-checked (one request) each run until it is 60 days
+  old (Upstox reportedly does not back-adjust dividends, so a large dividend after the window holds a decision
+  back for nothing; rare). An action ex-dated on the decision day itself is not an event (the scan's quote is
+  already on the new basis); a scan whose last completed bar was still on the old basis fails the anchor. A
+  split that moves the stock to a new ISIN is looked up under the recorded one: if Upstox then lists nothing,
+  the anchor still catches an adjusted history, and an old-ISIN history that stops at the split defers the
+  label for missing bars. The report still counts held-back passes as eligible,
+  unlabelled.
+- The terminal mark reads the archive's single ex-date per action (the archive writer takes `ex_date`, else
+  `expiry_date`, else a named detail) and the archive never deletes rows, so an action Upstox later cancels or re-dates still excludes
+  its passes for good; a mis-dated row can also exclude a pass the live check would have let through. Rare;
+  clearing it is a manual row fix in `corporate_actions` (Kiran-run SQL). The other way round, an action
+  held back by an in-window detail date while its `expiry_date` lies after the run day is archived under the
+  later date, so the pass stays pending and is re-checked each run (cost only; all dates agreed in the 911
+  archived rows).
+- A rescale under 0.1% (a dividend-sized adjustment) passes the anchor; the 0.5% entry-range checks and the
+  events guard still apply.
 - The 300 s budget is soft: a single decision can run long on request timeouts and retries.
 - A minute range over 29 days (suspended or illiquid stock with missing bars) makes more chunk requests (up
   to 3 for about 60 days), unpaced, and its NIFTY window the same.
