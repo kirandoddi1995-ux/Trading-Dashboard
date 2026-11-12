@@ -26,18 +26,39 @@ Shadow-only. Never places, sizes or recommends an order. Off unless the reposito
   - `atr15-stop-v1`: stop = entry - 1.5 ATR, target from the same target logic (`levels_for_stop`,
     differential-tested against `derive_long_trade_levels`).
   Inputs (ATR, resistance levels, decision time, estimated costs) come from the decision's own ledger batch.
-- Label version `net-excess-execution-v2.minute-aligned-v1` = `prediction_validation.compute_forward_target`
-  (the production label: first one-minute open after the decision, minute-ordered touches, stop first, net of
-  the decision's cost estimate) with two changes, so tight and wide stops are compared fairly:
-  - a stop reached by a minute bar that opens below it fills at that open (gap through the stop), not at the
-    stop, so tight stops are not flattered. Targets stay filled at the target. A bar opening at 0 or below is
-    bad data: no label (retried); a NaN open keeps the stop fill;
-  - NIFTY is measured over the stock's own holding window on NIFTY one-minute bars: from the open of the entry
-    minute to the close of the exit minute (each NIFTY minute at most 5 minutes away, never reversed), or
-    to NIFTY's daily close for a time exit. The production label
-    measures NIFTY from the entry day's 09:15 open to the outcome day's close: for a 10:07 decision that adds
-    NIFTY's first hour, and for a stop or target exit the rest of that day, to the "excess".
-  A label whose NIFTY evidence is missing is not stored (`no_benchmark`, retried).
+- Label version `net-excess-app-contract-v1` (13 Nov; replaces `net-excess-execution-v2.minute-aligned-v1`,
+  which never stored a label): the app's own trade plan (`trade_contracts.build_trade_timing`, shown with every
+  decision: "enter only during [decision, +15 min]; exit at target/stop, otherwise no later than 15:15 on the
+  15th session"), executed on the stock's one-minute bars, net of the decision's cost estimate:
+  - entry: the open of the first minute bar that starts after the decision time and within the entry window
+    the app showed (recorded with the decision; 15 minutes, never past 15:15) on the decision day. No such bar
+    = no trade (`no_fill`), never a later day;
+  - exit: the first bar reaching the stop (stop first when one bar reaches both; filled at the bar's open when
+    it opened below the stop, a gap through it) or the target (filled at the target, conservative), else the
+    time exit at 15:15 on the 15th regular session after the decision day (the app counts weekdays; NIFTY's
+    bars apply holidays; special sessions from `nifty_session_calendar.SPECIAL`, such as Muhurat, never count,
+    though their bars stay on the minute path): the open of the first bar from 15:15, or the close of the last
+    bar before it, either within 5 minutes of 15:15 (else `window_problem`: never an exit hours early);
+  - evidence: every session of that window needs the stock's daily bar (no daily and no minute bar:
+    `no_trading`, counted, quiet, a suspension; a daily bar missing while minutes traded is a data gap,
+    reported) and valid minute bars (unique, ordered, finite, positive, consistent OHLC; else
+    `window_problem`, reported), and on each session up to the outcome the minutes and the daily bar must
+    agree on whether each level was reached (else `window_problem`, reported: a touch only one feed shows);
+  - NIFTY over the same minutes: from the open of the entry minute to the open of the exit minute when the
+    stock exits at a bar's open (15:15 time exit, gap stop), else to the close of the exit minute (a stop or
+    target inside the bar, a last-close time exit); each NIFTY minute at most 5 minutes away, never reversed;
+  - both policies are labelled from one fetch and stored together, or not at all: a missing NIFTY window for
+    either (`no_benchmark`) retries both, so which policy gets labelled never depends on a NIFTY gap and a pair
+    never mixes two fetches. Only a policy whose levels are invalid, or that the actual entry price is not
+    strictly inside (`outside_levels`), is skipped alone (that never changes on a retry);
+  - selection and label window agree (one regular-session count); the report's eligibility counts shadow-scan
+    days, so a special session can only make it wait longer, never call a decision eligible early.
+  Why not the production label (`prediction_validation.compute_forward_target`, `net-excess-execution-v2`,
+  unchanged, used by the inactive close mode): it reads minute bars only on days whose daily bar shows a touch
+  (a minute-only stop is missed), lets an in-session entry slip to a later day when the decision day's minutes
+  run out, ends a time exit at the 14th session's close for an in-session entry while selection waited for the
+  15th, and its NIFTY window starts at 09:15. ChatGPT's independent review (13 Nov, prompt 65) found these;
+  Claude reproduced each on main `fa7fd21`.
 - Price basis (added 12 Nov, branch `stage2-corporate-action-guard`). The recorded entry, stop and target are
   on the decision day's price basis, but Upstox history is back-adjusted to the day it is fetched (the Aug
   2025 HDFCBANK bonus shows in 2022 bars, research 3 Nov). A split, bonus, rights issue or large dividend in
@@ -54,7 +75,10 @@ Shadow-only. Never places, sizes or recommends an order. Off unless the reposito
     with the reason, so a renamed Upstox field or a new type cannot hold decisions back unseen): an action that
     is not an object, one in the window without a type or of an unknown type, a dividend in the window without
     a readable amount (missing, not a number, negative), or an unparsable ex-date when no ex-date in the window
-    is readable. Measured on the 464 stored actions of 330 ISINs (`feature_observations`, 12 Nov): only those
+    is readable; a small dividend is skipped only when all its dates are readable and, if one lies in the
+    window, they agree (otherwise reported; dates that all lie outside the window do not matter), and a `null`
+    actions list is an unreadable answer (Upstox sends `[]` for none: 233 of 563 stored
+    answers, 0 null). Measured on the 464 stored actions of 330 ISINs (`feature_observations`, 12 Nov): only those
     4 types, every action dated, every "Ex ... date" detail equal to its `expiry_date`, so 0 reported. A non-200 or non-`success` answer is a failure, never a pass (asked once
     per stock per run, even when it fails). The held-back stock's actions are archived in `corporate_actions`
     (the close-mode archive's writer; the runtime role has INSERT/SELECT/UPDATE, no RLS on that table) and
@@ -78,12 +102,12 @@ Shadow-only. Never places, sizes or recommends an order. Off unless the reposito
   - the archive write is best effort: if it fails the decision is still held back this run (and asked again
     next run); a lost lease stops the run before the write.
 - Storage: append-only `prediction_targets` rows (immutable by trigger), `target_version`
-  `stage2-shadow:net-excess-execution-v2.minute-aligned-v1:<policy>`. The app's calibration, readiness count and training read
+  `stage2-shadow:net-excess-app-contract-v1:<policy>`. The app's calibration, readiness count and training read
   `net-excess-execution-v2` only, so they never see these. No new table, grant or policy: the runtime role
   already has SELECT/INSERT on `prediction_targets` (policy `archive_preserve_runtime`, checked 11 Nov).
   About 2 rows per pass (~39 passes per trading day today).
 - Upstox: 1 NIFTY daily request per run; per stock-day 1 daily + 1 one-minute request (ending at the
-  horizon's last session; both scans of a stock-day share them); 1 NIFTY one-minute request per decision
+  exit session; both scans of a stock-day share them); 1 NIFTY one-minute request per decision
   window (shared by every stock with that window); 1 corporate-actions request per stock; each after a 0.2 s
   pause; at most 60 decisions (241 requests) and 300 s per run (checked between decisions; a budget stop makes the run PARTIAL, the rest is
   retried). With the shadow step's 151 requests a scan stays below half of Upstox's documented 1000 requests
@@ -92,11 +116,13 @@ Shadow-only. Never places, sizes or recommends an order. Off unless the reposito
   rejected token stops it as FAILED; any other failure is contained (quality event
   `STAGE2_MATURATION_FAILED`, WARNING; ERROR when FAILED) and makes the run PARTIAL; a malformed row is
   one counted failure, never a stopped run; an empty NIFTY answer stops the run as FAILED before any stock
-  request, and so does a stale one (last bar older than 6 days); an empty stock answer is deferred; an HTTP
+  request, and so does a stale one (last bar older than 6 days); an empty stock answer is deferred (no minute
+  request); an HTTP
   4xx on one instrument's daily request (dead key) is counted as `provider_rejected`, not a failure (a 4xx on
     the minute request stays a failure, so a broken endpoint cannot look like SUCCESS); NIFTY evidence missing for
-  a holding window (no minute within 5 minutes of entry or exit, no daily close for a time exit) is counted as
-  `no_benchmark`; an empty NIFTY minute answer is a failure (a broken feed must not look healthy). Unlabelled
+  a holding window (no minute within 5 minutes of entry or exit) is counted as `no_benchmark` (once per decision);
+  the label's own reasons are counted as `no_fill`, `no_trading`, `outside_levels` (quiet) and `window_problem`
+  (reported, PARTIAL); an empty NIFTY minute answer is a failure (a broken feed must not look healthy). Unlabelled
   decisions (incomplete or ambiguous evidence) are retried by later runs until 60 days old. The run summary
   also shows the true backlog (`pending`), `awaiting_sessions` and `selected`.
 - `scheduled_collector.py`: one call after the shadow step, its rows in `record_count`, PARTIAL/FAILED
@@ -194,13 +220,67 @@ under T+1 the ex-date is the record date. Added to Limits: actions without a rea
 like large dividends. Kept: a basis mismatch makes the run PARTIAL (round 2's major); if live mismatches
 are frequent, review the anchor tolerance before that becomes noise.
 
+## Label successor (13 Nov): ChatGPT's independent review, prompt 65
+ChatGPT (independent checker, synthetic probes on PR #88's head) found: a minute stop missed when the daily
+range disagrees; an in-session entry slipping to the next day; an in-session time exit after the 14th session
+while selection waits for the 15th; a retry pairing labels from different fetches; a NIFTY gap deciding which
+policy survives. Claude reproduced the first four on main `fa7fd21` (no shadow label was stored yet: 0 rows).
+Fixed here by the new label version (above). From ChatGPT's private guard candidate: finite positive
+decision-day bounds, a `null` actions list as unreadable, the small-dividend skip only with one readable
+ex-date, conflicting dividend ex-dates reported. Not changed: the anchor stays undated (the capture records no
+date for its last completed bar); an ex-date on the decision day stays a non-event (the anchor catches a scan
+still on the old basis); the versioned disposition table and tick-size rounding are follow-ups (Limits).
+ChatGPT's retained-data replay (2023-24, 12 names, frozen daily EMA/ADX setup) favoured the incumbent stop at
+every cost: keep both policies in shadow; the forward pairs are the test of the actual Stage-2 policy.
+Targeted mutants: 34 of 34 non-equivalent killed (2 equivalent ones removed as redundant code).
+Independent reviewer, round 1: no blocker, no major, 4 minor + 3 nits. Fixed: a time exit priced from a feed
+that stopped hours before 15:15 (now within 5 minutes or reported); special sessions (Muhurat, DR drills)
+counted towards the 15 (now regular sessions only, in selection too); a small dividend with one unparsable
+date held back silently (now reported); a daily-feed gap with minutes present counted as a quiet suspension
+(now reported); conflicting small-dividend dates outside the window no longer hold back; NIFTY end-price
+wording; the recorded entry window is used. Tests added for the 5 surviving mutants; 20 of 20 round-2
+mutants killed.
+Round 2: no blocker, no major, 1 minor + 3 nits. Fixed: bars of a special session inside the window were on
+the path but never validated or cross-checked (now checked like any session when the stock has bars that day;
+3 of 3 mutants killed, 1 equivalent removed). Kept and listed in Limits: the 5-minute exit rule is loud for a
+thin stock (a feed that stops early looks the same); the entry window starts at the recorded decision time
+(the app's minute-truncated plan time would allow a bar that began before the decision); `SPECIAL` is a
+hand-kept list.
+Gemini notebook second opinion (10 points): no defect. Kept by design: PARTIAL on ticker-level evidence problems
+(LESSON 12), the 15:15 exit and gap-only stop fills (the app's plan; conservative for both policies), `no_fill`
+for a thin entry window; the daily-only print risk is in Limits.
+
 ## Limits
 - One-minute evidence (the stock's and NIFTY's) must be available from Upstox for the label to be exact;
   otherwise the decision is retried, never labelled from daily bars.
 - The production label (`net-excess-execution-v2`, written by the inactive close-mode maturation) keeps the
-  day-bar NIFTY window; fix it there (new version) before that maturation is switched back on (backlog).
-- A next-open entry (decision outside the session) averages the five opening minutes; its NIFTY window starts
-  at the fifth (a few minutes, not an hour).
+  day-bar NIFTY window and the execution issues listed under the label version; give it a successor version
+  before that maturation is switched back on, and keep its v2 rows (backlog).
+- The entry takes the bar's open; the app also says "at or below the displayed ask", which is not modelled.
+- Levels stay at two decimals for this frozen comparison; NSE tick sizes (dated, per price band) are not
+  applied. An execution-quality successor should round side-aware to the instrument's dated tick and
+  recheck stop < entry < target and net reward:risk after rounding (SADBHIN and other low-priced names).
+- `no_fill`, `no_trading` and `outside_levels` repeat each run until the pass is 60 days old (one fetch
+  each, rare); the report counts such passes as eligible, unlabelled, without the reason. A versioned
+  per-decision disposition (reason, guard version, event identity, evidence) would make held, terminal and
+  expired passes visible and let a corrected archive row release a pass: it needs a new table (DDL,
+  Kiran-run), so it is a follow-up, not part of this change.
+- The daily/minute touch check fails closed when a level lies between the daily bar's extreme and the
+  minutes' (a print in the daily bar but in no minute bar: the pre-open auction if Upstox's 09:15 bar
+  excludes it, or a block-deal or closing-session print if the daily bar includes one); how often that
+  happens on clean sessions is not measured yet (the first labelling run reports each case). No trade in
+  the 15-minute entry window is `no_fill`, as the app's plan says ("enter only during"), even for a thin
+  stock whose resting order might have filled later.
+- `nifty_session_calendar.SPECIAL` is hand-kept (last entry 2026-11-08): a future special session on a weekday
+  that nobody adds counts as a regular one. Add each year's special sessions with the NSE holiday circular
+  (backlog: NSE 2027 calendar).
+- No bar within 5 minutes of the 15:15 exit is reported (`window_problem`) every run until the pass is 60 days
+  old, also for a thin stock that simply did not trade then (a feed that stops early looks the same); a thin
+  entry window is a quiet `no_fill` instead.
+- The entry window starts at the recorded decision time (`evaluated_at`, stamped just after the decision), a
+  few milliseconds after the app's plan time: the entry can be the next minute's bar, never an earlier one.
+- The two inserts of a pair are separate statements: a crash between them leaves one policy stored and the
+  next run labels the other from fresh bars (shortcut; `production_repository.py` is hash-pinned).
 - The challenger's levels use the recorded `resistance20/60` (rounded to 0.01); the ATR is exact.
 - Labels are hypothetical outcomes of every pass, not a portfolio: capital and overlapping positions are
   not modelled.

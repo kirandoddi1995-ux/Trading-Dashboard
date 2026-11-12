@@ -161,8 +161,8 @@ def test_challenger_is_the_atr_stop_with_the_same_target_logic():
 
 def test_shadow_versions_never_collide_with_the_production_label():
     """Calibration, readiness counts and training read TARGET_VERSION only."""
-    assert {INC, CH} == {"stage2-shadow:net-excess-execution-v2.minute-aligned-v1:incumbent-levels-v1",
-                         "stage2-shadow:net-excess-execution-v2.minute-aligned-v1:atr15-stop-v1"}
+    assert {INC, CH} == {"stage2-shadow:net-excess-app-contract-v1:incumbent-levels-v1",
+                         "stage2-shadow:net-excess-app-contract-v1:atr15-stop-v1"}
     assert TARGET_VERSION not in {INC, CH}
     source = (ROOT / "production_repository.py").read_text()
     assert "target_version='net-excess-execution-v2'" in source  # the readiness count is exact
@@ -188,24 +188,104 @@ def test_pending_row_parsing_takes_the_recorded_inputs():
         _decision(candidate=broken)
 
 
-def test_signal_time_is_ist_and_only_inside_the_session():
-    """In session: the decision minute (IST, naive). Outside 09:15-15:30: None (next-open entry)."""
-    assert m._signal_timestamp(pd.Timestamp(EVALUATED)) == pd.Timestamp("2026-11-02 10:09")
-    assert m._signal_timestamp(pd.Timestamp("2026-11-02T15:30:00+05:30")) == pd.Timestamp("2026-11-02 15:30")
-    assert m._signal_timestamp(pd.Timestamp("2026-11-02T15:40:00+05:30")) is None
-    assert m._signal_timestamp(pd.Timestamp("2026-11-02 09:00")) is None
+def test_the_trade_contract_is_the_apps_timing_on_the_nifty_calendar():
+    """Entry window 10:09-10:24 (15 min after the decision), exit 15:15 on the 15th NIFTY session
+    after D0; a holiday moves the exit; after 15:15 there is no entry window; a decision time on
+    another day or a decision day NIFTY did not trade is a problem; too few sessions: awaiting."""
+    daily, _ = _path()
+    after = daily.loc[daily.index > pd.Timestamp(D0)].index
+    contract, why = m.trade_contract(_decision(), daily, TODAY)
+    assert why == "" and contract["decided_at"] == pd.Timestamp("2026-11-02 10:09")
+    assert contract["entry_until"] == pd.Timestamp("2026-11-02 10:24")
+    assert contract["exit_at"] == pd.Timestamp(after[14]) + pd.Timedelta(hours=15, minutes=15)
+    assert contract["sessions"] == [D0] + [d.date() for d in after[:15]]
+    holiday = daily.drop(after[3])
+    moved, _ = m.trade_contract(_decision(), holiday, TODAY)
+    assert moved["exit_at"].normalize() == pd.Timestamp(after[15]) and len(moved["sessions"]) == 16
+    late = _candidate()
+    late["inputs_used"]["evaluated_at"] = "2026-11-02T15:16:00+05:30"
+    assert m.trade_contract(_decision(candidate=late), daily, TODAY) == (None, "no_entry_window")
+    cut = _candidate()
+    cut["inputs_used"]["evaluated_at"] = "2026-11-02T15:10:00+05:30"
+    assert m.trade_contract(_decision(candidate=cut), daily, TODAY)[0]["entry_until"] == pd.Timestamp("2026-11-02 15:15")
+    other_day = _candidate()
+    other_day["inputs_used"]["evaluated_at"] = "2026-11-03T10:09:00+05:30"
+    assert "is not on the decision day" in m.trade_contract(_decision(candidate=other_day), daily, TODAY)[1]
+    assert "is not a regular NIFTY session" in m.trade_contract(_decision(), daily.drop(pd.Timestamp(D0)), TODAY)[1]
+    assert m.trade_contract(_decision(), daily.loc[:after[13]], TODAY) == (None, "awaiting")
 
 
-def test_horizon_end_needs_fifteen_completed_sessions_and_ignores_today():
+def test_special_sessions_never_count_towards_the_horizon(monkeypatch):
+    """A Muhurat (or any SPECIAL) session, weekend or not, is not one of the 15: the exit moves to
+    the next regular session, and selection counts the same way."""
+    daily, _ = _path()
+    after = daily.loc[daily.index > pd.Timestamp(D0)].index
+    monkeypatch.setitem(m.SPECIAL, str(after[3].date()), ([("18:00", "19:00")], "test"))
+    sunday = pd.Timestamp(_days(D0, 11)[10]) - pd.Timedelta(days=1)      # 15 Nov: not in SPECIAL
+    assert str(sunday.date()) not in m.SPECIAL
+    weekend = pd.concat([daily, daily.iloc[[0]].set_axis([sunday])]).sort_index()
+    assert m.exit_session(D0, weekend, TODAY) == after[15].date()
+    assert m.completed_decisions([("x", D0)], weekend.loc[:after[14]], today=TODAY) == ([], 1)
+    assert m.completed_decisions([("x", D0)], weekend.loc[:after[15]], today=TODAY) == (["x"], 0)
+    contract, _ = m.trade_contract(_decision(), weekend, TODAY)
+    assert after[3].date() not in contract["sessions"] and sunday.date() not in contract["sessions"]
+
+
+def test_special_session_bars_on_the_path_are_checked_like_any_session(monkeypatch):
+    """A Sunday special session inside the window never counts, but its bars are on the path: a bad
+    print there (low 1.0, or high below open) is reported, never a stop; clean bars that reach the
+    stop are a real stop; a special day the stock did not trade is fine."""
+    daily, minutes = _path()
+    sunday = pd.Timestamp("2026-11-08")
+    monkeypatch.setitem(m.SPECIAL, "2026-11-08", ([("18:00", "19:00")], "test"))
+    bars = pd.date_range("2026-11-08 18:00", periods=60, freq="min")
+    clean = pd.DataFrame({"Open": 100.0, "High": 100.0, "Low": 100.0, "Close": 100.0, "Volume": 10.0}, index=bars)
+    day_bar = pd.DataFrame({"Open": [100.0], "High": [100.0], "Low": [100.0], "Close": [100.0], "Volume": [600.0]},
+                           index=[sunday])
+    nifty_daily = pd.concat([daily, day_bar]).sort_index()
+
+    def label(minute_rows, daily_row):
+        notes = {}
+        out = m.label_decision(_decision(), daily=pd.concat([daily, daily_row]).sort_index(),
+                               minutes=pd.concat([minutes, minute_rows]).sort_index(), benchmark=nifty_daily,
+                               benchmark_minutes=pd.concat([minutes, clean]).sort_index(), today=TODAY, notes=notes)
+        return out, notes
+    for field, value in (("Low", 1.0), ("High", 99.0)):
+        bad = clean.copy()
+        bad.iloc[30, bad.columns.get_loc(field)] = value
+        out, notes = label(bad, day_bar)
+        assert out == {m.INCUMBENT: None, m.CHALLENGER: None} and notes["window_problem"] == 1, field
+    dip, dip_day = clean.copy(), day_bar.copy()
+    dip.iloc[30, dip.columns.get_loc("Low")] = 96.0
+    dip_day["Low"] = 96.0
+    out, _ = label(dip, dip_day)
+    assert out[m.CHALLENGER]["outcome"] == "stop" and out[m.CHALLENGER]["outcome_date"] == "2026-11-08"
+    out, notes = label(clean.iloc[0:0], day_bar.iloc[0:0])                # no stock bars that day
+    assert out[m.INCUMBENT]["outcome"] == "horizon" and notes == {}
+
+
+def test_the_recorded_entry_window_is_used_when_present():
+    """The window the app showed (inputs.timing.entry_valid_until) ends the entry search; without
+    a readable recorded value the same function's answer does."""
+    shown = _candidate()
+    shown["inputs_used"]["equity_capture"]["inputs"]["timing"] = {"entry_valid_until": "2026-11-02T10:12:00+05:30"}
+    contract, _ = m.trade_contract(_decision(candidate=shown), _path()[0], TODAY)
+    assert contract["entry_until"] == pd.Timestamp("2026-11-02 10:12")
+    for broken in ("soon", "2026-11-02 10:12", None):                   # unreadable or naive: ignored
+        shown["inputs_used"]["equity_capture"]["inputs"]["timing"] = {"entry_valid_until": broken}
+        assert m.trade_contract(_decision(candidate=shown), _path()[0], TODAY)[0]["entry_until"] == \
+            pd.Timestamp("2026-11-02 10:24")
+
+
+def test_exit_session_needs_fifteen_completed_nifty_sessions_and_ignores_today():
     """14 sessions after D0: not yet. 15: the 15th date. A bar stamped today never counts."""
     daily, _ = _path()
     after = daily.loc[daily.index > pd.Timestamp(D0)]
-    decision = _decision()
-    assert m.horizon_end(decision, daily.loc[:after.index[13]], TODAY) is None
-    assert m.horizon_end(decision, daily.loc[:after.index[14]], TODAY) == after.index[14].date()
-    assert m.horizon_end(decision, daily.loc[:after.index[14]], after.index[14].date()) is None
-    assert m.horizon_end(decision, pd.DataFrame(), TODAY) is None      # empty Upstox answer
-    assert m.horizon_end(decision, None, TODAY) is None
+    assert m.exit_session(D0, daily.loc[:after.index[13]], TODAY) is None
+    assert m.exit_session(D0, daily.loc[:after.index[14]], TODAY) == after.index[14].date()
+    assert m.exit_session(D0, daily.loc[:after.index[14]], after.index[14].date()) is None
+    assert m.exit_session(D0, pd.DataFrame(), TODAY) is None      # empty Upstox answer
+    assert m.exit_session(D0, None, TODAY) is None
 
 
 def test_completed_evidence_drops_bars_stamped_today_or_later():
@@ -225,7 +305,8 @@ def test_challenger_hits_its_target_while_the_wide_incumbent_times_out():
     assert inc["outcome"] == "horizon" and (inc["stop"], inc["target"]) == (80.0, 128.0)
     assert ch["outcome"] == "target" and (ch["stop"], ch["target"]) == (97.0, 104.86)
     assert (inc["target_version"], ch["target_version"]) == (INC, CH)
-    assert inc["entry_quality"] == "first_minute_after_signal" and inc["cost_bps"] == 20.0
+    assert inc["entry_quality"] == m.ENTRY_QUALITY and inc["cost_bps"] == 20.0
+    assert inc["entry_timestamp"] == "2026-11-02T10:10:00" and inc["fill"] == "time_exit_open"
     assert inc["net_return"] == pytest.approx(-0.002)            # flat path, 20 bps costs
     assert ch["net_return"] == pytest.approx(104.86 / 100 - 1 - 0.002)
     assert inc["excess_return"] is not None
@@ -244,7 +325,7 @@ def test_a_dip_stops_the_challenger_only_and_fills_at_the_stop():
     labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes, today=TODAY)
     ch = labels[m.CHALLENGER]
     assert ch["outcome"] == "stop" and labels[m.INCUMBENT]["outcome"] == "horizon"
-    assert ch["exit"] == 97.0 and "stop_fill" not in ch
+    assert ch["exit"] == 97.0 and ch["fill"] == "stop"
 
 
 def test_a_gap_through_the_stop_fills_at_the_open():
@@ -252,20 +333,215 @@ def test_a_gap_through_the_stop_fills_at_the_open():
     daily, minutes = _path(gap_day=3)
     labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes, today=TODAY)
     ch = labels[m.CHALLENGER]
-    assert ch["outcome"] == "stop" and ch["exit"] == 90.0 and ch["stop_fill"] == "gap_open"
+    assert ch["outcome"] == "stop" and ch["exit"] == 90.0 and ch["fill"] == "gap_open"
     assert ch["net_return"] == pytest.approx(0.90 - 1 - 0.002)
     assert ch["excess_return"] == pytest.approx(ch["net_return"] - ch["benchmark_return"])
     assert labels[m.INCUMBENT]["outcome"] == "horizon"           # stop 80 never reached
 
 
-def test_missing_minute_evidence_on_a_touch_day_is_not_labelled():
-    """Daily says touched, minute data absent that day: ambiguous -> None (retried later)."""
+def test_missing_minute_evidence_on_any_session_labels_neither_policy_and_is_reported():
+    """A session with a daily bar but no minute bars is a data gap: no label for either policy
+    (the pair stays together), reported as a window problem; retried later."""
     daily, minutes = _path(jump_day=5)
     touch_day = daily.loc[daily["High"] >= 105].index[0]
     minutes = minutes.loc[minutes.index.normalize() != touch_day]
-    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes, today=TODAY)
-    assert labels[m.CHALLENGER] is None
-    assert labels[m.INCUMBENT]["outcome"] == "horizon"            # no touch for the wide levels
+    notes = {}
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY, notes=notes)
+    assert labels == {m.INCUMBENT: None, m.CHALLENGER: None}
+    assert notes["window_problem"] == 1
+    assert notes["basis_problems"][0]["message"] == f"no minute bars on {touch_day.date()}"
+
+
+def test_a_stop_only_the_minute_bars_show_is_never_missed():
+    """ChatGPT P1 (a): a minute low through the challenger stop on a day whose daily low stays
+    above it. The production label reads minutes only on daily-touch days and calls it a time
+    exit; here the feeds' disagreement is reported and neither policy is labelled."""
+    daily, minutes = _custom_path({5: {200: (100.0, 96.0)}})       # minute low 96 < stop 97
+    day = minutes.index[(minutes["Low"] <= 97).to_numpy()][0].normalize()
+    daily.loc[day, "Low"] = 99.0                                     # the daily bar never shows it
+    notes = {}
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY, notes=notes)
+    assert labels == {m.INCUMBENT: None, m.CHALLENGER: None} and notes["window_problem"] == 1
+    assert notes["basis_problems"][0] == {
+        "observation_id": "obs-1", "error_kind": "TouchDisagreement",
+        "message": f"the daily and minute bars disagree on the stop touch on {day.date()} (daily no hit)"}
+
+
+def test_a_touch_only_the_daily_bar_shows_is_ambiguous_too():
+    """The reverse: the daily high reaches the challenger target, no minute does."""
+    daily, minutes = _path()
+    day = daily.loc[daily.index > pd.Timestamp(D0)].index[4]
+    daily.loc[day, "High"] = 106.0
+    notes = {}
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY, notes=notes)
+    assert labels == {m.INCUMBENT: None, m.CHALLENGER: None}
+    assert notes["basis_problems"][0]["message"].endswith(f"target touch on {day.date()} (daily hit)")
+
+
+def test_one_bar_reaching_both_levels_is_a_stop():
+    """Conservative: a minute whose low reaches the stop and whose high reaches the target ends
+    the challenger at the stop (the order inside a minute is unknown)."""
+    daily, minutes = _custom_path({4: {200: (100.0, 100.0)}})
+    bar = minutes.index[minutes.index.normalize() == pd.Timestamp(_days(D0, 5)[4])][200]
+    minutes.loc[bar, ["Low", "High"]] = [96.0, 106.0]
+    daily.loc[bar.normalize(), ["Low", "High"]] = [96.0, 106.0]
+    ch = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                          benchmark_minutes=minutes, today=TODAY)[m.CHALLENGER]
+    assert (ch["outcome"], ch["exit"], ch["fill"]) == ("stop", 97.0, "stop")
+
+
+def test_levels_reached_exactly_count_and_an_open_exactly_at_the_stop_is_no_gap():
+    """A low exactly at the stop is a stop at the stop; a high exactly at the target is a target;
+    a bar opening exactly at the stop fills at the stop (no gap), its NIFTY end at the close."""
+    for bar, outcome, fill in (((100.0, 97.0), "stop", "stop"), ((100.0, 104.86), "target", "target"),
+                               ((97.0, 96.0), "stop", "stop")):
+        daily, minutes = _custom_path({4: {200: bar}})
+        ch = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY)[m.CHALLENGER]
+        assert (ch["outcome"], ch["fill"]) == (outcome, fill), bar
+        assert ch["exit"] == (97.0 if outcome == "stop" else 104.86)
+        assert ch["label_end_date"] == _days(D0, 16)[15].isoformat()      # the window, not the exit day
+        assert ch["outcome_date"] == _days(D0, 5)[4].isoformat()
+        assert ch["benchmark_end"] == ch["exit_timestamp"]
+
+
+def test_an_entry_exactly_at_a_level_is_outside_it():
+    """The 10:10 open exactly at the challenger's 97 stop is not strictly inside its levels."""
+    daily, minutes = _custom_path({0: {55: (97.0, 100.0)}})
+    notes = {}
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY, notes=notes)
+    assert labels[m.CHALLENGER] is None and labels[m.INCUMBENT] is not None and notes == {"outside_levels": 1}
+
+
+def test_an_invalid_daily_bar_in_the_window_is_reported():
+    """A daily bar whose high is below its own open is bad data, like a bad minute bar."""
+    daily, minutes = _path()
+    day = daily.loc[daily.index > pd.Timestamp(D0)].index[5]
+    daily.loc[day, "High"] = 99.0
+    notes = {}
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY, notes=notes)
+    assert labels == {m.INCUMBENT: None, m.CHALLENGER: None}
+    assert notes["basis_problems"][0]["message"] == f"invalid bars on {day.date()}"
+
+
+def test_disagreements_after_the_outcome_do_not_matter():
+    """The challenger stops on session 3; a daily-only high on session 8 is after its exit (but
+    inside the incumbent's window, whose 128 target it does not reach): both labelled."""
+    daily, minutes = _path(drop_day=3)
+    daily.loc[daily.loc[daily.index > pd.Timestamp(D0)].index[7], "High"] = 106.0
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY)
+    assert labels[m.CHALLENGER]["outcome"] == "stop" and labels[m.INCUMBENT]["outcome"] == "horizon"
+
+
+def test_no_bar_in_the_entry_window_is_no_trade_never_a_later_day():
+    """ChatGPT P1 (b): the decision-day minutes stop at 10:00 (before the 10:09 decision), or the
+    stock does not trade 10:10-10:24: no fill, counted, neither policy labelled. The production
+    label would enter at the next day's 09:15 open."""
+    daily, minutes = _path()
+    day = minutes.index.normalize() == pd.Timestamp(D0)
+    for cut in (minutes.loc[~day | (minutes.index <= pd.Timestamp("2026-11-02 10:00"))],
+                minutes.drop(pd.date_range("2026-11-02 10:10", "2026-11-02 10:24", freq="min"))):
+        notes = {}
+        labels = m.label_decision(_decision(), daily=daily, minutes=cut, benchmark=daily,
+                                  benchmark_minutes=minutes, today=TODAY, notes=notes)
+        assert labels == {m.INCUMBENT: None, m.CHALLENGER: None} and notes == {"no_fill": 1}
+    later = minutes.drop(pd.date_range("2026-11-02 10:10", "2026-11-02 10:23", freq="min"))
+    label = m.label_decision(_decision(), daily=daily, minutes=later, benchmark=daily,
+                             benchmark_minutes=minutes, today=TODAY)[m.INCUMBENT]
+    assert label["entry_timestamp"] == "2026-11-02T10:24:00"          # the window's last minute
+
+
+def test_the_time_exit_is_the_15_15_open_of_the_15th_session_after_the_decision():
+    """ChatGPT P1 (c): the window runs to 15:15 on the 15th session after D0 (the session
+    completed_decisions waits for), so a spike on that day at 15:14 still hits the challenger
+    target, one at 15:15 does not; the time exit sells at the 15:15 open."""
+    after = _days(D0, 16)[1:]
+    for minute, outcome in ((359, "target"), (360, "horizon")):     # 15:14, 15:15
+        daily, minutes = _custom_path({15: {minute: (100.0, 105.0)}})
+        labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                                  benchmark_minutes=minutes, today=TODAY)
+        ch = labels[m.CHALLENGER]
+        assert ch["outcome"] == outcome and ch["label_end_date"] == after[14].isoformat()
+    inc = labels[m.INCUMBENT]
+    assert inc["exit_timestamp"] == f"{after[14]}T15:15:00" and inc["fill"] == "time_exit_open"
+    assert (inc["entry_date"], inc["horizon_sessions"]) == (D0.isoformat(), 15)
+
+
+def test_a_time_exit_without_a_bar_from_15_15_sells_at_the_last_close_just_before_it():
+    """No bar 15:15-15:20 on the exit day: the last bar 15:10-15:14, at its close (not its open);
+    the benchmark then ends at NIFTY's close of that minute. A feed that stops earlier (11:00) is
+    never an exit hours early: no label for either policy, reported."""
+    daily, minutes = _custom_path({15: {356: (100.0, 101.0)}})       # 15:11 closes at 101
+    last = pd.Timestamp(_days(D0, 16)[15])
+    on_day = minutes.index.normalize() == last
+    stamp = (last + pd.Timedelta(hours=15, minutes=11)).isoformat()
+    for resumes in (None, "15:22"):                  # a bar after 15:20 is too late to be the exit
+        gone = on_day & (minutes.index >= last + pd.Timedelta(hours=15, minutes=12))
+        if resumes:
+            gone &= minutes.index < pd.Timestamp(f"{last.date()} {resumes}")
+        label = m.label_decision(_decision(), daily=daily, minutes=minutes.drop(minutes.index[gone]),
+                                 benchmark=daily, benchmark_minutes=minutes, today=TODAY)[m.INCUMBENT]
+        assert (label["fill"], label["exit_timestamp"], label["benchmark_end"]) == ("time_exit_last_close", stamp, stamp)
+        assert label["exit"] == 101.0
+    early = minutes.drop(minutes.index[on_day & (minutes.index >= last + pd.Timedelta(hours=11))])
+    notes = {}
+    labels = m.label_decision(_decision(), daily=daily, minutes=early, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY, notes=notes)
+    assert labels == {m.INCUMBENT: None, m.CHALLENGER: None}
+    assert notes["basis_problems"][0]["message"] == f"no minute bar within 5 minutes of the {last.date()} 15:15 time exit"
+
+
+def test_an_entry_already_through_a_level_skips_only_that_policy():
+    """The 10:10 entry bar opens at 96.5, below the challenger's 97 stop (the scan quoted 100):
+    that policy has no valid trade (counted outside_levels, never retried into a label); the
+    incumbent, 80-128, is labelled from the same fetch."""
+    daily, minutes = _custom_path({0: {55: (96.5, 100.0)}})
+    notes = {}
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY, notes=notes)
+    assert labels[m.CHALLENGER] is None and labels[m.INCUMBENT]["entry"] == 96.5
+    assert notes == {"outside_levels": 1}
+
+
+def test_bars_must_be_unique_ordered_finite_and_consistent():
+    """Direct: duplicated or unordered stamps and impossible OHLC fail; clean bars pass."""
+    _, minutes = _path()
+    day = minutes.iloc[:375]
+    assert m._bars_valid(day)
+    assert not m._bars_valid(pd.concat([day.iloc[:2], day.iloc[1:]]))   # ordered, one stamp twice
+    assert not m._bars_valid(day.iloc[::-1])
+    low_above = day.copy()
+    low_above.iloc[3, low_above.columns.get_loc("Low")] = 100.5          # above the high too
+    assert not m._bars_valid(low_above)
+    above_close = day.copy()                                             # low 98 > close 96, < high
+    above_close.iloc[3] = [100.0, 100.0, 98.0, 96.0, 1000.0]
+    assert not m._bars_valid(above_close)
+    zero = day.copy()
+    zero.iloc[3, :4] = 0.0                                               # consistent but no price
+    assert not m._bars_valid(zero)
+
+
+def test_a_window_problem_in_a_run_is_reported_and_stores_nothing(monkeypatch):
+    """Run level: a minute stop the daily bar does not show makes the run PARTIAL with the reason."""
+    fetch = Fetch()
+    fetch.daily, fetch.minutes = _custom_path({5: {200: (100.0, 96.0)}})
+    day = fetch.minutes.index[(fetch.minutes["Low"] <= 97).to_numpy()][0].normalize()
+    fetch.daily.loc[day, "Low"] = 99.0
+    real = fetch.day
+    clean, _ = _custom_path({})
+    fetch.day = lambda c, t, key, s_, e: clean.loc[pd.Timestamp(s_):pd.Timestamp(e)] if key == m.NIFTY_KEY \
+        else real(c, t, key, s_, e)
+    summary, repo, _ = _run(monkeypatch, [_row()], fetch=fetch)
+    assert (summary["window_problem"], summary["stored"], summary["status"]) == (1, 0, "PARTIAL")
+    (_source, severity, _code, message, detail), = repo.events
+    assert severity == "WARNING" and message.endswith("0 decision failures, 1 label-window problems")
+    assert detail["failures"][0]["error_kind"] == "TouchDisagreement"
 
 
 def test_a_label_without_a_benchmark_return_is_not_stored():
@@ -414,13 +690,29 @@ def test_an_incomplete_horizon_awaits_sessions_without_stock_requests(monkeypatc
     assert summary["status"] == "SUCCESS" and repo.saved == [] and [c[1] for c in fetch.calls] == [m.NIFTY_KEY]
 
 
-def test_a_stock_short_of_sessions_is_deferred(monkeypatch):
-    """NIFTY complete but the stock has fewer bars (suspension): deferred, no minute request."""
+def test_a_stock_that_stopped_trading_in_the_window_is_counted_not_reported(monkeypatch):
+    """NIFTY complete but the stock's daily bars stop after D0+10 (a suspension): no label for
+    either policy, counted as no_trading; the run stays SUCCESS (a fact, not a data error)."""
     fetch = Fetch()
-    real, short = fetch.day, fetch.daily.loc[:pd.Timestamp(D0) + pd.Timedelta(days=10)]
+    cut = pd.Timestamp(D0) + pd.Timedelta(days=10)
+    real, short = fetch.day, fetch.daily.loc[:cut]
     fetch.day = lambda c, t, key, s_, e: real(c, t, key, s_, e) if key == m.NIFTY_KEY else short
+    nifty_minutes = fetch.minutes
+    fetch.bench_minutes = nifty_minutes
+    fetch.minutes = nifty_minutes.loc[nifty_minutes.index < cut + pd.Timedelta(days=1)]
     summary, repo, _ = _run(monkeypatch, [_row()], fetch=fetch)
-    assert summary["deferred"] == 1 and summary["status"] == "SUCCESS" and repo.saved == []
+    assert (summary["no_trading"], summary["status"], repo.saved, repo.events) == (1, "SUCCESS", [], [])
+
+
+def test_a_daily_bar_missing_while_minutes_traded_is_a_reported_gap():
+    """The daily feed lacks a session the minutes have: a data gap, not a suspension."""
+    daily, minutes = _path()
+    gap = daily.loc[daily.index > pd.Timestamp(D0)].index[6]
+    notes = {}
+    labels = m.label_decision(_decision(), daily=daily.drop(gap), minutes=minutes, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY, notes=notes)
+    assert labels == {m.INCUMBENT: None, m.CHALLENGER: None}
+    assert notes["basis_problems"][0]["message"] == f"no daily bar on {gap.date()} (minute bars present)"
 
 
 def test_completed_decisions_fill_the_cap_while_waiting_ones_take_no_slot():
@@ -644,13 +936,19 @@ def test_a_stale_benchmark_fails_the_run_before_stock_requests(monkeypatch):
     assert repo.events[0][4]["summary"]["error_type"] == "ValueError"
 
 
-def test_a_nan_open_on_the_stop_bar_keeps_the_stop_fill():
-    """A touching bar with no open price is not a gap: exit stays at the stop."""
+@pytest.mark.parametrize("field, value", [("Open", float("nan")), ("Open", 0.0), ("High", 99.0),
+                                          ("Low", float("inf"))])
+def test_an_invalid_bar_in_the_window_labels_neither_policy_and_is_reported(field, value):
+    """A NaN, zero, infinite or inconsistent (high below open) price on any window bar is bad
+    data, not a gap: no label for either policy, reported as a window problem."""
     daily, minutes = _custom_path({3: {200: (100.0, 96.0)}})
-    stop_minute = minutes.index[(minutes["Low"] <= 97).to_numpy()][0]
-    minutes.loc[stop_minute, "Open"] = float("nan")
-    label = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes, today=TODAY)[m.CHALLENGER]
-    assert label["outcome"] == "stop" and label["exit"] == 97.0 and "stop_fill" not in label
+    bad = minutes.index[(minutes["Low"] <= 97).to_numpy()][0]
+    minutes.loc[bad, field] = value
+    notes = {}
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY, notes=notes)
+    assert labels == {m.INCUMBENT: None, m.CHALLENGER: None}
+    assert notes["basis_problems"][0]["message"] == f"invalid bars on {bad.date()}"
 
 
 def test_missing_nifty_minutes_on_the_entry_day_are_counted(monkeypatch):
@@ -658,7 +956,7 @@ def test_missing_nifty_minutes_on_the_entry_day_are_counted(monkeypatch):
     fetch = Fetch()
     fetch.bench_minutes = fetch.minutes.loc[fetch.minutes.index.normalize() != pd.Timestamp(D0)]
     summary, repo, _ = _run(monkeypatch, [_row()], fetch=fetch)
-    assert (summary["no_benchmark"], summary["unlabelled"], summary["stored"]) == (2, 2, 0)
+    assert (summary["no_benchmark"], summary["unlabelled"], summary["stored"]) == (1, 2, 0)
     assert summary["status"] == "SUCCESS" and repo.saved == []
 
 
@@ -671,19 +969,22 @@ def test_an_empty_nifty_minute_answer_is_a_failure(monkeypatch):
     assert repo.events[0][4]["failures"][0]["message"] == "NIFTY minute history is empty"
 
 
-def test_nifty_minutes_are_shared_per_window_only(monkeypatch):
-    """Three stocks, one decision day: two share a horizon end (one NIFTY request), a suspended
-    stock ends a session later (its own NIFTY request)."""
+def test_nifty_minutes_are_shared_per_decision_day_window(monkeypatch):
+    """Three stocks, one decision day: one NIFTY request for the window the NIFTY calendar sets;
+    a stock that missed a session does not move it (it is counted as no_trading)."""
     fetch = Fetch()
     real = fetch.day
     suspended_day = fetch.daily.index[8]
     fetch.day = lambda c, t, key, s_, e: real(c, t, key, s_, e).drop(suspended_day, errors="ignore") \
         if key == "NSE_EQ|SUS" else real(c, t, key, s_, e)
+    real_minute = fetch.minute
+    fetch.minute = lambda c, t, key, s_, e: (lambda f: f.loc[f.index.normalize() != suspended_day])(
+        real_minute(c, t, key, s_, e)) if key == "NSE_EQ|SUS" else real_minute(c, t, key, s_, e)
     rows = [_row(obs="a", key="NSE_EQ|A"), _row(obs="b", key="NSE_EQ|B"), _row(obs="s", key="NSE_EQ|SUS")]
-    _run(monkeypatch, rows, fetch=fetch)
+    summary, _, _ = _run(monkeypatch, rows, fetch=fetch)
     nifty = [c[3] for c in fetch.calls if c[:2] == ("minutes", m.NIFTY_KEY)]
     after = fetch.daily.loc[fetch.daily.index > pd.Timestamp(D0)].index
-    assert sorted(nifty) == [after[14].date(), after[15].date()]
+    assert nifty == [after[14].date()] and summary["no_trading"] == 1 and summary["stored"] == 4
 
 
 def test_one_stock_on_two_decision_days_gets_two_histories(monkeypatch):
@@ -701,16 +1002,6 @@ def test_a_pre_signal_dip_on_the_entry_day_is_not_the_stop_fill():
     daily, minutes = _custom_path({0: {30: (95.0, 95.0), 200: (100.0, 96.0)}})
     label = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes, today=TODAY)[m.CHALLENGER]
     assert label["outcome"] == "stop" and label["exit"] == 97.0
-
-
-def test_a_non_positive_open_on_the_stop_bar_gives_no_label():
-    """A touching bar that opens at 0 is bad data, not a -100% gap: no label (retried later)."""
-    daily, minutes = _custom_path({3: {200: (100.0, 96.0)}})
-    stop_minute = minutes.index[(minutes["Low"] <= 97).to_numpy()][0]
-    minutes.loc[stop_minute, "Open"] = 0.0
-    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
-                              benchmark_minutes=minutes, today=TODAY)
-    assert labels[m.CHALLENGER] is None and labels[m.INCUMBENT]["outcome"] == "horizon"
 
 
 def _nifty(rises_at: tuple[int, int], to: float = 101.0):
@@ -758,19 +1049,22 @@ def _nifty_ramp(close_bump: float = 0.0):
     return daily, minutes
 
 
-def test_the_benchmark_uses_exactly_the_entry_open_the_exit_close_and_the_daily_close():
-    """Stop exit: open of the 10:10 entry minute -> close of the 12:35 exit minute. Time exit:
-    -> NIFTY's daily close (deliberately unlike its last minute here)."""
+def test_the_benchmark_uses_exactly_the_entry_open_and_the_matching_exit_price():
+    """Stop exit inside a bar: open of the 10:10 entry minute -> close of the 12:35 exit minute.
+    Time exit at the 15:15 open: -> NIFTY's 15:15 open, never its daily close (bumped here)."""
     daily, minutes = _path(drop_day=3)
     nifty_daily, nifty_minutes = _nifty_ramp(close_bump=0.5)
     labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=nifty_daily,
                               benchmark_minutes=nifty_minutes, today=TODAY)
     base = nifty_minutes.loc[pd.Timestamp("2026-11-02 10:10"), "Open"]
     exit_at = pd.Timestamp(_days(D0, 4)[3]) + pd.Timedelta(hours=9, minutes=15 + 200)
-    assert labels[m.CHALLENGER]["benchmark_return"] == pytest.approx(nifty_minutes.loc[exit_at, "Close"] / base - 1)
+    ch = labels[m.CHALLENGER]
+    assert ch["benchmark_return"] == pytest.approx(nifty_minutes.loc[exit_at, "Close"] / base - 1)
+    assert (ch["benchmark_start"], ch["benchmark_end"]) == ("2026-11-02T10:10:00", exit_at.isoformat())
     inc = labels[m.INCUMBENT]
-    end = nifty_daily.loc[pd.Timestamp(inc["label_end_date"]), "Close"]
-    assert inc["benchmark_return"] == pytest.approx(end / base - 1)
+    time_exit = pd.Timestamp(inc["label_end_date"]) + pd.Timedelta(hours=15, minutes=15)
+    assert inc["exit_timestamp"] == inc["benchmark_end"] == time_exit.isoformat()
+    assert inc["benchmark_return"] == pytest.approx(nifty_minutes.loc[time_exit, "Open"] / base - 1)
 
 
 def test_nifty_minutes_too_far_from_entry_or_exit_give_no_label():
@@ -782,12 +1076,15 @@ def test_nifty_minutes_too_far_from_entry_or_exit_give_no_label():
     notes = {}
     labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=nifty_daily,
                               benchmark_minutes=late, today=TODAY, notes=notes)
-    assert labels == {m.INCUMBENT: None, m.CHALLENGER: None} and notes == {"no_benchmark": 2}
+    assert labels == {m.INCUMBENT: None, m.CHALLENGER: None} and notes == {"no_benchmark": 1}
+    # Only the challenger's stop minute lacks NIFTY: the incumbent alone would survive, so the
+    # surviving policy would depend on a NIFTY gap. Neither is labelled; both retry together.
     exit_at = pd.Timestamp(_days(D0, 4)[3]) + pd.Timedelta(hours=9, minutes=15 + 200)
     early = nifty_minutes.drop(pd.date_range(exit_at - pd.Timedelta(minutes=7), exit_at, freq="min"))
+    notes = {}
     labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=nifty_daily,
-                              benchmark_minutes=early, today=TODAY)
-    assert labels[m.CHALLENGER] is None and labels[m.INCUMBENT] is not None
+                              benchmark_minutes=early, today=TODAY, notes=notes)
+    assert labels == {m.INCUMBENT: None, m.CHALLENGER: None} and notes == {"no_benchmark": 1}
 
 
 def test_a_benchmark_window_never_runs_backwards():
@@ -804,18 +1101,23 @@ def test_a_benchmark_window_never_runs_backwards():
     assert full["outcome"] == "stop" and full["benchmark_return"] > 0
 
 
-def test_execution_adjustment_refuses_missing_evidence():
-    """Direct: no exit bar for a stop label, or no NIFTY minute at entry -> None; the latter counted."""
-    daily, minutes = _path(drop_day=3)
-    label = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
-                             benchmark_minutes=minutes, today=TODAY)[m.CHALLENGER]
-    notes = {}
-    no_bar = minutes.loc[minutes.index.normalize() != pd.Timestamp(label["outcome_date"])]
-    assert m._execution_adjusted(label, no_bar, daily, minutes, 97.0, 104.86, notes) is None and notes == {}
-    late = minutes.loc[minutes.index.normalize() != pd.Timestamp(D0)]
-    assert m._execution_adjusted(label, minutes, daily, late, 97.0, 104.86, notes) is None
-    assert notes == {"no_benchmark": 1}
-    assert m._benchmark_return({**label, "entry_timestamp": None}, None, daily, minutes) is None
+def test_nifty_return_needs_both_ends_in_order_and_positive():
+    """Direct: open at the entry minute; an exit at a bar open takes the open of the first minute
+    from the exit, an exit inside a bar the close of the last minute up to it; each within
+    BENCH_GAP; missing, reversed or non-positive ends give None."""
+    _, nifty = _nifty_ramp()
+    entry, exit_ = pd.Timestamp("2026-11-02 10:10"), pd.Timestamp("2026-11-05 12:35")
+    ret, start, end = m._nifty_return(nifty, entry, exit_, exit_on_open=True)
+    assert (start, end) == (entry, exit_) and ret == pytest.approx(nifty.loc[exit_, "Open"] / nifty.loc[entry, "Open"] - 1)
+    ret, _, end = m._nifty_return(nifty, entry, exit_, exit_on_open=False)
+    assert end == exit_ and ret == pytest.approx(nifty.loc[exit_, "Close"] / nifty.loc[entry, "Open"] - 1)
+    assert m._nifty_return(nifty.drop(pd.date_range(entry, entry + m.BENCH_GAP, freq="min")), entry, exit_, True) is None
+    assert m._nifty_return(nifty.drop(pd.date_range(exit_, exit_ + m.BENCH_GAP, freq="min")), entry, exit_, True) is None
+    assert m._nifty_return(nifty.drop(pd.date_range(exit_ - m.BENCH_GAP, exit_, freq="min")), entry, exit_, False) is None
+    zero = nifty.copy()
+    zero.loc[entry, "Open"] = 0.0
+    assert m._nifty_return(zero, entry, exit_, True) is None
+    assert m._nifty_return(pd.DataFrame(), entry, exit_, True) is None and m._nifty_return(None, entry, exit_, True) is None
 
 
 def test_the_first_touching_bar_sets_the_stop_fill():
@@ -829,7 +1131,7 @@ def test_the_gap_fill_never_touches_a_target_exit():
     """Target hit at 12:35; a gap bar at 90 later that day does not change the exit."""
     daily, minutes = _custom_path({5: {200: (100.0, 105.0), 300: (90.0, 90.0)}})
     label = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes, today=TODAY)[m.CHALLENGER]
-    assert label["outcome"] == "target" and label["exit"] == 104.86 and "stop_fill" not in label
+    assert label["outcome"] == "target" and label["exit"] == 104.86 and label["fill"] == "target"
 
 
 # ---------- collector wiring ----------
@@ -1159,20 +1461,22 @@ class _Client:
 
 
 def test_fetch_corporate_actions_reads_the_archived_endpoint_and_fails_closed():
-    """200 list -> actions; data null -> none; auth -> PermissionError; anything else -> ValueError."""
+    """200 list -> actions ([] = none); auth -> PermissionError; anything else, data null included
+    (Upstox answers [] for no actions), -> ValueError."""
     client = _Client(payload={"status": "success", "data": [_action("Bonus", D0)]})
     assert m.fetch_corporate_actions(client, "tok", "NSE_EQ|INE002A01018")[0]["name"] == "Bonus"
     url, headers = client.requests[0]
     assert url == f"{s2.UPSTOX_API}/v2/fundamentals/INE002A01018/corporate-actions"
     assert headers["Authorization"] == "Bearer tok"
-    empty = {"status": "success", "data": None}
+    empty = {"status": "success", "data": []}
     assert m.fetch_corporate_actions(_Client(payload=empty), "t", "NSE_EQ|INE002A01018") == []
     for status in (401, 403):
         with pytest.raises(PermissionError):
             m.fetch_corporate_actions(_Client(status=status), "t", "NSE_EQ|INE002A01018")
     for client in (_Client(status=500), _Client(payload={"status": "success", "data": {}}), _Client(payload=[]),
                    _Client(payload={"status": "success"}), _Client(payload={"data": []}),
-                   _Client(payload={"status": "error", "data": None})):
+                   _Client(payload={"status": "error", "data": None}),
+                   _Client(payload={"status": "success", "data": None})):
         with pytest.raises(ValueError):
             m.fetch_corporate_actions(client, "t", "NSE_EQ|INE002A01018")
     silent = _Client()
@@ -1205,7 +1509,23 @@ def test_basis_events_skip_small_dividends_and_fail_closed_on_the_rest():
     events = lambda *items: m.basis_events(list(items), decision, TODAY)   # noqa: E731
     assert events(_action("Dividend", inside, amount=1.5)) == []
     assert events(_action("DIVIDEND", inside, amount=1.5)) == []    # the type is matched case-blind
-    assert events(_action("Dividend", None, amount=1.99)) == []
+    # the small-dividend skip needs one readable ex-date: undated, unparsable or conflicting dates
+    # are reported, never skipped
+    assert events(_action("Dividend", None, amount=1.99)) == [("Dividend without a readable ex-date", True)]
+    conflicting = _action("Dividend", D0 - dt.timedelta(days=200), amount=1.0)
+    conflicting["expiry_date"] = inside.strftime("%d %b %Y")
+    assert events(conflicting) == [("Dividend with conflicting ex-dates", True)]
+    garbled_small = _action("Dividend", D0 - dt.timedelta(days=200), amount=1.0)
+    garbled_small["expiry_date"] = "soon"
+    assert events(garbled_small) == [("Dividend without a readable ex-date", True)]
+    # a small dividend with one date in the window and one unparsable: reported, never a quiet hold
+    half_read = _action("Dividend", inside, amount=0.5)
+    half_read["event_details"].append({"name": "Ex date", "value": "soon"})
+    assert events(half_read) == [("Dividend without a readable ex-date", True)]
+    # conflicting dates that all lie outside the window do not matter
+    old_conflict = _action("Dividend", D0 - dt.timedelta(days=240), amount=1.0)
+    old_conflict["expiry_date"] = (D0 - dt.timedelta(days=239)).strftime("%d %b %Y")
+    assert events(old_conflict) == []
     assert events(_action("Dividend", inside, amount=2.0)) == [(f"Dividend ex {inside}", False)]
     assert events(_action("Dividend", inside, amount=0.0)) == [(f"Dividend ex {inside}", False)]  # not announced
     for amount in (None, -50.0, "", "n/a", float("nan"), float("inf")):
@@ -1280,7 +1600,14 @@ def test_the_basis_check_reads_daily_and_minutes_separately_within_half_a_percen
     assert "daily" in m._basis_problem(_anchored(far), daily=far, minutes=minutes)
     blank = daily.copy()
     blank.loc[pd.Timestamp(D0), ["Low", "High"]] = np.nan
-    assert m._basis_problem(_decision(), daily=blank, minutes=minutes) is not None
+    assert m._basis_problem(_decision(), daily=blank, minutes=minutes) == (
+        "invalid daily decision-day range or recorded entry")
+    # a non-positive low would contain any entry and match the minutes' ratio: named, not passed
+    negative_daily, negative_minutes = daily.copy(), minutes.copy()
+    negative_daily.loc[pd.Timestamp(D0), "Low"] = -5.0
+    negative_minutes.loc[negative_minutes.index.normalize() == pd.Timestamp(D0), "Low"] = -5.0
+    assert m._basis_problem(_decision(), daily=negative_daily, minutes=negative_minutes) == (
+        "invalid daily decision-day range or recorded entry")
     no_day = daily.drop(pd.Timestamp(D0))
     assert m._basis_problem(_decision(), daily=no_day, minutes=minutes) == "no decision-day bars in the daily history"
     assert m._basis_problem(_decision(), daily=daily, minutes=minutes.iloc[0:0]) == (
