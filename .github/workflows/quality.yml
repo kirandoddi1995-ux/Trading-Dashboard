@@ -65,3 +65,29 @@ jobs:
       - run: python resilience_acceptance.py --game-day
       - run: python deployment_canary.py
       - run: python package_release.py
+
+  # What the PR review bots flag (CodeRabbit docstrings, Graphify complexity/fan-out, secrets,
+  # pyflakes), checked on the PR's own commits before a reviewer sees them. Test-gap coverage
+  # (--coverage) stays a local step: it needs the tests that reach each changed function.
+  pre-pr-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+      - name: Bootstrap pinned patched installer
+        run: python -m pip install 'pip==26.2.2'
+      - name: Install review tools
+        run: python -m pip install -r tooling/requirements-review.txt pip-audit
+      - name: Audit review tools (mandatory)
+        run: python -m pip_audit -r tooling/requirements-review.txt
+      - name: Pre-PR review gate (mandatory)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: python tooling/pre_pr_review.py --base "origin/$BASE_REF"
