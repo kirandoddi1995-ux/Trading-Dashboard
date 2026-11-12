@@ -159,8 +159,8 @@ def test_challenger_is_the_atr_stop_with_the_same_target_logic():
 
 def test_shadow_versions_never_collide_with_the_production_label():
     """Calibration, readiness counts and training read TARGET_VERSION only."""
-    assert {INC, CH} == {"stage2-shadow:net-excess-execution-v2.gap-stop-v1:incumbent-levels-v1",
-                         "stage2-shadow:net-excess-execution-v2.gap-stop-v1:atr15-stop-v1"}
+    assert {INC, CH} == {"stage2-shadow:net-excess-execution-v2.minute-aligned-v1:incumbent-levels-v1",
+                         "stage2-shadow:net-excess-execution-v2.minute-aligned-v1:atr15-stop-v1"}
     assert TARGET_VERSION not in {INC, CH}
     source = (ROOT / "production_repository.py").read_text()
     assert "target_version='net-excess-execution-v2'" in source  # the readiness count is exact
@@ -218,7 +218,7 @@ def test_completed_evidence_drops_bars_stamped_today_or_later():
 def test_challenger_hits_its_target_while_the_wide_incumbent_times_out():
     """Same decision, two policies: 105 spike on session 5 > challenger target 104.86 < 128."""
     daily, minutes = _path(jump_day=5)
-    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, today=TODAY)
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes, today=TODAY)
     inc, ch = labels[m.INCUMBENT], labels[m.CHALLENGER]
     assert inc["outcome"] == "horizon" and (inc["stop"], inc["target"]) == (80.0, 128.0)
     assert ch["outcome"] == "target" and (ch["stop"], ch["target"]) == (97.0, 104.86)
@@ -232,14 +232,14 @@ def test_challenger_hits_its_target_while_the_wide_incumbent_times_out():
 def test_a_late_touch_inside_the_horizon_still_counts():
     """Spike on session 14 (the last one in the window) hits the challenger target."""
     daily, minutes = _path(jump_day=14)
-    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, today=TODAY)
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes, today=TODAY)
     assert labels[m.CHALLENGER]["outcome"] == "target"
 
 
 def test_a_dip_stops_the_challenger_only_and_fills_at_the_stop():
     """96 low inside a minute that opens at 100: stop 97 is reached in the bar -> fill at 97."""
     daily, minutes = _path(drop_day=3)
-    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, today=TODAY)
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes, today=TODAY)
     ch = labels[m.CHALLENGER]
     assert ch["outcome"] == "stop" and labels[m.INCUMBENT]["outcome"] == "horizon"
     assert ch["exit"] == 97.0 and "stop_fill" not in ch
@@ -248,7 +248,7 @@ def test_a_dip_stops_the_challenger_only_and_fills_at_the_stop():
 def test_a_gap_through_the_stop_fills_at_the_open():
     """Session 3 opens at 90, below stop 97: exit 90, not 97 (production label would say 97)."""
     daily, minutes = _path(gap_day=3)
-    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, today=TODAY)
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes, today=TODAY)
     ch = labels[m.CHALLENGER]
     assert ch["outcome"] == "stop" and ch["exit"] == 90.0 and ch["stop_fill"] == "gap_open"
     assert ch["net_return"] == pytest.approx(0.90 - 1 - 0.002)
@@ -261,15 +261,16 @@ def test_missing_minute_evidence_on_a_touch_day_is_not_labelled():
     daily, minutes = _path(jump_day=5)
     touch_day = daily.loc[daily["High"] >= 105].index[0]
     minutes = minutes.loc[minutes.index.normalize() != touch_day]
-    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, today=TODAY)
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes, today=TODAY)
     assert labels[m.CHALLENGER] is None
     assert labels[m.INCUMBENT]["outcome"] == "horizon"            # no touch for the wide levels
 
 
 def test_a_label_without_a_benchmark_return_is_not_stored():
-    """No NIFTY coverage of the window: excess unknown -> no label (retried later)."""
+    """No NIFTY evidence: excess unknown -> no label (retried later)."""
     daily, minutes = _path(jump_day=5)
-    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=None, today=TODAY)
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=None,
+                            benchmark_minutes=None, today=TODAY)
     assert labels == {m.INCUMBENT: None, m.CHALLENGER: None}
 
 
@@ -279,7 +280,7 @@ def test_invalid_challenger_levels_give_no_label():
     huge["inputs_used"]["equity_capture"]["inputs"]["atr_val"] = 80.0
     daily, minutes = _path()
     labels = m.label_decision(_decision(candidate=huge), daily=daily, minutes=minutes, benchmark=daily,
-                              today=TODAY)
+                              benchmark_minutes=minutes, today=TODAY)
     assert labels[m.CHALLENGER] is None and labels[m.INCUMBENT] is not None
 
 
@@ -302,11 +303,14 @@ class Repo:
 
 
 class Fetch:
-    """Upstox history fakes; `fail` maps an instrument to an exception; `log` is shared with sleep."""
+    """Upstox history fakes; `fail` maps an instrument to an exception; `log` is shared with sleep.
+
+    NIFTY gets the same bars unless `bench_minutes` is set."""
 
     def __init__(self, fail=None):
         """Synthetic path with a session-5 spike."""
         self.daily, self.minutes = _path(jump_day=5)
+        self.bench_minutes = None
         self.calls, self.fail, self.log = [], fail or {}, []
 
     def day(self, client, token, key, start, end):
@@ -321,7 +325,8 @@ class Fetch:
         """One-minute bars from start to end (inclusive days)."""
         self.calls.append(("minutes", key, start, end))
         self.log.append("minutes")
-        return self.minutes.loc[pd.Timestamp(start):pd.Timestamp(end) + pd.Timedelta(days=1)]
+        source = self.bench_minutes if key == m.NIFTY_KEY and self.bench_minutes is not None else self.minutes
+        return source.loc[pd.Timestamp(start):pd.Timestamp(end) + pd.Timedelta(days=1)]
 
 
 def _select(monkeypatch, rows, *, missing=()):
@@ -350,26 +355,26 @@ def test_switch_off_does_nothing(monkeypatch):
 
 
 def test_run_stores_both_policy_labels_with_a_pause_before_every_request(monkeypatch):
-    """One decision -> two labels with excess return; NIFTY once; minutes end at the horizon."""
+    """One decision -> two labels with excess return; NIFTY daily once; minutes end at the horizon."""
     summary, repo, fetch = _run(monkeypatch, [_row()])
     assert summary["status"] == "SUCCESS" and summary["stored"] == 2 and summary["pending"] == 1
     assert sorted(s[:3] for s in repo.saved) == sorted([("obs-1", INC, "horizon"), ("obs-1", CH, "target")])
     assert all(s[3]["excess_return"] is not None for s in repo.saved)
     pause = ("sleep", s2.REQUEST_PAUSE_SECONDS)
-    assert fetch.log == [pause, "daily", pause, "daily", pause, "minutes"]
-    assert [c[1] for c in fetch.calls] == [m.NIFTY_KEY, "NSE_EQ|SYN", "NSE_EQ|SYN"]
+    assert fetch.log == [pause, "daily", pause, "daily", pause, "minutes", pause, "minutes"]
+    assert [c[1] for c in fetch.calls] == [m.NIFTY_KEY, "NSE_EQ|SYN", "NSE_EQ|SYN", m.NIFTY_KEY]
     after = fetch.daily.loc[fetch.daily.index > pd.Timestamp(D0)].index
     assert fetch.calls[1][2:] == (D0 - dt.timedelta(days=5), TODAY - dt.timedelta(days=1))
-    assert fetch.calls[2][2:] == (D0, after[14].date())
+    assert fetch.calls[2][2:] == fetch.calls[3][2:] == (D0, after[14].date())   # NIFTY: same window
     assert repo.events == []
 
 
 def test_two_scans_of_one_stock_day_share_one_history_fetch(monkeypatch):
-    """10:07 and 14:37 passes of the same stock and day: one daily and one minute request."""
+    """10:07 and 14:37 passes of the same stock and day: one daily and one minute request each."""
     second = _candidate(decision_id="obs-2")
     second["inputs_used"]["evaluated_at"] = "2026-11-02T09:09:00+00:00"
     summary, repo, fetch = _run(monkeypatch, [_row(), _row(obs="obs-2", candidate=second)])
-    assert summary["stored"] == 4 and [c[0] for c in fetch.calls] == ["daily", "daily", "minutes"]
+    assert summary["stored"] == 4 and [c[0] for c in fetch.calls] == ["daily", "daily", "minutes", "minutes"]
 
 
 def test_an_already_stored_policy_is_not_written_again(monkeypatch):
@@ -403,14 +408,41 @@ def test_completed_decisions_fill_the_cap_while_waiting_ones_take_no_slot():
     last = daily.index.max().date()
     waiting = [(f"w{i}", last - dt.timedelta(days=1)) for i in range(70)]
     done = [(f"d{i}", D0) for i in range(5)]
-    selected, awaiting = m.completed_decisions(waiting + done, daily, limit=60)
+    selected, awaiting = m.completed_decisions(waiting + done, daily, today=TODAY, limit=60)
     assert selected == [f"d{i}" for i in range(5)] and awaiting == 70
-    many = [(f"d{i}", D0) for i in range(80)]
-    assert m.completed_decisions(many, daily, limit=60)[0] == [f"d{i}" for i in range(60)]
     sessions = sorted(daily.index.normalize())
     edge = sessions[-16].date()            # exactly 15 sessions after it: complete
     short = sessions[-15].date()           # 14 sessions after it: still waiting
-    assert m.completed_decisions([("e", edge), ("s", short)], daily) == (["e"], 1)
+    assert m.completed_decisions([("e", edge), ("s", short)], daily, today=TODAY) == (["e"], 1)
+
+
+def test_over_the_cap_half_newest_and_half_the_oldest_with_daily_tie_shuffles():
+    """Newest first: 40 on D0+1, then 40 on D0. The 30 newest always; the other 30 all from D0
+    (closest to expiry); which D0 ties win changes by day, never repeating within a run."""
+    daily, _ = _path(sessions=40)
+    newer = [(f"n{i}", D0 + dt.timedelta(days=1)) for i in range(40)]
+    older = [(f"o{i}", D0) for i in range(40)]
+    picks = [m.completed_decisions(newer + older, daily, today=TODAY + dt.timedelta(days=k), limit=60)[0]
+             for k in range(3)]
+    for picked in picks:
+        assert picked[:30] == [f"n{i}" for i in range(30)] and len(set(picked)) == 60
+        assert all(x.startswith("o") for x in picked[30:])
+    assert len({tuple(sorted(p_[30:])) for p_ in picks}) > 1          # ties reshuffled by day
+    assert m.completed_decisions(newer + older, daily, today=TODAY, limit=1)[0] == ["n0"]
+    assert m.completed_decisions(older[:60], daily, today=TODAY, limit=60)[0] == [f"o{i}" for i in range(40)]
+
+
+def test_selection_rotates_on_the_run_day(monkeypatch):
+    """The run hands its own date to the selection (the tie shuffle changes daily)."""
+    seen = []
+
+    def spy(pending, benchmark, *, today, limit=m.MAX_DECISIONS_PER_RUN):
+        """Record the date; select nothing."""
+        seen.append(today)
+        return [], 0
+    monkeypatch.setattr(m, "completed_decisions", spy)
+    summary, _, _ = _run(monkeypatch, [_row()])
+    assert seen == [TODAY] and summary["selected"] == 0
 
 
 def test_an_empty_stock_answer_is_deferred_not_failed(monkeypatch):
@@ -484,7 +516,8 @@ def _fenced_run(monkeypatch, checks):
 def test_a_lease_lost_before_the_write_stops_with_nothing_saved(monkeypatch):
     """Checks 1-2 pass (run start, decision start); the pre-write check fails: nothing saved."""
     repo, fetch = _fenced_run(monkeypatch, 2)
-    assert repo.saved == [] and repo.events == [] and [c[0] for c in fetch.calls] == ["daily", "daily", "minutes"]
+    assert repo.saved == [] and repo.events == []
+    assert [c[0] for c in fetch.calls] == ["daily", "daily", "minutes", "minutes"]
 
 
 def test_a_lease_lost_at_a_decision_start_stops_before_its_requests(monkeypatch):
@@ -500,11 +533,34 @@ def test_a_fenced_failure_writes_no_quality_event():
     assert repo.events == []
 
 
-def test_the_budget_stops_the_run_cleanly(monkeypatch):
-    """Over budget: stop before the next decision, keep what is stored."""
+def test_guard_turns_any_lease_error_into_lease_lost():
+    """Direct: no lease check is a no-op; a valid one passes; any error becomes LeaseLost."""
+    m._guard(None)
+    m._guard(lambda: None)
+    with pytest.raises(s2.LeaseLost, match="RuntimeError"):
+        m._guard(lambda: (_ for _ in ()).throw(RuntimeError()))
+
+
+def test_mature_one_defers_without_a_horizon_and_skips_stored_policies():
+    """Direct: no horizon end -> deferred, nothing written; a stored policy is not written again."""
+    repo, summary = Repo(), {"deferred": 0, "unlabelled": 0, "already_stored": 0, "stored": 0}
+    daily, minutes = _path(jump_day=5)
+    m._mature_one(repo, _decision(), history=(daily, minutes, None, minutes), benchmark=daily,
+                  today=TODAY, check_lease=None, summary=summary)
+    assert summary["deferred"] == 1 and repo.saved == []
+    m._mature_one(repo, _decision(stored=[INC]), history=(daily, minutes, D0, minutes), benchmark=daily,
+                  today=TODAY, check_lease=None, summary=summary)
+    assert (summary["already_stored"], summary["stored"]) == (1, 1) and [s[1] for s in repo.saved] == [CH]
+
+
+def test_the_budget_stops_the_run_as_partial(monkeypatch):
+    """Over budget: stop before the next decision, keep what is stored, say PARTIAL (a WARNING)."""
     ticks = iter([0.0, 0.0, m.BUDGET_SECONDS + 1, m.BUDGET_SECONDS + 1])
     summary, repo, _ = _run(monkeypatch, [_row(), _row(obs="obs-2")], clock=lambda: next(ticks))
-    assert summary["stopped"] == "BUDGET" and summary["stored"] == 2 and summary["status"] == "SUCCESS"
+    assert summary["stopped"] == "BUDGET" and summary["stored"] == 2 and summary["status"] == "PARTIAL"
+    (_source, severity, _code, message, _detail), = repo.events
+    assert severity == "WARNING" and message.endswith("stopped by BUDGET")
+    assert [s[0] for s in repo.saved] == ["obs-1", "obs-1"]          # obs-2 untouched: retried later
 
 
 def test_no_pending_decisions_makes_no_request(monkeypatch):
@@ -570,18 +626,41 @@ def test_a_nan_open_on_the_stop_bar_keeps_the_stop_fill():
     daily, minutes = _custom_path({3: {200: (100.0, 96.0)}})
     stop_minute = minutes.index[(minutes["Low"] <= 97).to_numpy()][0]
     minutes.loc[stop_minute, "Open"] = float("nan")
-    label = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, today=TODAY)[m.CHALLENGER]
+    label = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes, today=TODAY)[m.CHALLENGER]
     assert label["outcome"] == "stop" and label["exit"] == 97.0 and "stop_fill" not in label
 
 
-def test_a_benchmark_gap_in_the_window_is_counted(monkeypatch):
-    """NIFTY lacks a session the stock has: no label for policies spanning it, counted."""
+def test_missing_nifty_minutes_on_the_entry_day_are_counted(monkeypatch):
+    """NIFTY one-minute bars lack the decision day: no label for either policy, counted, retried."""
     fetch = Fetch()
-    real, gap = fetch.day, fetch.daily.drop(fetch.daily.index[12])
-    fetch.day = lambda c, t, key, s_, e: gap.loc[pd.Timestamp(s_):pd.Timestamp(e)] if key == m.NIFTY_KEY \
-        else real(c, t, key, s_, e)
+    fetch.bench_minutes = fetch.minutes.loc[fetch.minutes.index.normalize() != pd.Timestamp(D0)]
     summary, repo, _ = _run(monkeypatch, [_row()], fetch=fetch)
-    assert summary["no_benchmark"] >= 1 and summary["unlabelled"] >= 1
+    assert (summary["no_benchmark"], summary["unlabelled"], summary["stored"]) == (2, 2, 0)
+    assert summary["status"] == "SUCCESS" and repo.saved == []
+
+
+def test_an_empty_nifty_minute_answer_is_a_failure(monkeypatch):
+    """HTTP 200 with no NIFTY minutes: a broken feed, not `no_benchmark`; PARTIAL with a WARNING."""
+    fetch = Fetch()
+    fetch.bench_minutes = fetch.minutes.iloc[0:0]
+    summary, repo, _ = _run(monkeypatch, [_row()], fetch=fetch)
+    assert (summary["failed"], summary["no_benchmark"], summary["status"]) == (1, 0, "PARTIAL")
+    assert repo.events[0][4]["failures"][0]["message"] == "NIFTY minute history is empty"
+
+
+def test_nifty_minutes_are_shared_per_window_only(monkeypatch):
+    """Three stocks, one decision day: two share a horizon end (one NIFTY request), a suspended
+    stock ends a session later (its own NIFTY request)."""
+    fetch = Fetch()
+    real = fetch.day
+    suspended_day = fetch.daily.index[8]
+    fetch.day = lambda c, t, key, s_, e: real(c, t, key, s_, e).drop(suspended_day, errors="ignore") \
+        if key == "NSE_EQ|SUS" else real(c, t, key, s_, e)
+    rows = [_row(obs="a", key="NSE_EQ|A"), _row(obs="b", key="NSE_EQ|B"), _row(obs="s", key="NSE_EQ|SUS")]
+    _run(monkeypatch, rows, fetch=fetch)
+    nifty = [c[3] for c in fetch.calls if c[:2] == ("minutes", m.NIFTY_KEY)]
+    after = fetch.daily.loc[fetch.daily.index > pd.Timestamp(D0)].index
+    assert sorted(nifty) == [after[14].date(), after[15].date()]
 
 
 def test_one_stock_on_two_decision_days_gets_two_histories(monkeypatch):
@@ -590,27 +669,142 @@ def test_one_stock_on_two_decision_days_gets_two_histories(monkeypatch):
     later["inputs_used"]["evaluated_at"] = "2026-11-03T04:39:00+00:00"
     summary, _, fetch = _run(monkeypatch, [_row(), _row(obs="obs-2", day=D0 + dt.timedelta(days=1),
                                                          candidate=later)])
-    assert [c[0] for c in fetch.calls] == ["daily", "daily", "minutes", "daily", "minutes"]
+    assert [c[0] for c in fetch.calls] == ["daily", "daily", "minutes", "minutes", "daily", "minutes", "minutes"]
 
 
 def test_a_pre_signal_dip_on_the_entry_day_is_not_the_stop_fill():
     """09:45 bar at 95 (before the 10:09 decision); 12:35 dip opens at 100: fill at the stop, 97."""
     daily, minutes = _custom_path({0: {30: (95.0, 95.0), 200: (100.0, 96.0)}})
-    label = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, today=TODAY)[m.CHALLENGER]
+    label = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes, today=TODAY)[m.CHALLENGER]
     assert label["outcome"] == "stop" and label["exit"] == 97.0
+
+
+def test_a_non_positive_open_on_the_stop_bar_gives_no_label():
+    """A touching bar that opens at 0 is bad data, not a -100% gap: no label (retried later)."""
+    daily, minutes = _custom_path({3: {200: (100.0, 96.0)}})
+    stop_minute = minutes.index[(minutes["Low"] <= 97).to_numpy()][0]
+    minutes.loc[stop_minute, "Open"] = 0.0
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY)
+    assert labels[m.CHALLENGER] is None and labels[m.INCUMBENT]["outcome"] == "horizon"
+
+
+def _nifty(rises_at: tuple[int, int], to: float = 101.0):
+    """NIFTY flat at 100, at `to` from (session, minute) on: its daily and one-minute bars."""
+    session, minute = rises_at
+    mods = {s_: {i: (to, to) for i in range(minute if s_ == session else 0, 375)} for s_ in range(session, 20)}
+    return _custom_path(mods)
+
+
+def test_the_benchmark_starts_at_the_entry_minute_not_the_day_open():
+    """NIFTY +1% between 09:15 and the 10:10 entry, flat after: the stock's excess is not charged it."""
+    daily, minutes = _path()                                   # stock flat at 100
+    nifty_daily, nifty_minutes = _nifty((0, 30))               # 09:45: 100 -> 101
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=nifty_daily,
+                              benchmark_minutes=nifty_minutes, today=TODAY)
+    inc = labels[m.INCUMBENT]
+    assert inc["entry_timestamp"] == "2026-11-02T10:10:00" and inc["outcome"] == "horizon"
+    assert inc["benchmark_return"] == 0.0                      # the production label says +1%
+    assert inc["excess_return"] == pytest.approx(inc["net_return"]) == pytest.approx(-0.002)
+
+
+def test_the_benchmark_ends_at_the_exit_minute_of_a_stop():
+    """Challenger stopped at 12:35 on session 3; NIFTY falls 1% at 12:36: not in its benchmark."""
+    daily, minutes = _path(drop_day=3)                         # stop 97 touched at minute 200
+    nifty_daily, nifty_minutes = _nifty((3, 201), to=99.0)
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=nifty_daily,
+                              benchmark_minutes=nifty_minutes, today=TODAY)
+    ch, inc = labels[m.CHALLENGER], labels[m.INCUMBENT]
+    assert ch["outcome"] == "stop" and ch["benchmark_return"] == 0.0
+    assert ch["excess_return"] == pytest.approx(0.97 - 1 - 0.002)
+    assert inc["outcome"] == "horizon" and inc["benchmark_return"] == pytest.approx(-0.01)  # held through it
+
+
+def _nifty_ramp(close_bump: float = 0.0):
+    """NIFTY rising every minute (open != close), daily closes bumped by `close_bump`."""
+    prices, k = {}, 0
+    for day in _days(D0 - dt.timedelta(days=7), 25):
+        bars = []
+        for _ in range(375):
+            bars.append((100 + 0.001 * k, 100 + 0.001 * k + 0.0005))
+            k += 1
+        prices[day] = bars
+    daily, minutes = _bars(prices)
+    daily["Close"] = daily["Close"] + close_bump
+    return daily, minutes
+
+
+def test_the_benchmark_uses_exactly_the_entry_open_the_exit_close_and_the_daily_close():
+    """Stop exit: open of the 10:10 entry minute -> close of the 12:35 exit minute. Time exit:
+    -> NIFTY's daily close (deliberately unlike its last minute here)."""
+    daily, minutes = _path(drop_day=3)
+    nifty_daily, nifty_minutes = _nifty_ramp(close_bump=0.5)
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=nifty_daily,
+                              benchmark_minutes=nifty_minutes, today=TODAY)
+    base = nifty_minutes.loc[pd.Timestamp("2026-11-02 10:10"), "Open"]
+    exit_at = pd.Timestamp(_days(D0, 4)[3]) + pd.Timedelta(hours=9, minutes=15 + 200)
+    assert labels[m.CHALLENGER]["benchmark_return"] == pytest.approx(nifty_minutes.loc[exit_at, "Close"] / base - 1)
+    inc = labels[m.INCUMBENT]
+    end = nifty_daily.loc[pd.Timestamp(inc["label_end_date"]), "Close"]
+    assert inc["benchmark_return"] == pytest.approx(end / base - 1)
+
+
+def test_nifty_minutes_too_far_from_entry_or_exit_give_no_label():
+    """NIFTY missing 10:10-10:20 on the entry day: no start within 5 min -> no label for either policy.
+    Missing 12:28-12:35 on the stop day: the challenger's exit has no NIFTY minute -> no label."""
+    daily, minutes = _path(drop_day=3)
+    nifty_daily, nifty_minutes = _nifty_ramp()
+    late = nifty_minutes.drop(pd.date_range("2026-11-02 10:10", "2026-11-02 10:20", freq="min"))
+    notes = {}
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=nifty_daily,
+                              benchmark_minutes=late, today=TODAY, notes=notes)
+    assert labels == {m.INCUMBENT: None, m.CHALLENGER: None} and notes == {"no_benchmark": 2}
+    exit_at = pd.Timestamp(_days(D0, 4)[3]) + pd.Timedelta(hours=9, minutes=15 + 200)
+    early = nifty_minutes.drop(pd.date_range(exit_at - pd.Timedelta(minutes=7), exit_at, freq="min"))
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=nifty_daily,
+                              benchmark_minutes=early, today=TODAY)
+    assert labels[m.CHALLENGER] is None and labels[m.INCUMBENT] is not None
+
+
+def test_a_benchmark_window_never_runs_backwards():
+    """Entry 10:10, stop at 10:11, NIFTY missing 10:10-10:13: its first minute (10:14) is after the
+    exit, so no benchmark (never close-before-open)."""
+    daily, minutes = _custom_path({0: {56: (100.0, 96.0)}})      # 10:11 dip through the 97 stop
+    nifty_daily, nifty_minutes = _nifty_ramp()
+    gap = nifty_minutes.drop(pd.date_range("2026-11-02 10:10", "2026-11-02 10:13", freq="min"))
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=nifty_daily,
+                              benchmark_minutes=gap, today=TODAY)
+    assert labels[m.CHALLENGER] is None
+    full = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=nifty_daily,
+                            benchmark_minutes=nifty_minutes, today=TODAY)[m.CHALLENGER]
+    assert full["outcome"] == "stop" and full["benchmark_return"] > 0
+
+
+def test_execution_adjustment_refuses_missing_evidence():
+    """Direct: no exit bar for a stop label, or no NIFTY minute at entry -> None; the latter counted."""
+    daily, minutes = _path(drop_day=3)
+    label = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                             benchmark_minutes=minutes, today=TODAY)[m.CHALLENGER]
+    notes = {}
+    no_bar = minutes.loc[minutes.index.normalize() != pd.Timestamp(label["outcome_date"])]
+    assert m._execution_adjusted(label, no_bar, daily, minutes, 97.0, 104.86, notes) is None and notes == {}
+    late = minutes.loc[minutes.index.normalize() != pd.Timestamp(D0)]
+    assert m._execution_adjusted(label, minutes, daily, late, 97.0, 104.86, notes) is None
+    assert notes == {"no_benchmark": 1}
+    assert m._benchmark_return({**label, "entry_timestamp": None}, None, daily, minutes) is None
 
 
 def test_the_first_touching_bar_sets_the_stop_fill():
     """First touch opens above the stop (fill 97); a later gap bar at 90 must not be used."""
     daily, minutes = _custom_path({3: {200: (100.0, 96.0), 300: (90.0, 90.0)}})
-    label = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, today=TODAY)[m.CHALLENGER]
+    label = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes, today=TODAY)[m.CHALLENGER]
     assert label["outcome"] == "stop" and label["exit"] == 97.0
 
 
 def test_the_gap_fill_never_touches_a_target_exit():
     """Target hit at 12:35; a gap bar at 90 later that day does not change the exit."""
     daily, minutes = _custom_path({5: {200: (100.0, 105.0), 300: (90.0, 90.0)}})
-    label = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, today=TODAY)[m.CHALLENGER]
+    label = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes, today=TODAY)[m.CHALLENGER]
     assert label["outcome"] == "target" and label["exit"] == 104.86 and "stop_fill" not in label
 
 
@@ -796,6 +990,15 @@ def test_pending_query_selects_unlabelled_shadow_passes_newest_first(db):
     assert m.decision_rows(SqlRepo(db), []) == []
 
 
+def _scan_days(pg, after, today, skip=()):
+    """A shadow scan (one rejected row) on every weekday after `after` and before `today`."""
+    day = after + dt.timedelta(days=1)
+    while day < today:
+        if day.weekday() < 5 and day not in skip:
+            _seed(pg, run=f"s-{day}", symbol="SESS", day=day, passed=False)
+        day += dt.timedelta(days=1)
+
+
 def _ist_today():
     """The report's own date: the database clock in IST."""
     return (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=5, minutes=30)).date()
@@ -837,6 +1040,7 @@ def test_report_eligibility_age_passes_only_and_missing_ledger_entries(db):
     """22 days old counts, 21 not; rejected rows never; a decision missing from its batch, or whose batch
     event is gone, still counts."""
     today = _ist_today()
+    _scan_days(db, today - dt.timedelta(days=22), today)      # 21 days: exactly 15 weekdays
     _seed(db, run="r22", symbol="OLD", day=today - dt.timedelta(days=22))
     _seed(db, run="r21", symbol="NEW", day=today - dt.timedelta(days=21))
     _seed(db, run="r22", symbol="REJ", day=today - dt.timedelta(days=22), passed=False)
@@ -850,3 +1054,43 @@ def test_report_eligibility_age_passes_only_and_missing_ledger_entries(db):
     table = _report(db)
     assert table[("all", m.INCUMBENT, "ALL", "ALL")][:2] == (3, 0)        # OLD, LOST and GONE
     assert table[("all", m.INCUMBENT, "unknown", "ALL")][:2] == (2, 0)    # LOST, GONE: no recorded action
+
+
+def _weekdays_after(day, count):
+    """The first `count` weekdays after `day`."""
+    return [d for d in (day + dt.timedelta(days=i) for i in range(1, 15)) if d.weekday() < 5][:count]
+
+
+@needs_sql
+def test_report_waits_for_fifteen_shadow_scan_sessions(db):
+    """A missed session leaves a 22-day-old decision at 14: not eligible. Neither an app scan on
+    the missed day nor a shadow scan today makes it a 15th."""
+    today = _ist_today()
+    d22, d30 = today - dt.timedelta(days=22), today - dt.timedelta(days=30)
+    missed, = _weekdays_after(d22, 1)
+    _scan_days(db, d30, today, skip={missed})
+    _seed(db, run="app", symbol="APP", day=missed, passed=False, strategy="equity-scanner-v19.0:quick")
+    _seed(db, run="now", symbol="TOD", day=today, passed=False)
+    _seed(db, run="r30", symbol="OLD", day=d30)
+    _seed(db, run="r22", symbol="SHORT", day=d22)
+    assert _report(db)[("all", m.INCUMBENT, "ALL", "ALL")][:2] == (1, 0)          # OLD only
+
+
+@needs_sql
+def test_report_counts_every_pass_of_a_day_once_any_of_it_is_labelled(db):
+    """Two missed sessions: days 22 and 23 have 13 and 14. Day 23 has a shadow label, so all its
+    passes count (LAB and SAME); day 22 has only a horizon-10 and a production label: not eligible."""
+    today = _ist_today()
+    d22, d23, d30 = (today - dt.timedelta(days=n) for n in (22, 23, 30))
+    _scan_days(db, d30, today, skip=set(_weekdays_after(d22, 2)))
+    _seed(db, run="r30", symbol="OLD", day=d30, score=45.0)
+    _label(db, _seed(db, run="r23", symbol="LAB", day=d23, score=72.0), m.INCUMBENT)
+    _seed(db, run="r23", symbol="SAME", day=d23, score=65.0)
+    other = _seed(db, run="r22", symbol="OTHER", day=d22, score=55.0)
+    _label(db, other, m.CHALLENGER, horizon=10)
+    _label(db, other, TARGET_VERSION)
+    table = _report(db)
+    assert table[("all", m.INCUMBENT, "ALL", "ALL")][:2] == (3, 1)        # OLD, LAB, SAME
+    assert table[("all", m.CHALLENGER, "ALL", "ALL")][:2] == (3, 0)
+    # by score band: OLD <50, SAME 60-70 (unlabelled, same day as LAB), LAB 70+; OTHER (50-60) absent
+    assert {k[3] for k in table if k[:3] == ("all", m.INCUMBENT, "Buy")} == {"ALL", "<50", "60-70", "70+"}

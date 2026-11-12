@@ -14,10 +14,18 @@ horizon has completed, under two frozen level policies on the same decision:
 
 Label `SHADOW_LABEL_VERSION`: `prediction_validation.compute_forward_target` (the production
 label: entry at the first one-minute open after the decision, minute-ordered stop/target touches,
-stop first on ties, net of the decision's estimated round-trip costs, NIFTY excess), with one
-change so that tight and wide stops are compared fairly: a stop touched by a minute bar that opens
-below it fills at that open (a gap through the stop), not at the stop. Targets stay filled at the
-target (conservative). A label without a NIFTY benchmark return is not stored (retried later).
+stop first on ties, net of the decision's estimated round-trip costs), with two execution changes
+so that tight and wide stops are compared fairly:
+
+- a stop touched by a minute bar that opens below it fills at that open (a gap through the stop),
+  not at the stop. Targets stay filled at the target (conservative);
+- the NIFTY benchmark covers the stock's own holding window, on NIFTY one-minute bars: from the
+  open of the entry minute to the close of the exit minute (to the daily close for a time exit).
+  The production label measures NIFTY from the entry day's 09:15 open to the outcome day's close,
+  which for a 10:07 decision adds NIFTY's first hour and, for a stop or target exit, the rest of
+  that day to the excess return.
+
+A label whose NIFTY evidence is missing is not stored (counted as `no_benchmark`, retried later).
 
 Each label is one append-only `prediction_targets` row under a shadow-only target version
 `stage2-shadow:<label version>:<policy>`, so the app's calibration, readiness counts and training
@@ -28,17 +36,21 @@ Why not a DECISION_EVALUATED event per pass (the spec's other Phase 5 option): t
 `pending_observations` would then pick the passes up and write production-version labels into the
 app's calibration evidence, and each event costs about 5 KB of never-deleted ledger.
 
-Upstox use: one NIFTY daily request per run plus, per decision day, one daily and one one-minute
-history request (ending at the horizon's last session), each after the 0.2 s pause the shadow
-Stage-2 uses; at most `MAX_DECISIONS_PER_RUN` decisions and `BUDGET_SECONDS` per run (checked
-between decisions). Only decisions whose 15 sessions have completed on the NIFTY calendar take
-one of those slots, newest first, so decisions still waiting (holiday clusters) or staying
-unlabelled (ambiguous evidence; retried until `RETRY_DAYS` old) never starve completed ones. Every failure except a
+Upstox use: one NIFTY daily request per run plus, per stock and decision day, one daily and one
+one-minute history request (ending at the horizon's last session), and one NIFTY one-minute
+request per decision window, each after the 0.2 s pause the shadow Stage-2 uses; at most
+`MAX_DECISIONS_PER_RUN` decisions and `BUDGET_SECONDS` per run (checked between decisions; a
+budget stop makes the run PARTIAL). Only decisions whose 15 sessions have completed on the NIFTY
+calendar take one of those slots, so decisions still waiting (holiday clusters) never use one.
+Half the slots go to the newest completed decisions, half to the oldest (ties within a day
+reshuffled daily): new decisions never wait behind ones that stay unlabelled (ambiguous evidence;
+retried until `RETRY_DAYS` old), and the ones closest to expiry go first. Every failure except a
 lost lease is contained: the scan's own evidence is already committed and stays the run's result.
 """
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import logging
 import math
@@ -63,13 +75,14 @@ INCUMBENT = "incumbent-levels-v1"
 CHALLENGER = "atr15-stop-v1"
 POLICIES = (INCUMBENT, CHALLENGER)
 VERSION_PREFIX = "stage2-shadow"
-SHADOW_LABEL_VERSION = f"{TARGET_VERSION}.gap-stop-v1"
-MAX_DECISIONS_PER_RUN = 60   # <= ~121 history requests a run: Upstox allows 1000 per 30 min per API
+SHADOW_LABEL_VERSION = f"{TARGET_VERSION}.minute-aligned-v1"
+MAX_DECISIONS_PER_RUN = 60   # <= 181 history requests a run: Upstox allows 1000 per 30 min per API
 BUDGET_SECONDS = 300.0
 FIRST_ELIGIBLE_DAYS = 22   # 15 sessions after the decision day, the run day's bar excluded
 RETRY_DAYS = 60            # stop retrying an unlabelled decision after this many days
 DEFAULT_COST_BPS = 30.0    # the existing maturation's fallback when no estimate was recorded
 STALE_BENCHMARK_DAYS = 6   # NSE closures never exceed this: an older last NIFTY bar is a stale answer
+BENCH_GAP = pd.Timedelta(minutes=5)   # furthest a NIFTY minute may sit from the stock's entry/exit minute
 FAILURE_DETAIL_LIMIT = 20
 
 _MISSING = f"""(SELECT count(*) FROM {SCHEMA}.prediction_targets t
@@ -186,23 +199,30 @@ def decision_rows(repo, observation_ids: list[str]) -> list[tuple]:
         return list(conn.execute(DECISIONS_SQL, (versions, list(observation_ids))).fetchall())
 
 
-def completed_decisions(pending: list[tuple], benchmark: pd.DataFrame, *,
+def completed_decisions(pending: list[tuple], benchmark: pd.DataFrame, *, today: dt.date,
                         limit: int = MAX_DECISIONS_PER_RUN) -> tuple[list[str], int]:
     """Ids of pending decisions whose horizon has completed on the NIFTY session calendar.
 
-    Returns (up to `limit` ids, newest first; count still awaiting sessions). Counting sessions on
-    the benchmark's own bars (already fetched) means decisions that cannot complete yet never use a
-    slot or a stock request, so holiday clusters cannot crowd completed decisions out.
+    Returns (up to `limit` ids; count still awaiting sessions). Counting sessions on the
+    benchmark's own bars (already fetched) means decisions that cannot complete yet never use a
+    slot or a stock request, so holiday clusters cannot crowd completed decisions out. Over the
+    cap, half the slots go to the newest (`pending` is newest first) and half to the oldest of the
+    rest, ties within a decision day reshuffled each day: decisions closest to RETRY_DAYS go first,
+    and a block of same-day decisions that stays unlabelled cannot hold the same slots every day.
     """
     sessions = sorted(set(benchmark.index.normalize()))
-    selected, awaiting = [], 0
+    done, awaiting = [], 0
     for observation_id, as_of in pending:
-        done = sum(1 for d in sessions if d > pd.Timestamp(as_of)) >= HORIZON_SESSIONS
-        if not done:
+        if sum(1 for d in sessions if d > pd.Timestamp(as_of)) >= HORIZON_SESSIONS:
+            done.append((observation_id, pd.Timestamp(as_of)))
+        else:
             awaiting += 1
-        elif len(selected) < limit:
-            selected.append(observation_id)
-    return selected, awaiting
+    if len(done) > limit:
+        newest = limit - limit // 2
+        rest = sorted(done[newest:], key=lambda item: (
+            item[1], hashlib.sha256(f"{today}:{item[0]}".encode()).hexdigest()))
+        done = done[:newest] + rest[:limit // 2]
+    return [observation_id for observation_id, _ in done], awaiting
 
 
 def _signal_timestamp(evaluated_at: pd.Timestamp) -> pd.Timestamp | None:
@@ -227,36 +247,92 @@ def horizon_end(decision: Mapping, daily: pd.DataFrame, today: dt.date) -> dt.da
     return sessions[HORIZON_SESSIONS - 1].date() if len(sessions) >= HORIZON_SESSIONS else None
 
 
-def _gap_stop_fill(label: dict, minutes: pd.DataFrame, stop: float) -> dict:
-    """A stop reached by a minute bar that opens below it fills at that open, not at the stop."""
-    if label["outcome"] != "stop" or minutes.empty:
-        return label
+def _exit_bar(label: dict, minutes: pd.DataFrame, stop: float, target: float) -> pd.Series | None:
+    """The minute bar that ended a stop or target label (its `.name` is the minute).
+
+    The first bar on the outcome day, at or after entry, that reaches the stop or the target:
+    the bar compute_forward_target stopped on.
+    """
     day = minutes.loc[minutes.index.normalize() == pd.Timestamp(label["outcome_date"])]
     if label.get("entry_timestamp"):
         day = day.loc[day.index >= pd.Timestamp(label["entry_timestamp"])]
-    touched = day.loc[day["Low"].astype(float) <= stop]
-    exit_price = float(touched.iloc[0]["Open"]) if not touched.empty else stop
-    if not math.isfinite(exit_price) or exit_price >= stop:
-        return label
+    touched = day.loc[(day["Low"].astype(float) <= stop) | (day["High"].astype(float) >= target)]
+    return None if touched.empty else touched.iloc[0]
+
+
+def _benchmark_return(label: dict, exit_at: pd.Timestamp | None, bench_daily: pd.DataFrame,
+                      bench_minutes: pd.DataFrame) -> float | None:
+    """NIFTY over the stock's holding window, or None when that evidence is missing or bad.
+
+    From the open of the first NIFTY minute at or after the stock's entry minute to the close of
+    the NIFTY minute at (or just before) the exit minute, each at most BENCH_GAP away and in that
+    order; a time exit (`exit_at` None) ends at NIFTY's daily close on the label's last session,
+    as the stock's exit does. For a next-open entry (a decision outside the session) the entry
+    minute is the last of the five opening minutes the entry price averages: a few minutes of
+    NIFTY, not its whole first hour.
+    """
+    if not label.get("entry_timestamp") or bench_minutes.empty:
+        return None
+    entry_at, at = pd.Timestamp(label["entry_timestamp"]), bench_minutes.index
+    # Within BENCH_GAP of a session minute: the window cannot reach another day.
+    start = bench_minutes.loc[(at >= entry_at) & (at <= entry_at + BENCH_GAP), "Open"]
+    if start.empty:
+        return None
+    if exit_at is None:
+        last = pd.Timestamp(label["label_end_date"])
+        end = bench_daily.loc[bench_daily.index.normalize() == last, "Close"] if not bench_daily.empty \
+            else pd.Series(dtype=float)
+    else:
+        end = bench_minutes.loc[(at <= exit_at) & (at >= max(exit_at - BENCH_GAP, start.index[0])), "Close"]
+    if end.empty:
+        return None
+    base, final = float(start.iloc[0]), float(end.iloc[-1])
+    if not (math.isfinite(base) and math.isfinite(final) and base > 0 and final > 0):
+        return None
+    return final / base - 1.0
+
+
+def _execution_adjusted(label: dict, minutes: pd.DataFrame, bench_daily: pd.DataFrame,
+                        bench_minutes: pd.DataFrame, stop: float, target: float,
+                        notes: dict | None) -> dict | None:
+    """The shadow label: gap-down stop fill at the bar open, NIFTY over the holding window.
+
+    None (no label, retried later) when the exit bar or a positive gap price is missing, or the
+    NIFTY evidence is (counted in `notes["no_benchmark"]`). A NaN open keeps the stop fill.
+    """
+    bar, exit_price, fill = None, float(label["exit"]), {}
+    if label["outcome"] != "horizon":
+        bar = _exit_bar(label, minutes, stop, target)
+        if bar is None:
+            return None
+        opened = float(bar["Open"])
+        if label["outcome"] == "stop" and math.isfinite(opened) and opened < stop:
+            if opened <= 0:
+                return None
+            exit_price, fill = opened, {"stop_fill": "gap_open"}
+    bench = _benchmark_return(label, None if bar is None else bar.name, bench_daily, bench_minutes)
+    if bench is None:
+        if notes is not None:
+            notes["no_benchmark"] = notes.get("no_benchmark", 0) + 1
+        return None
     gross = exit_price / float(label["entry"]) - 1.0
     net = gross - float(label["cost_bps"]) / 10_000.0
-    bench = label.get("benchmark_return")
-    excess = None if bench is None else net - bench
-    return {**label, "exit": exit_price, "gross_return": gross, "net_return": net,
-            "excess_return": excess, "positive_excess": None if excess is None else int(excess > 0),
-            "stop_fill": "gap_open"}
+    return {**label, **fill, "exit": exit_price, "gross_return": gross, "net_return": net,
+            "benchmark_return": bench, "excess_return": net - bench, "positive_excess": int(net - bench > 0)}
 
 
 def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFrame,
-                   benchmark: pd.DataFrame | None, today: dt.date,
-                   notes: dict | None = None) -> dict[str, dict | None]:
+                   benchmark: pd.DataFrame | None, benchmark_minutes: pd.DataFrame | None,
+                   today: dt.date, notes: dict | None = None) -> dict[str, dict | None]:
     """Labels per policy for one decision whose horizon has completed (see horizon_end).
 
-    A policy maps to None when its levels are invalid, the evidence is incomplete or ambiguous
-    (compute_forward_target refuses to label it) or the NIFTY benchmark does not cover the
+    `benchmark` and `benchmark_minutes` are NIFTY's daily and one-minute bars. A policy maps to
+    None when its levels are invalid, the evidence is incomplete or ambiguous
+    (compute_forward_target refuses to label it) or the NIFTY evidence does not cover the holding
     window (counted in `notes["no_benchmark"]`); later runs retry it.
     """
     daily, minutes = _before(daily, today), _before(minutes, today)
+    bench_daily, bench_minutes = _before(benchmark, today), _before(benchmark_minutes, today)
     levels = {
         INCUMBENT: (decision["stop"], decision["target"]),
         CHALLENGER: challenger_levels(decision["entry"], decision["atr"],
@@ -268,18 +344,16 @@ def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFr
     for policy, level in levels.items():
         label = None
         if level is not None:
+            # benchmark=None: its day-bar NIFTY window is replaced by the holding-window one below.
             label = compute_forward_target(
                 daily, decision["as_of_date"], definition, stop=level[0], target=level[1],
-                benchmark=benchmark, intraday=minutes,
+                benchmark=None, intraday=minutes,
                 signal_timestamp=_signal_timestamp(decision["evaluated_at"]),
             )
-        if label is not None and label.get("benchmark_return") is None:
-            if notes is not None:
-                notes["no_benchmark"] = notes.get("no_benchmark", 0) + 1
-            label = None
+        if label is not None:
+            label = _execution_adjusted(label, minutes, bench_daily, bench_minutes, *level, notes)
         labels[policy] = None if label is None else {
-            **_gap_stop_fill(label, minutes, level[0]), "target_version": shadow_target_version(policy),
-            "stop": level[0], "target": level[1]}
+            **label, "target_version": shadow_target_version(policy), "stop": level[0], "target": level[1]}
     return labels
 
 
@@ -299,9 +373,10 @@ class ProviderRejected(RuntimeError):
 
 def _history(cache: dict, decision: Mapping, *, client, token: str, today: dt.date,
              fetch_daily: Callable, fetch_minutes: Callable, sleep: Callable[[float], None]):
-    """(daily, minutes, horizon end) for a stock and decision day, fetched once per run.
+    """(daily, minutes, horizon end, NIFTY minutes) for a stock and decision day, once per run.
 
-    Minutes are fetched only once the horizon has completed, from the decision day to its end.
+    Minutes (the stock's, then NIFTY's for the same window, shared by every stock with that
+    window) are fetched only once the horizon has completed, from the decision day to its end.
     """
     key = (decision["instrument_key"], decision["as_of_date"])
     if key not in cache:
@@ -316,23 +391,32 @@ def _history(cache: dict, decision: Mapping, *, client, token: str, today: dt.da
                 raise ProviderRejected(str(exc)) from exc
             raise
         end = horizon_end(decision, daily, today)
-        minutes = None
+        minutes = bench_minutes = None
         if end is not None:
             sleep(REQUEST_PAUSE_SECONDS)
             minutes = fetch_minutes(client, token, decision["instrument_key"], as_of, end)
-        cache[key] = (daily, minutes, end)
+            window = (NIFTY_KEY, as_of, end)
+            if window not in cache:
+                sleep(REQUEST_PAUSE_SECONDS)
+                cache[window] = fetch_minutes(client, token, NIFTY_KEY, as_of, end)
+            bench_minutes = cache[window]
+            if bench_minutes is None or bench_minutes.empty:
+                # A completed NIFTY window always has minutes: an empty answer is a broken feed (a
+                # failure, PARTIAL), not a per-label gap that would leave the run looking healthy.
+                raise ValueError("NIFTY minute history is empty")
+        cache[key] = (daily, minutes, end, bench_minutes)
     return cache[key]
 
 
 def _mature_one(repo, decision: Mapping, *, history: tuple, benchmark: pd.DataFrame, today: dt.date,
                 check_lease: Callable[[], None] | None, summary: dict) -> None:
     """Label one decision under both policies and store the labels it does not have yet."""
-    daily, minutes, end = history
+    daily, minutes, end, bench_minutes = history
     if end is None:
         summary["deferred"] += 1
         return
-    labels = label_decision(decision, daily=daily, minutes=minutes, benchmark=benchmark, today=today,
-                            notes=summary)
+    labels = label_decision(decision, daily=daily, minutes=minutes, benchmark=benchmark,
+                            benchmark_minutes=bench_minutes, today=today, notes=summary)
     for policy in POLICIES:
         label = labels[policy]
         if label is None:
@@ -358,7 +442,8 @@ def _report(repo, summary: dict, failures: list[dict], check_lease: Callable[[],
         repo.record_quality_event(
             "scheduled_stage2_maturation", "ERROR" if summary["status"] == "FAILED" else "WARNING",
             "STAGE2_MATURATION_FAILED",
-            f"Shadow Stage-2 maturation {summary['status']}: {summary['failed']} decision failures",
+            f"Shadow Stage-2 maturation {summary['status']}: {summary['failed']} decision failures"
+            + (f", stopped by {summary['stopped']}" if summary.get("stopped") else ""),
             {"summary": summary, "failures": failures[:FAILURE_DETAIL_LIMIT]},
         )
     except Exception as exc:
@@ -382,7 +467,7 @@ def _select(repo, client, token: str, *, today: dt.date, fetch_daily: Callable,
         raise ValueError("NIFTY benchmark history is empty")
     if benchmark.index.max().date() < today - dt.timedelta(days=STALE_BENCHMARK_DAYS):
         raise ValueError("NIFTY benchmark history is stale")
-    selected, summary["awaiting_sessions"] = completed_decisions(pending, benchmark)
+    selected, summary["awaiting_sessions"] = completed_decisions(pending, benchmark, today=today)
     summary["selected"] = len(selected)
     rows = decision_rows(repo, selected)
     for missing in sorted(set(selected) - {row[0] for row in rows}):
@@ -427,7 +512,8 @@ def mature_shadow_passes(repo, client, token: str, *, today: dt.date,
         cache: dict = {}
         for row in rows:
             if clock() - started > BUDGET_SECONDS:
-                summary["stopped"] = "BUDGET"
+                # Selected work left undone: PARTIAL, so the scan run says so; later runs retry it.
+                summary.update(stopped="BUDGET", status="PARTIAL")
                 break
             _guard(check_lease)
             try:

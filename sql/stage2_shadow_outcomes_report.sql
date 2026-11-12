@@ -1,22 +1,47 @@
 -- READ-ONLY report: forward outcome labels of the scheduled Stage-2 shadow passes
 -- (equity_stage2_maturation.py; switch SCHEDULED_STAGE2_MATURATION). Changes nothing.
 --
--- Decisions: shadow passes at least 22 days old (IST date). A stock that passed in both scans of one day counts
+-- Decisions: shadow passes at least 22 days old (IST date, as maturation) whose 15-session horizon has
+-- completed: 15 sessions of the shadow scan after the decision day (it runs every NSE session; a missed
+-- scan only delays eligibility, it never brings it forward), or any pass of that day is already labelled
+-- (maturation counts sessions on NIFTY's own bars, so a label settles the day for every pass of it, and
+-- coverage is never judged on the labelled passes alone). A stock that passed in both scans of one day counts
 -- once: its earliest scan that day, chosen BEFORE looking at labels, so both policies are scored on
 -- the same decisions. Policies: incumbent-levels-v1 (the recorded stop/target) and atr15-stop-v1
--- (stop at entry - 1.5 ATR). Label version net-excess-execution-v2.gap-stop-v1 only.
+-- (stop at entry - 1.5 ATR). Label version net-excess-execution-v2.minute-aligned-v1 only.
 -- sample 'all'    = every eligible decision; stats over those labelled under that policy.
 -- sample 'paired' = only decisions labelled under BOTH policies (the like-for-like comparison).
 -- Rows per sample and policy, per recorded action (Buy/Watch), and per action and score band.
 -- labelled < eligible means evidence was incomplete or ambiguous (retried until 60 days old).
 -- Returns are after the decision's estimated round-trip costs, in %.
-WITH decisions AS (
+WITH policies(policy) AS (
+    VALUES ('incumbent-levels-v1'), ('atr15-stop-v1')
+),
+scan_sessions AS MATERIALIZED (   -- once (one row per session), not once per decision
+    SELECT DISTINCT o.as_of_date
+    FROM quant_app.scanner_observations o
+    WHERE o.strategy_version = 'equity-stage2-scheduled-shadow-v1'
+      AND o.as_of_date < (now() AT TIME ZONE 'Asia/Kolkata')::date
+),
+first_scans AS (
     SELECT DISTINCT ON (o.instrument_key, o.as_of_date)
            o.observation_id, o.instrument_key, o.as_of_date, o.score, o.feature_json
     FROM quant_app.scanner_observations o
     WHERE o.strategy_version = 'equity-stage2-scheduled-shadow-v1' AND o.stage2_pass
       AND o.as_of_date <= (now() AT TIME ZONE 'Asia/Kolkata')::date - 22
     ORDER BY o.instrument_key, o.as_of_date, o.observed_at, o.observation_id
+),
+labelled_days AS MATERIALIZED (   -- a label proves NIFTY completed the horizon for that whole day
+    SELECT DISTINCT o.as_of_date
+    FROM quant_app.scanner_observations o
+    JOIN quant_app.prediction_targets t ON t.observation_id = o.observation_id AND t.horizon_sessions = 15
+    JOIN policies p ON t.target_version = 'stage2-shadow:net-excess-execution-v2.minute-aligned-v1:' || p.policy
+    WHERE o.strategy_version = 'equity-stage2-scheduled-shadow-v1'
+),
+decisions AS (
+    SELECT f.* FROM first_scans f
+    WHERE (SELECT count(*) FROM scan_sessions s WHERE s.as_of_date > f.as_of_date) >= 15
+       OR f.as_of_date IN (SELECT as_of_date FROM labelled_days)
 ),
 actions AS (
     -- LEFT JOIN: a decision whose ledger entry is missing still counts as eligible (action 'unknown').
@@ -36,11 +61,11 @@ actions AS (
 grid AS (
     SELECT a.*, p.policy, t.outcome, t.net_return, t.excess_return
     FROM actions a
-    CROSS JOIN (VALUES ('incumbent-levels-v1'), ('atr15-stop-v1')) AS p(policy)
+    CROSS JOIN policies p
     LEFT JOIN quant_app.prediction_targets t
       ON t.observation_id = a.observation_id
      AND t.horizon_sessions = 15
-     AND t.target_version = 'stage2-shadow:net-excess-execution-v2.gap-stop-v1:' || p.policy
+     AND t.target_version = 'stage2-shadow:net-excess-execution-v2.minute-aligned-v1:' || p.policy
 ),
 paired AS (
     SELECT observation_id FROM grid GROUP BY observation_id HAVING count(outcome) = 2
