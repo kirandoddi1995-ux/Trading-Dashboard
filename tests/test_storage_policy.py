@@ -21,7 +21,8 @@ def sample(size=300_000_000, age=0, extra=None):
 
 
 def test_all_hot_budgets_fit_target_and_derivatives_have_reserved_allocation():
-    assert len(BUDGETS) == len({b.name for b in BUDGETS}) == 45
+    """Every hot relation has one budget, all of them fit under the warning line, derivatives keep 10 MB."""
+    assert len(BUDGETS) == len({b.name for b in BUDGETS}) == 46
     assert sum(b.allocated_bytes for b in BUDGETS) + CATALOG_ALLOWANCE_BYTES < WARNING_BYTES
     assert sum(b.allocated_bytes for b in BUDGETS if b.name.startswith("derivatives_")) == 10_000_000
     assert all(b.retention and b.allocated_bytes > 0 for b in BUDGETS)

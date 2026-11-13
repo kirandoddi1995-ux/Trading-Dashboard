@@ -143,8 +143,13 @@ each event adds about 5 KB of ledger that is never deleted. Shadow labels stay i
 ## Owner steps
 1. Merge.
 2. GitHub, Settings, Secrets and variables, Actions, Variables: add `SCHEDULED_STAGE2_MATURATION` = `1`.
-3. First labels: about 3 weeks after the first shadow day (11 Nov), i.e. from about 2-3 Dec 2026.
+3. First labels: the 11 Nov passes complete their 15th regular session on 3 Dec 2026 (24 Nov is an NSE
+   holiday) and are labelled by the 4 Dec 10:07 run; the 12 Nov passes on 7 Dec.
 4. Results: run `sql/stage2_shadow_outcomes_report.sql` in the Supabase SQL editor (read-only).
+5. Dispositions (13 Nov): run `sql/stage2_shadow_dispositions.sql` once as the database owner, outside the
+   10:07 and 14:37 IST scans (before or with the merge of that change), then `sql/check_rls_policy_gaps.sql`
+   (no row for the new table). Why each pass was or was not labelled:
+   `sql/stage2_shadow_dispositions_report.sql` (read-only).
 
 ## Rollback
 Delete the repository variable (or set it to `0`): the next run skips maturation entirely. Stored labels are
@@ -250,6 +255,92 @@ Gemini notebook second opinion (10 points): no defect. Kept by design: PARTIAL o
 (LESSON 12), the 15:15 exit and gap-only stop fills (the app's plan; conservative for both policies), `no_fill`
 for a thin entry window; the daily-only print risk is in Limits.
 
+## Dispositions (13 Nov)
+Why: the run summary counts reasons (`no_fill: 3`, `window_problem: 1`, ...) and the quality event lists at most
+20 failures, so which pass had which reason, how often it was retried and which passes expired unlabelled was
+not recorded anywhere. ChatGPT's prompt-65 review asked for reasons shown for held and expired pairs; counting
+how many passes the guard and the touch check reject on the first labelling runs needs the same record.
+
+What: table `quant_app.stage2_shadow_dispositions` (DDL `sql/stage2_shadow_dispositions.sql`, owner-run), one row
+per shadow pass and label version, upserted at the end of each run for the decisions it attempted
+(`save_dispositions`, one transaction; a run stopped by a rejected token keeps the rows of the decisions before
+it, a lost lease or a killed job writes none):
+- `disposition`: `labelled` when every policy has its label, else the first summary counter the attempt moved
+  in `NOT_LABELLED` order (`unreadable_action`, `corporate_action`, `provider_rejected`, `failed`, `deferred`,
+  `basis_mismatch`, `window_problem`, `no_trading`, `no_fill`, `no_benchmark`, `invalid_levels` (new counter:
+  a policy whose own levels are invalid), `outside_levels`), else any other counter it moved (a reason added
+  later), else `unlabelled`. `unlabelled`, `stored` and `already_stored` are label counts (`LABEL_COUNTS`),
+  never ranked: `unlabelled` moves with every policy left without a label, so ranking it would hide a new
+  reason. Deriving it from the counters means every path is covered and a reason added later is named rather
+  than dropped (tests pin the list to the summary's counters and a new counter next to `unlabelled`).
+- `reasons`: every disposition the pass has had, in first-seen order (a touch-check rejection stays visible
+  after a retry labels the pass).
+- `detail`: the counters the last attempt moved and up to 3 messages naming the decision (200 characters
+  each, NUL characters removed: jsonb rejects them and one bad row would lose the run's whole batch).
+- `attempts`, `first_at`, `last_at`.
+- Decisions selected but missing from their ledger batch get `failed` rows too.
+
+It records, it never selects: retries, exclusion and expiry are unchanged (the terminal mark for known corporate
+actions stays the live `corporate_actions` read in PENDING_SQL, so correcting or removing an archived action
+releases the pass, as before). A failed write (for example the table not created yet) makes the run PARTIAL
+with `DispositionWriteFailed` and ", dispositions not written (...)" in the quality event; the labels stored
+before it stand. The write is fenced by the lease like every other write.
+
+Database rules it keeps (tests run the file on the PGlite harness):
+- Foreign key to `scanner_observations` declared `ON DELETE RESTRICT`: the nightly archive stops with
+  `SCANNER_ARCHIVE_RESTRICT_FK_REQUIRED` when any FK on that table has another delete action, and the default
+  (NO ACTION) is another action. Rows only reference Stage-2 passes, which the archive never deletes.
+- RLS on with one runtime policy created before it. Every run of the file first revokes everything from PUBLIC
+  and from each of `anon`, `authenticated`, `service_role`, `equity_research_collector`,
+  `quant_archive_worker` and `quant_app_runtime` that exists (the house pattern of
+  `sql/drive_archive_draft.sql`: a missing role cannot roll the file back), then grants `quant_app_runtime`
+  SELECT, INSERT, UPDATE: a hand-added grant, the runtime's DELETE or TRUNCATE included, is taken back (the
+  archive's ARCHIVE_ROLE_TOO_BROAD check and the research repository's permission check would trip on a stray
+  grant). The RLS gap check reports nothing for it.
+- Size: one row per shadow pass (about 45 a trading day, ~350 B with the primary-key index, up to ~1 KB with
+  three messages: ~4 MB a year), updated in place on retries. Budget 4 MB in `storage_policy.BUDGETS` (so
+  storage assessment knows the table); rows older than 60 days are final, so a cold export can prune them
+  before the budget is reached (with backlog item 13, the `prediction_targets` budget review).
+
+Limits: a pass labelled in a run whose disposition write failed keeps its older row, or has none if that was
+its first attempt (it is never selected again; `prediction_targets` is the record of labels, the run was
+PARTIAL, and the report, which starts from the passes, counts any pass with both labels as labelled, with 0
+attempts when it has no row). An unlabelled pass whose write was lost is retried and gets its row then. `labelled` needs every policy;
+a pass with one label and one never-valid policy shows that policy's reason (`invalid_levels`,
+`outside_levels`) with `stored: 1` in its counts. Retried passes are updated in place (at most two runs a day
+for 38 days; autovacuum handles the dead rows of a table this small).
+
+Second opinion (Gemini notebook, 13 Nov) and what was done with it:
+- "Use ON DELETE CASCADE, RESTRICT blocks cleanups": not adopted. The archive's own check refuses any FK on
+  `scanner_observations` other than RESTRICT (CASCADE would stop the nightly archive), the live
+  `prediction_targets` FK is RESTRICT too, and the rows reference only passes, which nothing deletes.
+- One-label passes and failed writes: documented above; the report takes "labelled" from the stored labels.
+  Slot use by retried passes and dead-row growth: as before this change (it records, it does not select);
+  terminal reasons wait for the first measured runs.
+
+Reviewer agent (round 1): 1 major (a stale disposition row could show a labelled pass as retrying or expired
+for good) fixed by deriving "labelled" in the report from `prediction_targets`; minors fixed (false doc claims,
+untested report boundaries now tested at 60/61 days, the decision day, today and a future ex-date; revokes
+widened to the house pattern; `last_at` advance tested; NUL characters removed; doc wording and owner timing).
+Accepted: one transaction per run for the batch (a bad row loses the run's rows; none is known after the NUL
+fix), and labels and dispositions in separate transactions (`production_repository.py` is hash-pinned).
+
+Reviewer agent (round 2, on the amended commit): no blocker or major. Minors fixed: the report now starts from
+the shadow passes (22 days and older, PENDING_SQL's universe) with a `no_record` state, so a lost first write
+cannot hide a pass and overstate the rejected share; `unlabelled` is a fallback only, so a counter added later
+is named even next to it; the table has a storage budget; the file revokes per existing role and takes back the
+runtime's hand-added DELETE / TRUNCATE; tests now hand-grant PUBLIC and `authenticated`, drop a role, and pin
+excluded over expired and the 21/22-day boundary. Not needed: the NULL-symbol nit (`trading_symbol` is NOT
+NULL in the live table). Left as they were (not new with this change): a derivation bug inside the run loop fails the run loudly rather than being
+skipped; a decision listed twice in its ledger batch is attempted twice; no statement timeout on the writes.
+
+Report `sql/stage2_shadow_dispositions_report.sql` (read-only): every shadow pass old enough to be selected
+(22 days, with levels), with or without a row (`no_record` = not attempted yet, or its first write lost), per
+disposition and state (`final` = both labels stored, whatever the last disposition says; `excluded` = an archived Bonus / Split / Rights Issue
+ex-dated after the decision day and on or before today keeps it out of selection, while that row stands;
+`expired` = not labelled under both policies and older than 60 days; `retrying`), the number of decisions and
+attempts, the earlier reasons those passes had, and up to 20 examples (symbol, day, attempts, message).
+
 ## Limits
 - One-minute evidence (the stock's and NIFTY's) must be available from Upstox for the label to be exact;
   otherwise the decision is retried, never labelled from daily bars.
@@ -260,11 +351,10 @@ for a thin entry window; the daily-only print risk is in Limits.
 - Levels stay at two decimals for this frozen comparison; NSE tick sizes (dated, per price band) are not
   applied. An execution-quality successor should round side-aware to the instrument's dated tick and
   recheck stop < entry < target and net reward:risk after rounding (SADBHIN and other low-priced names).
-- `no_fill`, `no_trading` and `outside_levels` repeat each run until the pass is 60 days old (one fetch
-  each, rare); the report counts such passes as eligible, unlabelled, without the reason. A versioned
-  per-decision disposition (reason, guard version, event identity, evidence) would make held, terminal and
-  expired passes visible and let a corrected archive row release a pass: it needs a new table (DDL,
-  Kiran-run), so it is a follow-up, not part of this change.
+- `no_fill`, `no_trading`, `outside_levels` and `invalid_levels` repeat each run until the pass is 60 days old
+  (one fetch each, rare). The disposition table (Dispositions, above) shows each such pass with its reason and attempt
+  count; making the reasons that cannot change on a retry terminal (no more fetches) is left until the first
+  labelling runs show how often each occurs.
 - The daily/minute touch check fails closed when a level lies between the daily bar's extreme and the
   minutes' (a print in the daily bar but in no minute bar: the pre-open auction if Upstox's 09:15 bar
   excludes it, or a block-deal or closing-session print if the daily bar includes one); how often that

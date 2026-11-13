@@ -6,6 +6,7 @@ local PGlite harness when it is configured.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import os
@@ -564,12 +565,53 @@ def test_invalid_challenger_levels_give_no_label():
 
 # ---------- the run ----------
 
+class _Conn:
+    """A DB-API connection stand-in: records executemany batches and commits on its repo."""
+
+    def __init__(self, repo):
+        """Bound to the recording repo."""
+        self.repo = repo
+
+    def cursor(self):
+        """The connection is its own cursor (context manager)."""
+        return self
+
+    def __enter__(self):
+        """Enter the cursor block."""
+        return self
+
+    def __exit__(self, *exc):
+        """Leave the cursor block."""
+        return False
+
+    def executemany(self, sql, rows):
+        """Record a batch (or fail like a missing table)."""
+        if self.repo.connect_error is not None:
+            raise self.repo.connect_error
+        self.repo.batches.append((sql, list(rows)))
+
+    def commit(self):
+        """Count commits."""
+        self.repo.commits += 1
+
+
 class Repo:
-    """Records label writes and quality events."""
+    """Records label writes, quality events and disposition batches."""
 
     def __init__(self):
         """Start empty."""
-        self.saved, self.events = [], []
+        self.saved, self.events, self.batches = [], [], []
+        self.commits, self.connect_error = 0, None
+
+    @contextlib.contextmanager
+    def connect(self):
+        """One recording connection."""
+        yield _Conn(self)
+
+    @property
+    def dispositions(self):
+        """Every disposition row written, as (observation_id, disposition, detail dict)."""
+        return [(row[0], row[2], json.loads(row[3])) for _sql, rows in self.batches for row in rows]
 
     def save_prediction_target(self, observation_id, target):
         """Append-only label write."""
@@ -1212,6 +1254,178 @@ def test_workflow_passes_the_switch():
     """Repository variable, unset = off."""
     workflow = (ROOT / ".github/workflows/scheduled-collector.yml").read_text()
     assert "SCHEDULED_STAGE2_MATURATION: ${{ vars.SCHEDULED_STAGE2_MATURATION }}" in workflow
+
+
+# ---------- dispositions (one row per attempted decision) ----------
+
+def _dispositions(repo):
+    """{observation_id: (disposition, counts, messages)} of the run's disposition rows."""
+    return {obs: (name, detail["counts"], detail.get("messages", [])) for obs, name, detail in repo.dispositions}
+
+
+def test_each_attempted_decision_gets_one_disposition_row_in_one_commit(monkeypatch):
+    """Labelled under both policies: one row, the counters it moved, the shadow label version."""
+    summary, repo, _ = _run(monkeypatch, [_row(), _row(obs="obs-2", stored=[INC])])
+    assert _dispositions(repo) == {"obs-1": ("labelled", {"stored": 2}, []),
+                                   "obs-2": ("labelled", {"already_stored": 1, "stored": 1}, [])}
+    (sql, rows), = repo.batches
+    assert sql == m.DISPOSITION_SQL and repo.commits == 1 and summary["dispositions"] == 2
+    assert {row[1] for row in rows} == {m.SHADOW_LABEL_VERSION} and summary["status"] == "SUCCESS"
+
+
+def test_held_back_and_failed_decisions_record_their_reason_and_message(monkeypatch):
+    """Each not-labelled path is named by the counter it moved, with the message naming it."""
+    fetch, key, odd = Fetch(fail={"NSE_EQ|BAD": ValueError("HTTP 200 error body"),
+                                  "NSE_EQ|DEAD": _HTTPError(404)}), "NSE_EQ|INE002A01018", "NSE_EQ|INE467B01029"
+    fetch.actions[key] = [_action("Bonus", D0 + dt.timedelta(days=4), ratio="1:1")]
+    fetch.actions[odd] = [{"name": "Dividend", "amt": 5, "expiry_date": (D0 + dt.timedelta(days=4)).strftime("%d %b %Y")}]
+    broken = _candidate(decision_id="obs-x")
+    del broken["inputs_used"]["equity_capture"]
+    summary, repo, _ = _run(monkeypatch, [_row(obs="obs-ca", key=key), _row(obs="obs-un", key=odd),
+                                          _row(obs="obs-bad", key="NSE_EQ|BAD"),
+                                          _row(obs="obs-dead", key="NSE_EQ|DEAD"),
+                                          _row(obs="obs-x", candidate=broken), _row()], fetch=fetch)
+    got = _dispositions(repo)
+    assert got["obs-ca"] == ("corporate_action", {"corporate_action": 1}, [])
+    assert got["obs-un"] == ("unreadable_action", {"corporate_action": 1, "unreadable_action": 1},
+                             [f"UnreadableCorporateAction: Dividend ex {D0 + dt.timedelta(days=4)} "
+                              "with an unreadable amount"])
+    assert got["obs-bad"] == ("failed", {"failed": 1}, ["ValueError: HTTP 200 error body"])
+    assert got["obs-dead"] == ("provider_rejected", {"provider_rejected": 1}, [])
+    assert got["obs-x"] == ("failed", {"failed": 1}, ["KeyError: 'equity_capture'"])
+    assert got["obs-1"] == ("labelled", {"stored": 2}, [])
+    assert summary["dispositions"] == 6 and summary["status"] == "PARTIAL"
+
+
+def test_a_window_problem_and_a_deferred_stock_are_recorded(monkeypatch):
+    """Reported problem (with its message) and a quiet deferral each get their own reason."""
+    fetch = Fetch()
+    fetch.daily, fetch.minutes = _custom_path({5: {200: (100.0, 96.0)}})
+    day = fetch.minutes.index[(fetch.minutes["Low"] <= 97).to_numpy()][0].normalize()
+    fetch.daily.loc[day, "Low"] = 99.0
+    real = fetch.day
+    clean, _ = _custom_path({})
+    fetch.day = lambda c, t, key, s_, e: (clean.loc[pd.Timestamp(s_):pd.Timestamp(e)] if key == m.NIFTY_KEY
+                                          else pd.DataFrame() if key == "NSE_EQ|GONE" else real(c, t, key, s_, e))
+    _, repo, _ = _run(monkeypatch, [_row(), _row(obs="obs-gone", key="NSE_EQ|GONE")], fetch=fetch)
+    got = _dispositions(repo)
+    name, counts, (message,) = got["obs-1"]
+    assert (name, counts) == ("window_problem", {"unlabelled": 2, "window_problem": 1})
+    assert message.startswith("TouchDisagreement: ")
+    assert got["obs-gone"] == ("deferred", {"deferred": 1}, [])
+
+
+def test_an_invalid_policy_level_is_the_disposition_even_with_the_other_label_stored(monkeypatch):
+    """One policy labelled, the other never can be: not 'labelled', the reason is counted and kept."""
+    huge = _candidate()
+    huge["inputs_used"]["equity_capture"]["inputs"]["atr_val"] = 80.0
+    summary, repo, _ = _run(monkeypatch, [_row(candidate=huge)])
+    name, counts, _ = _dispositions(repo)["obs-1"]
+    assert name == "invalid_levels" and counts == {"invalid_levels": 1, "stored": 1, "unlabelled": 1}
+    assert summary["invalid_levels"] == 1 and summary["status"] == "SUCCESS"
+
+
+def test_a_decision_missing_from_its_ledger_batch_is_recorded_as_failed(monkeypatch):
+    """_select's own failures get rows too, with the message."""
+    repo, fetch = Repo(), Fetch()
+    _select(monkeypatch, [_row(obs="obs-gone"), _row()], missing={"obs-gone"})
+    m.mature_shadow_passes(repo, None, "t", today=TODAY, fetch_daily=fetch.day, fetch_minutes=fetch.minute,
+                           fetch_actions=fetch.corporate, environ=ENABLED, sleep=lambda s_: None)
+    got = _dispositions(repo)
+    assert got["obs-gone"] == ("failed", {"failed": 1},
+                               ["MissingDecisionInputs: decision not found in its ledger batch"])
+    assert got["obs-1"][0] == "labelled"
+
+
+def test_no_attempt_means_no_connection(monkeypatch):
+    """Nothing selected (awaiting sessions, or nothing pending): the table is never touched."""
+    fetch = Fetch()
+    summary, repo, _ = _run(monkeypatch, [_row(day=fetch.daily.index[-4].date())], fetch=fetch)
+    assert repo.batches == [] and repo.commits == 0 and summary["dispositions"] == 0
+    summary, repo, _ = _run(monkeypatch, [])
+    assert repo.batches == [] and summary["status"] == "SUCCESS"
+
+
+def test_a_failed_disposition_write_is_partial_and_keeps_the_labels(monkeypatch):
+    """A missing table (DDL not run yet): labels stored, run PARTIAL, the reason in the event."""
+    repo, fetch = Repo(), Fetch()
+    repo.connect_error = RuntimeError('relation "quant_app.stage2_shadow_dispositions" does not exist')
+    _select(monkeypatch, [_row()])
+    summary = m.mature_shadow_passes(repo, None, "t", today=TODAY, fetch_daily=fetch.day,
+                                     fetch_minutes=fetch.minute, fetch_actions=fetch.corporate,
+                                     environ=ENABLED, sleep=lambda s_: None)
+    assert (summary["stored"], len(repo.saved), summary["status"]) == (2, 2, "PARTIAL")
+    assert summary["disposition_error"] == "RuntimeError"
+    assert "dispositions" not in summary and repo.commits == 0
+    (_source, severity, _code, message, detail), = repo.events
+    assert severity == "WARNING"
+    assert message.endswith(", dispositions not written (RuntimeError)")
+    (failure,) = detail["failures"]
+    assert (failure["error_kind"], failure["observation_id"]) == ("DispositionWriteFailed", None)
+    assert failure["message"] == ('RuntimeError: relation "quant_app.stage2_shadow_dispositions" '
+                                  'does not exist')
+
+
+def test_a_lease_lost_before_the_disposition_write_raises_and_writes_nothing(monkeypatch):
+    """The final write is fenced like every other write (run start, decision, label write, then it)."""
+    repo, fetch = Repo(), Fetch()
+    _select(monkeypatch, [_row()])
+    with pytest.raises(s2.LeaseLost):
+        m.mature_shadow_passes(repo, None, "t", today=TODAY, fetch_daily=fetch.day, fetch_minutes=fetch.minute,
+                               fetch_actions=fetch.corporate, check_lease=_lease_valid_for(4),
+                               environ=ENABLED, sleep=lambda s: None)
+    assert len(repo.saved) == 2 and repo.batches == []
+
+
+def test_a_rejected_token_still_records_the_decisions_attempted_before_it(monkeypatch):
+    """FAILED mid-run: the earlier decision's row is written, the one that hit the token is not."""
+    fetch = Fetch(fail={"NSE_EQ|DENIED": PermissionError("Upstox rejected the Analytics Token")})
+    _, repo, _ = _run(monkeypatch, [_row(), _row(obs="o-d", key="NSE_EQ|DENIED")], fetch=fetch)
+    assert list(_dispositions(repo)) == ["obs-1"]
+
+
+def test_a_failed_run_before_any_decision_writes_nothing(monkeypatch):
+    """Stale NIFTY: FAILED before selection, no disposition rows."""
+    fetch = Fetch()
+    fetch.daily = fetch.daily.loc[:pd.Timestamp(TODAY - dt.timedelta(days=m.STALE_BENCHMARK_DAYS + 1))]
+    summary, repo, _ = _run(monkeypatch, [_row()], fetch=fetch)
+    assert summary["status"] == "FAILED" and repo.batches == []
+
+
+def test_disposition_names_the_first_moved_counter_and_never_drops_a_new_one():
+    """Direct: precedence order, an unknown counter is still named (also next to `unlabelled`, which
+    moves with every policy left without a label), nothing else moved = unlabelled."""
+    base = {"stored": 0, "already_stored": 0, "unlabelled": 0, "failed": 0, "no_fill": 0, "basis_mismatch": 0,
+            "new_reason": 0}
+    before = m._counters(base)
+    for moved, expected in (({"no_fill": 1, "basis_mismatch": 1}, "basis_mismatch"),
+                            ({"new_reason": 1}, "new_reason"), ({}, "unlabelled"),
+                            ({"new_reason": 1, "unlabelled": 2}, "new_reason"),
+                            ({"no_fill": 1, "unlabelled": 2}, "no_fill"), ({"unlabelled": 2}, "unlabelled"),
+                            ({"stored": 1}, "unlabelled"), ({"stored": 2}, "labelled")):
+        after = {**base, **moved}
+        row = m.disposition("o", before, after, [])
+        assert row[:3] == ("o", m.SHADOW_LABEL_VERSION, expected)
+        assert json.loads(row[3]) == {"counts": moved}
+
+
+def test_disposition_keeps_at_most_three_messages_of_its_own_decision():
+    """Messages are filtered to the decision, cut to 200 characters and capped at three."""
+    summary = {"failed": 1, "basis_problems": [{"observation_id": "other", "error_kind": "K", "message": "x"}]}
+    failures = [{"observation_id": "o", "error_kind": "E", "message": "y" * 300}] * 4
+    row = m.disposition("o", {"failed": 0}, summary, failures)
+    messages = json.loads(row[3])["messages"]
+    assert len(messages) == 3 and all(len(text) == 200 and text.startswith("E: y") for text in messages)
+
+
+def test_every_reason_the_run_counts_has_a_disposition_name():
+    """Every reason counter of a fresh run summary is in NOT_LABELLED, the label counts are not, and
+    nothing else is (a counter added on the fly is still named: see the precedence test)."""
+    source = Path(m.__file__).read_text()
+    keys = set(re.findall(r'"(\w+)": 0', source.split("    summary = {", 1)[1].split("}", 1)[0]))
+    progress = {"pending", "awaiting_sessions", "selected"}
+    assert set(m.LABEL_COUNTS) <= keys and not set(m.LABEL_COUNTS) & set(m.NOT_LABELLED)
+    assert keys - progress - set(m.LABEL_COUNTS) == set(m.NOT_LABELLED)
 
 
 # ---------- SQL on the local PGlite harness ----------
@@ -1878,3 +2092,182 @@ def test_a_lease_lost_before_the_archive_write_writes_nothing(monkeypatch):
                                fetch_actions=fetch.corporate, check_lease=_lease_valid_for(2),
                                environ=ENABLED, sleep=lambda s_: None)
     assert not hasattr(repo, "archived") and repo.events == []
+
+
+# ---------- disposition table (sql/stage2_shadow_dispositions.sql) on the local PGlite harness ----------
+
+DISPOSITION_DDL = (ROOT / "sql/stage2_shadow_dispositions.sql").read_text()
+DISPOSITION_REPORT = (ROOT / "sql/stage2_shadow_dispositions_report.sql").read_text()
+
+
+@pytest.fixture
+def roles_db(db):
+    """The `db` fixture plus the live roles and grants the table file relies on, then the file."""
+    db.send({"script": """
+        CREATE ROLE quant_app_runtime LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS;
+        CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role;
+        CREATE ROLE equity_research_collector; CREATE ROLE quant_archive_worker;
+        GRANT USAGE ON SCHEMA quant_app TO quant_app_runtime;
+        GRANT SELECT ON quant_app.scanner_observations TO quant_app_runtime;
+    """})
+    db.send({"script": DISPOSITION_DDL})
+    db.commit = lambda: None            # connect() already commits; save_dispositions calls commit()
+    yield db
+    db.execute("RESET ROLE")
+
+
+@needs_sql
+def test_the_table_file_is_rerunnable_with_rls_one_runtime_policy_and_no_public_grant(roles_db):
+    """Twice in a row: one table, RLS on, one runtime policy, runtime SELECT/INSERT/UPDATE only."""
+    roles_db.send({"script": DISPOSITION_DDL})
+    (rls, policies), = roles_db.execute("""
+        SELECT c.relrowsecurity, (SELECT count(*) FROM pg_policy p WHERE p.polrelid = c.oid)
+        FROM pg_class c WHERE c.oid = 'quant_app.stage2_shadow_dispositions'::regclass""").fetchall()
+    assert (rls, policies) == (True, 1)
+    grants = roles_db.execute("""
+        SELECT grantee, string_agg(privilege_type, ',' ORDER BY privilege_type)
+        FROM information_schema.role_table_grants
+        WHERE table_schema = 'quant_app' AND table_name = 'stage2_shadow_dispositions'
+          AND grantee <> current_user GROUP BY grantee""").fetchall()
+    assert grants == [("quant_app_runtime", "INSERT,SELECT,UPDATE")]
+    # A grant someone added by hand (or a default privilege) is taken back on the next run, the
+    # runtime's DELETE and TRUNCATE included.
+    roles_db.send({"script": "GRANT SELECT ON quant_app.stage2_shadow_dispositions TO PUBLIC, anon, "
+                             "authenticated, service_role, equity_research_collector, quant_archive_worker; "
+                             "GRANT DELETE, TRUNCATE ON quant_app.stage2_shadow_dispositions TO quant_app_runtime; "
+                             + DISPOSITION_DDL})
+    assert roles_db.execute("""
+        SELECT grantee, string_agg(privilege_type, ',' ORDER BY privilege_type)
+        FROM information_schema.role_table_grants
+        WHERE table_schema = 'quant_app' AND table_name = 'stage2_shadow_dispositions'
+          AND grantee <> current_user GROUP BY grantee""").fetchall() == [("quant_app_runtime", "INSERT,SELECT,UPDATE")]
+    gaps = [row for row in roles_db.execute((ROOT / "sql/check_rls_policy_gaps.sql").read_text()).fetchall()
+            if row[2] == "stage2_shadow_dispositions"]
+    assert gaps == []
+
+
+@needs_sql
+def test_the_table_file_runs_where_an_optional_role_does_not_exist(roles_db):
+    """A database without one of the revoked roles (a restore, a fresh project) still takes the file."""
+    roles_db.send({"script": "DROP OWNED BY quant_archive_worker; DROP ROLE quant_archive_worker; " + DISPOSITION_DDL})
+    assert roles_db.execute("""
+        SELECT grantee, string_agg(privilege_type, ',' ORDER BY privilege_type)
+        FROM information_schema.role_table_grants
+        WHERE table_schema = 'quant_app' AND table_name = 'stage2_shadow_dispositions'
+          AND grantee <> current_user GROUP BY grantee""").fetchall() == [("quant_app_runtime", "INSERT,SELECT,UPDATE")]
+
+
+@needs_sql
+def test_the_foreign_key_keeps_the_nightly_archive_running(roles_db):
+    """The archive refuses any FK on scanner_observations whose delete action is not RESTRICT ('r');
+    the default (NO ACTION, 'a') would stop it, so the file must say RESTRICT explicitly."""
+    source = (ROOT / "archive_maintenance.py").read_text()
+    assert "contype='f' AND confdeltype<>'r')" in source and "SCANNER_ARCHIVE_RESTRICT_FK_REQUIRED" in source
+    # The fixture's prediction_targets DDL predates the live RESTRICT migration, so check per table.
+    check = """SELECT confdeltype::text FROM pg_constraint
+               WHERE conrelid = %s::regclass AND contype = 'f'
+                 AND confrelid = 'quant_app.scanner_observations'::regclass"""
+    assert roles_db.execute(check, ("quant_app.stage2_shadow_dispositions",)).fetchall() == [("r",)]
+    roles_db.execute("CREATE TABLE quant_app.default_fk_probe (observation_id text "
+                     "REFERENCES quant_app.scanner_observations(observation_id))")
+    assert roles_db.execute(check, ("quant_app.default_fk_probe",)).fetchall() == [("a",)]   # what it catches
+    roles_db.execute("DROP TABLE quant_app.default_fk_probe")
+
+
+@needs_sql
+def test_the_runtime_upserts_dispositions_and_cannot_delete_them(roles_db):
+    """As quant_app_runtime: insert, then a second attempt replaces the conclusion and counts itself."""
+    obs = _seed(roles_db, run="r30", symbol="SYN", day=TODAY - dt.timedelta(days=30))
+    repo = SqlRepo(roles_db)
+    roles_db.execute("SET ROLE quant_app_runtime")
+    stamps = "SELECT first_at::text, last_at::text FROM quant_app.stage2_shadow_dispositions"
+    m.save_dispositions(repo, [m._disposition_row(obs, "no_fill", {"no_fill": 1}, [])], None)
+    first = roles_db.execute(stamps).fetchone()
+    for name in ("window_problem", "no_fill", "labelled"):
+        m.save_dispositions(repo, [m._disposition_row(obs, name, {name: 1}, [])], None)
+    rows = roles_db.execute("SELECT observation_id, label_version, disposition, reasons::text, detail::text, "
+                            "attempts FROM quant_app.stage2_shadow_dispositions").fetchall()
+    assert len(rows) == 1
+    got_obs, version, name, reasons, detail, attempts = rows[0]
+    assert (got_obs, version, name, attempts) == (obs, m.SHADOW_LABEL_VERSION, "labelled", 4)
+    assert reasons == "{no_fill,window_problem,labelled}"           # every conclusion, first-seen order
+    assert json.loads(detail) == {"counts": {"labelled": 1}}
+    last = roles_db.execute(stamps).fetchone()
+    assert last[0] == first[0] and last[1] > first[1]               # first kept, last advanced
+    with pytest.raises(RuntimeError, match="permission denied"):
+        roles_db.execute("DELETE FROM quant_app.stage2_shadow_dispositions")
+    with pytest.raises(RuntimeError, match="foreign key"):
+        m.save_dispositions(repo, [m._disposition_row("no-such-obs", "failed", {"failed": 1}, [])], None)
+    nul = {"observation_id": obs, "error_kind": "ValueError", "message": "bad\x00byte"}
+    m.save_dispositions(repo, [m._disposition_row(obs, "failed", {"failed": 1}, [nul])], None)
+    assert roles_db.execute("SELECT detail->'messages'->>0 FROM quant_app.stage2_shadow_dispositions"
+                            ).fetchone() == ("ValueError: badbyte",)
+
+
+@needs_sql
+def test_the_report_states_final_excluded_expired_and_retrying(roles_db):
+    """Each state from the real dates (IST today), at its boundaries; stored labels win over a stale
+    disposition; every pass old enough to be selected counts, with no row as `no_record` (22 days in,
+    21 out, non-passes out); excluded wins over expired; earlier conclusions are counted; examples
+    carry symbol, day, attempts, message."""
+    today = (pd.Timestamp.now(tz="Asia/Kolkata")).date()
+    recent, old = today - dt.timedelta(days=30), today - dt.timedelta(days=61)
+    edge = today - dt.timedelta(days=60)
+    seeds = {name: _seed(roles_db, run=name, symbol=symbol, day=day) for name, symbol, day in (
+        ("done", "DONE", recent), ("stale", "STALE", recent), ("split", "INE002A01018", recent),
+        ("gone", "OLD", old), ("edge", "EDGE", edge), ("again", "RETRY", recent),
+        ("dividend", "INE467B01029", recent), ("before", "INE040A01034", recent),
+        ("later", "INE009A01021", recent), ("sameday", "INE154A01025", recent),
+        ("splittoday", "INE030A01027", recent), ("one", "ONE", old), ("oldsplit", "INE062A01020", old),
+        ("norow", "NOROW", recent), ("norowlab", "NOROWLAB", recent),
+        ("d22", "D22", today - dt.timedelta(days=22)), ("d21", "D21", today - dt.timedelta(days=21)))}
+    _seed(roles_db, run="lost", symbol="FAILEDPASS", day=recent, passed=False)   # not a pass: never counted
+    actions = (("INE002A01018", "Split", recent + dt.timedelta(days=3)),
+               ("INE467B01029", "Dividend", recent + dt.timedelta(days=3)),
+               ("INE040A01034", "Split", recent - dt.timedelta(days=1)),     # before the decision
+               ("INE009A01021", "Split", today + dt.timedelta(days=2)),      # not ex-dated yet
+               ("INE154A01025", "Bonus", recent),                            # on the decision day
+               ("INE030A01027", "Split", today),
+               ("INE062A01020", "Split", old + dt.timedelta(days=3)))         # old and excluded: excluded
+    for isin, kind, ex in actions:
+        roles_db.execute("INSERT INTO quant_app.corporate_actions VALUES (%s,%s,%s,NULL,NULL,NULL,'Upstox',"
+                         "now(),'{}'::jsonb)", (isin, kind, ex))
+    for policy in m.POLICIES:
+        _label(roles_db, seeds["done"], policy)
+        _label(roles_db, seeds["stale"], policy)        # labelled in a run whose disposition write was lost
+        _label(roles_db, seeds["norowlab"], policy)     # labelled where the first write was lost: no row
+    _label(roles_db, seeds["one"], m.INCUMBENT)         # one policy only: still expires
+    repo = SqlRepo(roles_db)
+    m.save_dispositions(repo, [m._disposition_row(seeds["done"], "window_problem", {"window_problem": 1}, [])],
+                        None)
+    rows = [m._disposition_row(seeds["done"], "labelled", {"stored": 2}, []),
+            m._disposition_row(seeds["stale"], "no_benchmark", {"no_benchmark": 1}, []),
+            m._disposition_row(seeds["again"], "window_problem", {"window_problem": 1},
+                               [{"observation_id": seeds["again"], "error_kind": "TouchDisagreement",
+                                 "message": "day 5"}]),
+            (seeds["done"], "some-older-label-version", "no_fill", "{}")]
+    rows += [m._disposition_row(seeds[name], reason, {reason: 1}, []) for name, reason in (
+        ("split", "corporate_action"), ("dividend", "corporate_action"), ("gone", "no_fill"),
+        ("edge", "no_fill"), ("before", "no_fill"), ("later", "no_fill"), ("sameday", "no_fill"),
+        ("splittoday", "no_fill"), ("one", "invalid_levels"), ("oldsplit", "no_fill"))]
+    m.save_dispositions(repo, rows, None)
+    report = {(r[0], r[1]): (r[2], r[3], r[7], list(r[8])) for r in roles_db.execute(DISPOSITION_REPORT).fetchall()}
+    assert report == {
+        ("labelled", "final"): (3, 3, "no_benchmark:1, window_problem:1",
+                                [f"DONE {recent} x2", f"NOROWLAB {recent} x0", f"STALE {recent} x1"]),
+        ("no_record", "retrying"): (2, 0, None, [f"D22 {today - dt.timedelta(days=22)} x0", f"NOROW {recent} x0"]),
+        ("corporate_action", "excluded"): (1, 1, None, [f"INE002A01018 {recent} x1"]),
+        ("corporate_action", "retrying"): (1, 1, None, [f"INE467B01029 {recent} x1"]),   # a dividend: retried
+        ("no_fill", "excluded"): (2, 2, None, [f"INE030A01027 {recent} x1",              # ex-dated today
+                                               f"INE062A01020 {old} x1"]),                # excluded wins
+        ("no_fill", "expired"): (1, 1, None, [f"OLD {old} x1"]),
+        ("no_fill", "retrying"): (4, 4, None, [f"INE009A01021 {recent} x1", f"INE040A01034 {recent} x1",
+                                               f"INE154A01025 {recent} x1", f"EDGE {edge} x1"]),
+        ("invalid_levels", "expired"): (1, 1, None, [f"ONE {old} x1"]),
+        ("window_problem", "retrying"): (1, 1, None, [f"RETRY {recent} x1 - TouchDisagreement: day 5"]),
+    }
+    assert "('bonus', 'split', 'rights issue')" in DISPOSITION_REPORT
+    # The universe and ages are PENDING_SQL's (shadow passes 22-60 days old).
+    assert f"'{s2.STAGE2_SHADOW_VERSION}' AND o.stage2_pass" in DISPOSITION_REPORT
+    assert f"::date - {m.FIRST_ELIGIBLE_DAYS}\n" in DISPOSITION_REPORT and f"::date - {m.RETRY_DAYS} THEN" in DISPOSITION_REPORT
+    assert tuple(m.KNOWN_ACTIONS) == ("bonus", "split", "rights issue")      # same list as PENDING_SQL
