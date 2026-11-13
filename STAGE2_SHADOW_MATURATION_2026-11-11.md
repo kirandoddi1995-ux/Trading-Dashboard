@@ -144,7 +144,8 @@ each event adds about 5 KB of ledger that is never deleted. Shadow labels stay i
 1. Merge.
 2. GitHub, Settings, Secrets and variables, Actions, Variables: add `SCHEDULED_STAGE2_MATURATION` = `1`.
 3. First labels: the 11 Nov passes complete their 15th regular session on 3 Dec 2026 (24 Nov is an NSE
-   holiday) and are labelled by the 4 Dec 10:07 run; the 12 Nov passes on 7 Dec.
+   holiday) and are labelled by the 4 Dec 10:07 run; the 12 Nov passes on 7 Dec. Early checks (13 Nov,
+   below) start at once: problems and pairs that already exited show from the first run after the merge.
 4. Results: run `sql/stage2_shadow_outcomes_report.sql` in the Supabase SQL editor (read-only).
 5. Dispositions (13 Nov): run `sql/stage2_shadow_dispositions.sql` once as the database owner, outside the
    10:07 and 14:37 IST scans (before or with the merge of that change), then `sql/check_rls_policy_gaps.sql`
@@ -280,8 +281,8 @@ it, a lost lease or a killed job writes none):
 - `attempts`, `first_at`, `last_at`.
 - Decisions selected but missing from their ledger batch get `failed` rows too.
 
-It records, it never selects: retries, exclusion and expiry are unchanged (the terminal mark for known corporate
-actions stays the live `corporate_actions` read in PENDING_SQL, so correcting or removing an archived action
+It records; only the early checks (below) read it, to rotate: retries, exclusion and expiry are unchanged (the
+terminal mark for known corporate actions stays the live `corporate_actions` read in PENDING_SQL, so correcting or removing an archived action
 releases the pass, as before). A failed write (for example the table not created yet) makes the run PARTIAL
 with `DispositionWriteFailed` and ", dispositions not written (...)" in the quality event; the labels stored
 before it stand. The write is fenced by the lease like every other write.
@@ -340,6 +341,72 @@ disposition and state (`final` = both labels stored, whatever the last dispositi
 ex-dated after the decision day and on or before today keeps it out of selection, while that row stands;
 `expired` = not labelled under both policies and older than 60 days; `retrying`), the number of decisions and
 attempts, the earlier reasons those passes had, and up to 20 examples (symbol, day, attempts, message).
+
+## Early checks (13 Nov)
+Why: a full set of labels needs every pass's 15 sessions, so nothing was learnt before 4 Dec: neither
+whether the price-basis, window and touch checks reject too many passes (their thresholds are provisional,
+prompt 65) nor any outcome. Kiran (13 Nov): start early where possible.
+
+What (`early_shadow_passes`, `window_end`, label_decision; no DDL):
+- Slots: completed decisions first (as before); the slots they leave (`MAX_DECISIONS_PER_RUN` in all) go to
+  open passes: decided before today, younger than 22 days, not labelled, no known non-dividend action
+  since the decision day. Never-checked passes first (oldest decision first), then the one whose
+  disposition row is oldest (`last_at`), so the two runs a day rotate through all open passes. Completed
+  decisions are processed first, so a budget stop leaves early checks undone first. `summary["early"]`
+  counts them.
+- Window: `window_end` gives the exit session once it has completed (final), else the last completed
+  regular session on or after the decision day; the contract then has no time exit.
+- The same label runs on that window: price basis, corporate-action guard, window bars (decision day to
+  the last completed session), the entry fill and, per policy, the touch check up to its exit (or up to the
+  last session while it is still running). Problems are reported exactly as in the full window (run PARTIAL).
+- A pair whose policies have both already exited at a stop or target is stored: the same trade the full
+  window gives (`_walk` takes the first touch; later sessions cannot change it), from one fetch, both
+  together. Its `label_end_date` is the last session checked (at most 20 days after the decision day;
+  `EARLY_LAST_DAYS` guards it); a full-window label's is the 15th session (at least 21 days after), so
+  the outcomes report's "labelled day" shortcut counts full-window labels only. A day also becomes
+  eligible once every decision of it is labelled under both policies (a complete cohort, even if all
+  exited early); otherwise early labels wait for their day's cohort, never enter alone.
+- Stored early only once every exit is settled (`_settled`): not through a gap (its bar opened beyond the
+  level, `gapped`; a split or bonus the feed has not listed or adjusted yet looks exactly like that) and
+  with `EARLY_SETTLE_SESSIONS` (5) sessions completed since, so a late-listed or late-adjusted action
+  (a demerger, a split shifting the path by less than the distance to a level) has reached this fetch's
+  guard or basis check first. A stored label can never be corrected. Until then the pass stays `open`;
+  gap exits are left to the full window.
+- Otherwise the pass counts as `open` (summary counter and disposition) and nothing is stored.
+- Dispositions report: passes younger than 22 days are listed in state `open` (the last early check's
+  conclusion, `no_record` before the first one).
+
+Costs: as before at most `MAX_DECISIONS_PER_RUN` decisions and `BUDGET_SECONDS` per run; until 4 Dec all
+slots go to early checks (about 3 Upstox requests each plus one NIFTY minute request per decision day),
+about 120 checks a day over the two scans.
+
+Limits: an early label skips the checks of sessions after its exit (and a corporate action ex-dated after
+the exit no longer holds it back): neither can change the trade, but the full window would have held such
+a pass, so among passes with a later data gap or action, early (stop/target) exits are slightly over-
+represented (rare). A persistent window or touch problem makes each run that checks the pass PARTIAL, for
+up to 21 days before the full window (which then retries it as before). A pass with one never-valid policy and one early exit stores that one label and stays selectable
+(as in the full window). A disposition write that fails leaves `last_at` unchanged, so the next run checks
+the same passes again.
+
+Second opinion (Gemini notebook, 13 Nov) and what was done with it: "it records, never selects" is broken
+(accepted: rotation reads `last_at`, a failed write only repeats checks); few pairs will resolve early
+because incumbent stops are wide (accepted: the checks are the main gain); "early labels never enter the
+report" (not so: the shortcut rule only decides eligibility, labels join by decision); "a later corporate
+action fails the basis check" (yes, the full window would hold it; an early label stored before it is on the
+right basis); PARTIAL repeats (documented above); "wait for 4 Dec" (Kiran's decision is to start early).
+
+Reviewer agent (13 Nov, round 2): no blocker or major; the remaining exposure (an unlisted event smaller
+than the stop distance, then intrabar exits inside the early window) closed by the 5-session settle rule;
+the guard boundary (a window ending exactly 21 days on) and the touch check of a gap exit now pinned.
+Left as is (nit): a stop-first bar that opened above the target is not marked as a gap (one minute
+spanning from above the target to below the stop).
+
+Reviewer agent (13 Nov, round 1): 2 majors fixed: an unlisted or unadjusted corporate action could store a
+fake gap stop for good (gap exits now wait for the full window); a failed early query wrote a disposition
+without an id and lost the run's rows (rows only for named decisions). Minors fixed: complete-cohort days
+count in the outcomes report; `EARLY_LAST_DAYS` guard on early windows; tests for an entry-minute stop,
+slots with waiting decisions, rotation by `last_at`, touches on the last session and before an early exit,
+and disposition precedence (`invalid_levels` / `outside_levels` before `open`, kept on purpose).
 
 ## Limits
 - One-minute evidence (the stock's and NIFTY's) must be available from Upstox for the label to be exact;

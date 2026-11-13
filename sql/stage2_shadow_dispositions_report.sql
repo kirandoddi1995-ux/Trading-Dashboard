@@ -2,18 +2,20 @@
 -- (equity_stage2_maturation.py, table quant_app.stage2_shadow_dispositions from
 -- sql/stage2_shadow_dispositions.sql). Changes nothing.
 --
--- Every Stage-2 shadow pass old enough to be selected (22 days, with entry, stop and target, as
--- the maturation's pending query) is counted, with or without a disposition row. One row per
--- disposition and state. The disposition is the last attempt's conclusion, except that a pass
--- with both shadow labels stored always counts as labelled (its last disposition write may have
--- been lost: the labels are the record), and a pass with no row is `no_record` (not attempted
--- yet: sessions still to complete or a full run; or its first write was lost). States:
+-- Every Stage-2 shadow pass decided before today (with entry, stop and target, as the
+-- maturation's queries) is counted, with or without a disposition row. One row per disposition
+-- and state. The disposition is the last attempt's conclusion (for an open pass: its last early
+-- check, `open` when the checks so far passed and a policy has not exited yet), except that a
+-- pass with both shadow labels stored always counts as labelled (its last disposition write may
+-- have been lost: the labels are the record), and a pass with no row is `no_record` (not checked
+-- yet; or its first write was lost). States:
 --   final    = labelled under both policies;
 --   excluded = its stock has an archived Bonus / Split / Rights Issue ex-dated after the decision
 --              day and on or before today: the maturation's pending query leaves it out (as long as
 --              that archived action stands);
 --   expired  = not labelled under both policies and older than 60 days (IST date): no more retries;
---   retrying = otherwise: maturation tries it again on a later run.
+--   retrying = 22-60 days old: maturation tries it again on a later run;
+--   open     = younger than 22 days (IST date): its 15 sessions have not completed; early checks.
 -- decisions = shadow passes; attempts = runs that tried them; earlier_reasons = other conclusions
 -- these passes had on earlier attempts (e.g. a touch-check rejection before a label), with counts;
 -- examples = up to 20 passes, newest first: symbol, decision day, attempts, first message.
@@ -34,7 +36,7 @@ WITH latest AS MATERIALIZED (
            ON d.observation_id = o.observation_id AND d.label_version = 'net-excess-app-contract-v1'
     WHERE o.strategy_version = 'equity-stage2-scheduled-shadow-v1' AND o.stage2_pass
       AND o.entry IS NOT NULL AND o.stop IS NOT NULL AND o.target IS NOT NULL
-      AND o.as_of_date <= (now() AT TIME ZONE 'Asia/Kolkata')::date - 22
+      AND o.as_of_date < (now() AT TIME ZONE 'Asia/Kolkata')::date
 ),
 passes AS MATERIALIZED (
     SELECT l.*,
@@ -46,6 +48,7 @@ passes AS MATERIALIZED (
                                AND c.ex_date > l.as_of_date
                                AND c.ex_date <= (now() AT TIME ZONE 'Asia/Kolkata')::date) THEN 'excluded'
                 WHEN l.as_of_date < (now() AT TIME ZONE 'Asia/Kolkata')::date - 60 THEN 'expired'
+                WHEN l.as_of_date > (now() AT TIME ZONE 'Asia/Kolkata')::date - 22 THEN 'open'
                 ELSE 'retrying' END AS state
     FROM latest l
 ),
