@@ -213,7 +213,10 @@ def test_the_trade_contract_is_the_apps_timing_on_the_nifty_calendar():
     other_day["inputs_used"]["evaluated_at"] = "2026-11-03T10:09:00+05:30"
     assert "is not on the decision day" in m.trade_contract(_decision(candidate=other_day), daily, TODAY)[1]
     assert "is not a regular NIFTY session" in m.trade_contract(_decision(), daily.drop(pd.Timestamp(D0)), TODAY)[1]
-    assert m.trade_contract(_decision(), daily.loc[:after[13]], TODAY) == (None, "awaiting")
+    early, why = m.trade_contract(_decision(), daily.loc[:after[13]], TODAY)   # 14 sessions: early window
+    assert why == "" and (early["final"], early["exit_at"]) == (False, None)
+    assert early["sessions"] == [D0] + [d.date() for d in after[:14]] and contract["final"] is True
+    assert m.trade_contract(_decision(), daily.loc[:pd.Timestamp(D0) - pd.Timedelta(days=1)], TODAY) == (None, "awaiting")
 
 
 def test_special_sessions_never_count_towards_the_horizon(monkeypatch):
@@ -338,6 +341,127 @@ def test_a_gap_through_the_stop_fills_at_the_open():
     assert ch["net_return"] == pytest.approx(0.90 - 1 - 0.002)
     assert ch["excess_return"] == pytest.approx(ch["net_return"] - ch["benchmark_return"])
     assert labels[m.INCUMBENT]["outcome"] == "horizon"           # stop 80 never reached
+
+
+EARLY = D0 + dt.timedelta(days=8)    # Tue 10 Nov: sessions 0-5 (2-6 and 9 Nov) completed
+
+
+def test_window_end_is_the_exit_session_once_completed_else_the_last_completed_session():
+    """Final at the 15th session; before it, the last completed session from the decision day on."""
+    daily, _ = _path()
+    after = [d.date() for d in daily.index if d.date() > D0]
+    assert m.window_end(D0, daily, TODAY) == (after[14], True)
+    assert m.window_end(D0, daily, EARLY) == (dt.date(2026, 11, 9), False)
+    assert m.window_end(D0, daily, D0 + dt.timedelta(days=1)) == (D0, False)   # the decision day only
+    assert m.window_end(D0, daily, D0) == (None, False) and m.window_end(D0, None, TODAY) == (None, False)
+
+
+def test_an_early_pair_that_already_exited_is_the_full_windows_labels():
+    """Both stops reached inside one bar on session 3 (Thu 5 Nov, low 79): labelled once 5 sessions
+    have completed after the exit (13 Nov run: 6, 9-12 Nov) exactly as on 2 Dec, except that the
+    label window ends at the last completed session; not on 12 Nov (4 sessions), counted open."""
+    daily, minutes = _path(drop_day=3, drop_to=79.0)
+    early = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                             benchmark_minutes=minutes, today=dt.date(2026, 11, 13))
+    full = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                            benchmark_minutes=minutes, today=TODAY)
+    for policy in m.POLICIES:
+        assert early[policy]["outcome"] == "stop" and early[policy]["fill"] == "stop"
+        assert early[policy] == {**full[policy], "label_end_date": "2026-11-12"}
+        assert full[policy]["label_end_date"] > "2026-11-20"
+    notes = {}
+    unsettled = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                                 benchmark_minutes=minutes, today=dt.date(2026, 11, 12), notes=notes)
+    assert unsettled == {policy: None for policy in m.POLICIES} and notes == {"open": 1}
+    assert m.EARLY_SETTLE_SESSIONS == 5
+
+
+def test_an_early_exit_through_a_gap_is_left_to_the_full_window():
+    """Both stops gapped through at the session-3 open (what an unadjusted split looks like): not
+    stored early even 5 sessions on (counted open); the full window labels the same gap."""
+    daily, minutes = _path(gap_day=3, gap_to=78.0)
+    notes = {}
+    early = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                             benchmark_minutes=minutes, today=dt.date(2026, 11, 13), notes=notes)   # settled
+    assert early == {policy: None for policy in m.POLICIES} and notes == {"open": 1}
+    full = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                            benchmark_minutes=minutes, today=TODAY)
+    assert {full[policy]["fill"] for policy in m.POLICIES} == {"gap_open"}
+    touched = daily.copy()
+    touched.loc[pd.Timestamp(dt.date(2026, 11, 3)), "Low"] = 79.0    # a daily-only touch before the gap
+    notes = {}
+    m.label_decision(_decision(), daily=touched, minutes=minutes, benchmark=daily, benchmark_minutes=minutes,
+                     today=EARLY, notes=notes)
+    assert notes["basis_problems"][0]["error_kind"] == "TouchDisagreement"   # still checked up to the exit
+    up = _custom_path({3: {0: (110.0, 110.0)}})                 # a gap over the challenger target
+    trade = m._walk(m.trade_contract(_decision(), up[0], EARLY)[0], up[1], 97.0, 104.86)
+    assert trade["outcome"] == "target" and trade["gapped"] is True
+
+
+def test_an_entry_minute_stop_is_the_same_in_the_early_and_full_windows():
+    """The stop is reached inside the entry bar itself: both windows exit there."""
+    daily, minutes = _custom_path({0: {55: (100.0, 96.0)}})    # the 10:10 entry bar dips to 96
+    early_contract = m.trade_contract(_decision(), daily, EARLY)[0]
+    full_contract = m.trade_contract(_decision(), daily, TODAY)[0]
+    early, full = m._walk(early_contract, minutes, 97.0, 104.86), m._walk(full_contract, minutes, 97.0, 104.86)
+    assert early == full and early["exit_at"] == pd.Timestamp("2026-11-02 10:10") and early["outcome"] == "stop"
+
+
+def test_an_early_window_never_ends_three_weeks_after_the_decision_day():
+    """Missing NIFTY sessions (a holiday cluster) can leave 15 sessions incomplete 24 days on: an
+    early label then would look like a full-window one in the outcomes report, so it waits."""
+    daily, minutes = _path(drop_day=3, drop_to=79.0, sessions=25)
+    after = daily.loc[daily.index > pd.Timestamp(D0)].index
+    bench = daily.drop(after[1:5])
+    today = D0 + dt.timedelta(days=22)                        # the window ends exactly 21 days on
+    contract = m.trade_contract(_decision(), bench, today)[0]
+    assert contract["final"] is False and contract["sessions"][-1] == D0 + dt.timedelta(days=m.EARLY_LAST_DAYS)
+    notes = {}
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=bench,
+                              benchmark_minutes=minutes, today=today, notes=notes)
+    assert labels == {policy: None for policy in m.POLICIES} and notes == {"open": 1}
+
+
+def test_an_early_window_with_a_policy_still_running_stores_nothing_and_counts_open():
+    """The challenger stopped on session 3; the incumbent (80/128) is still running: no label, one
+    `open`, nothing reported. With both still running it is `open` too."""
+    for path in (_path(drop_day=3), _path()):
+        daily, minutes = path
+        notes = {}
+        labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                                  benchmark_minutes=minutes, today=EARLY, notes=notes)
+        assert labels == {policy: None for policy in m.POLICIES}
+        assert notes == {"open": 1}
+
+
+def test_an_early_window_runs_the_data_checks_on_the_sessions_so_far():
+    """Missing minute bars, a daily-only touch of a running trade, and a rescaled history are each
+    caught before the horizon completes (reported like the full window's)."""
+    daily, minutes = _path()
+    gap = minutes.loc[minutes.index.normalize() != pd.Timestamp(dt.date(2026, 11, 4))]
+    notes = {}
+    m.label_decision(_decision(), daily=daily, minutes=gap, benchmark=daily, benchmark_minutes=minutes,
+                     today=EARLY, notes=notes)
+    assert notes["window_problem"] == 1 and "no minute bars on 2026-11-04" in notes["basis_problems"][0]["message"]
+    touched = daily.copy()
+    touched.loc[pd.Timestamp(dt.date(2026, 11, 4)), "Low"] = 79.0       # daily shows a stop the minutes do not
+    notes = {}
+    m.label_decision(_decision(), daily=touched, minutes=minutes, benchmark=daily, benchmark_minutes=minutes,
+                     today=EARLY, notes=notes)
+    assert notes["basis_problems"][0]["error_kind"] == "TouchDisagreement" and "open" not in notes
+    for day in (dt.date(2026, 11, 9), dt.date(2026, 11, 3)):    # the last session; before an early exit
+        touched = (_path(drop_day=3, drop_to=79.0) if day.day == 3 else (daily, minutes))[0].copy()
+        touched.loc[pd.Timestamp(day), "Low"] = 79.0
+        notes = {}
+        labels = m.label_decision(_decision(), daily=touched, minutes=_path(drop_day=3, drop_to=79.0)[1]
+                                  if day.day == 3 else minutes, benchmark=daily, benchmark_minutes=minutes,
+                                  today=EARLY, notes=notes)
+        assert notes["basis_problems"][0]["error_kind"] == "TouchDisagreement", day
+        assert labels == {policy: None for policy in m.POLICIES}
+    notes = {}
+    m.label_decision(_decision(), daily=daily * 0.5, minutes=minutes, benchmark=daily, benchmark_minutes=minutes,
+                     today=EARLY, notes=notes)
+    assert notes["basis_mismatch"] == 1
 
 
 def test_missing_minute_evidence_on_any_session_labels_neither_policy_and_is_reported():
@@ -665,16 +789,22 @@ class Fetch:
         return source.loc[pd.Timestamp(start):pd.Timestamp(end) + pd.Timedelta(days=1)]
 
 
-def _select(monkeypatch, rows, *, missing=()):
-    """Fake both selection queries over raw `rows` (ids in `missing` have no ledger entry)."""
+def _select(monkeypatch, rows, *, missing=(), early=()):
+    """Fake the selection queries over raw `rows` (pending) and `early` (open passes for an early
+    check); ids in `missing` have no ledger entry."""
     monkeypatch.setattr(m, "pending_shadow_passes", lambda repo_, today: [(r[0], r[1]) for r in rows])
-    monkeypatch.setattr(m, "decision_rows", lambda repo_, ids: [r for r in rows if r[0] in ids and r[0] not in missing])
+    monkeypatch.setattr(m, "early_shadow_passes",
+                        lambda repo_, today, limit: [(r[0], r[1]) for r in early][:limit])
+    # Like DECISIONS_SQL: newest decision day first.
+    monkeypatch.setattr(m, "decision_rows", lambda repo_, ids: sorted(
+        (r for r in [*rows, *early] if r[0] in ids and r[0] not in missing), key=lambda r: (-r[1].toordinal(), r[0])))
 
 
-def _run(monkeypatch, rows, *, fetch=None, environ=ENABLED, check_lease=None, clock=None):
-    """One maturation run over raw pending `rows` with fake fetchers; sleeps go to fetch.log."""
+def _run(monkeypatch, rows, *, fetch=None, environ=ENABLED, check_lease=None, clock=None, early=()):
+    """One maturation run over raw pending `rows` (and `early` open passes) with fake fetchers;
+    sleeps go to fetch.log."""
     repo, fetch = Repo(), fetch or Fetch()
-    _select(monkeypatch, rows)
+    _select(monkeypatch, rows, early=early)
     summary = m.mature_shadow_passes(
         repo, None, "token", today=TODAY, fetch_daily=fetch.day, fetch_minutes=fetch.minute,
         fetch_actions=fetch.corporate,
@@ -923,6 +1053,58 @@ def test_no_pending_decisions_makes_no_request(monkeypatch):
     """Nothing old enough: no NIFTY request."""
     summary, _, fetch = _run(monkeypatch, [])
     assert summary["pending"] == 0 and fetch.calls == []
+
+
+def _open_row(obs, day):
+    """A pass decided at 10:09 on `day` (its window still open on TODAY)."""
+    candidate = _candidate(decision_id=obs)
+    candidate["inputs_used"]["evaluated_at"] = dt.datetime.combine(day, dt.time(10, 9), IST).isoformat()
+    return _row(obs=obs, day=day, candidate=candidate)
+
+
+def test_spare_slots_go_to_early_checks_after_completed_decisions(monkeypatch):
+    """One completed decision and three open passes with a 3-slot cap: the completed one first, then
+    two early checks (the third waits for a later run). Open passes store nothing and get an `open`
+    disposition; the completed one is labelled."""
+    monkeypatch.setattr(m, "MAX_DECISIONS_PER_RUN", 3)
+    open_day = D0 + dt.timedelta(days=21)                     # Mon 23 Nov: 6 sessions by 2 Dec
+    early = [_open_row(f"open-{i}", open_day) for i in range(3)]
+    waiting = _row(obs="wait", day=TODAY - dt.timedelta(days=22))   # pending, 15 sessions not complete
+    summary, repo, fetch = _run(monkeypatch, [_row(), waiting], early=early)
+    assert (summary["selected"], summary["early"], summary["open"], summary["stored"]) == (1, 2, 2, 2)
+    assert summary["awaiting_sessions"] == 1
+    assert summary["status"] == "SUCCESS" and {s[0] for s in repo.saved} == {"obs-1"}
+    minute_calls = [c for c in fetch.calls if c[0] == "minutes" and c[1] != m.NIFTY_KEY]
+    assert minute_calls[0][2] == D0                            # the completed decision went first
+    last_session = fetch.daily.index.max().date()            # the fake NIFTY's last completed session
+    assert {c[3] for c in minute_calls[1:]} == {last_session} and last_session < TODAY
+    assert [(row[0], row[1]) for row in repo.dispositions] == [
+        ("obs-1", "labelled"), ("open-0", "open"), ("open-1", "open")]
+
+
+def test_only_open_passes_still_run_their_early_checks(monkeypatch):
+    """Nothing completed yet (the state until 4 Dec): the benchmark is fetched for the open passes."""
+    summary, repo, fetch = _run(monkeypatch, [], early=[_open_row("open-0", D0 + dt.timedelta(days=21))])
+    assert (summary["pending"], summary["selected"], summary["early"], summary["open"]) == (0, 0, 1, 1)
+    assert fetch.calls[0][:2] == ("daily", m.NIFTY_KEY) and repo.saved == []
+
+
+def test_a_failed_early_selection_is_reported_and_completed_decisions_still_run(monkeypatch):
+    """The early query fails (e.g. the disposition table is missing): PARTIAL with the reason; the
+    completed decision is still labelled."""
+    _select(monkeypatch, [_row()])
+
+    def broken(repo_, today, limit):
+        raise RuntimeError("relation stage2_shadow_dispositions does not exist")
+    monkeypatch.setattr(m, "early_shadow_passes", broken)
+    fetch, repo = Fetch(), Repo()
+    summary = m.mature_shadow_passes(repo, None, "t", today=TODAY, fetch_daily=fetch.day,
+                                     fetch_minutes=fetch.minute, fetch_actions=fetch.corporate,
+                                     environ=ENABLED, sleep=lambda s_: None)
+    assert summary["status"] == "PARTIAL" and summary["stored"] == 2 and summary["early"] == 0
+    kinds = [event[-1]["failures"][0]["error_kind"] for event in repo.events]
+    assert kinds == ["EarlySelectionFailed"]
+    assert [(row[0], row[1]) for row in repo.dispositions] == [("obs-1", "labelled")]   # no row without an id
 
 
 def test_a_selected_decision_missing_from_its_ledger_batch_is_a_failure(monkeypatch):
@@ -1380,7 +1562,7 @@ def test_a_lease_lost_before_the_disposition_write_raises_and_writes_nothing(mon
 def test_a_rejected_token_still_records_the_decisions_attempted_before_it(monkeypatch):
     """FAILED mid-run: the earlier decision's row is written, the one that hit the token is not."""
     fetch = Fetch(fail={"NSE_EQ|DENIED": PermissionError("Upstox rejected the Analytics Token")})
-    _, repo, _ = _run(monkeypatch, [_row(), _row(obs="o-d", key="NSE_EQ|DENIED")], fetch=fetch)
+    _, repo, _ = _run(monkeypatch, [_row(), _row(obs="z-denied", key="NSE_EQ|DENIED")], fetch=fetch)
     assert list(_dispositions(repo)) == ["obs-1"]
 
 
@@ -1402,6 +1584,7 @@ def test_disposition_names_the_first_moved_counter_and_never_drops_a_new_one():
                             ({"new_reason": 1}, "new_reason"), ({}, "unlabelled"),
                             ({"new_reason": 1, "unlabelled": 2}, "new_reason"),
                             ({"no_fill": 1, "unlabelled": 2}, "no_fill"), ({"unlabelled": 2}, "unlabelled"),
+                            ({"invalid_levels": 1, "open": 1, "unlabelled": 2}, "invalid_levels"),
                             ({"stored": 1}, "unlabelled"), ({"stored": 2}, "labelled")):
         after = {**base, **moved}
         row = m.disposition("o", before, after, [])
@@ -1423,7 +1606,7 @@ def test_every_reason_the_run_counts_has_a_disposition_name():
     nothing else is (a counter added on the fly is still named: see the precedence test)."""
     source = Path(m.__file__).read_text()
     keys = set(re.findall(r'"(\w+)": 0', source.split("    summary = {", 1)[1].split("}", 1)[0]))
-    progress = {"pending", "awaiting_sessions", "selected"}
+    progress = {"pending", "awaiting_sessions", "selected", "early"}
     assert set(m.LABEL_COUNTS) <= keys and not set(m.LABEL_COUNTS) & set(m.NOT_LABELLED)
     assert keys - progress - set(m.LABEL_COUNTS) == set(m.NOT_LABELLED)
 
@@ -1496,15 +1679,16 @@ def _seed(pg, run="run-1", day=D0, symbol="SYN", observed=None, score=72.0, pass
     return obs
 
 
-def _label(pg, obs, version, outcome="target", net=0.03, excess=0.01, horizon=15):
-    """One stored label under `version` (a policy name means its shadow version)."""
+def _label(pg, obs, version, outcome="target", net=0.03, excess=0.01, horizon=15, end="2026-11-20"):
+    """One stored label under `version` (a policy name means its shadow version); `end` is its
+    label_end_date."""
     version = m.shadow_target_version(version) if version in m.POLICIES else version
     pg.execute("INSERT INTO quant_app.prediction_targets(observation_id,horizon_sessions,target_version,"
                "entry_date,label_end_date,outcome_date,outcome,target_before_stop,gross_return,net_return,"
                "benchmark_return,excess_return,positive_excess,cost_bps,entry_quality) VALUES "
-               "(%s,%s,%s,'2026-11-02','2026-11-20','2026-11-10',%s,%s,%s,%s,0.02,%s,%s,20,"
+               "(%s,%s,%s,'2026-11-02',%s,'2026-11-10',%s,%s,%s,%s,0.02,%s,%s,20,"
                "'first_minute_after_signal')",
-               (obs, horizon, version, outcome, outcome == "target", net + 0.002, net, excess, excess > 0))
+               (obs, horizon, version, str(end), outcome, outcome == "target", net + 0.002, net, excess, excess > 0))
 
 
 @needs_sql
@@ -1531,6 +1715,31 @@ def test_pending_query_selects_unlabelled_shadow_passes_newest_first(db):
     assert parsed[partial]["stored_versions"] == {INC}
     assert parsed[edge_old]["stored_versions"] == set() and parsed[edge_old]["atr"] == 2.0
     assert m.decision_rows(SqlRepo(db), []) == []
+
+
+@needs_sql
+def test_early_query_selects_open_passes_least_recently_checked_first(roles_db):
+    """Decided before today and younger than 22 days, not labelled, not excluded; never checked
+    first (oldest decision first), then by the disposition's last attempt; LIMIT applies."""
+    pg = roles_db
+    young, mid, old = (_seed(pg, run=f"e{n}", symbol=f"E{n}", day=TODAY - dt.timedelta(days=n)) for n in (1, 5, 21))
+    _seed(pg, run="e22", symbol="E22", day=TODAY - dt.timedelta(days=22))     # completed range: PENDING_SQL's
+    _seed(pg, run="e0", symbol="E0", day=TODAY)                               # decided today
+    done = _seed(pg, run="e3", symbol="DONE", day=TODAY - dt.timedelta(days=3))
+    for policy in m.POLICIES:
+        _label(pg, done, policy)
+    _seed(pg, run="e4", symbol="REJ", day=TODAY - dt.timedelta(days=4), passed=False)
+    split = _seed(pg, run="e6", symbol="INE002A01018", day=TODAY - dt.timedelta(days=6))
+    pg.execute("INSERT INTO quant_app.corporate_actions VALUES (%s,'Split',%s,NULL,NULL,NULL,'Upstox',now(),'{}'::jsonb)",
+               ("INE002A01018", TODAY - dt.timedelta(days=2)))
+    repo = SqlRepo(pg)
+    later = _seed(pg, run="e7", symbol="E7", day=TODAY - dt.timedelta(days=7))
+    m.save_dispositions(repo, [m._disposition_row(obs, "open", {"open": 1}, []) for obs in (mid, later)], None)
+    pg.execute("UPDATE quant_app.stage2_shadow_dispositions SET last_at = now() - interval '2 hours' "
+               "WHERE observation_id = %s", (mid,))                      # mid was checked before later
+    assert [r[0] for r in m.early_shadow_passes(repo, today=TODAY, limit=10)] == [old, young, mid, later]
+    assert [r[0] for r in m.early_shadow_passes(repo, today=TODAY, limit=2)] == [old, young]
+    assert m.early_shadow_passes(repo, today=TODAY, limit=0) == [] and split
 
 
 def _scan_days(pg, after, today, skip=()):
@@ -1621,22 +1830,43 @@ def test_report_waits_for_fifteen_shadow_scan_sessions(db):
 
 @needs_sql
 def test_report_counts_every_pass_of_a_day_once_any_of_it_is_labelled(db):
-    """Two missed sessions: days 22 and 23 have 13 and 14. Day 23 has a shadow label, so all its
-    passes count (LAB and SAME); day 22 has only a horizon-10 and a production label: not eligible."""
+    """Two missed sessions: days 22 and 23 have 13 and 14. Day 23 has a full-window shadow label
+    (its window ends 21 days after the day), so all its passes count (LAB and SAME); day 22 has only
+    an early shadow label (window ends 20 days after), a horizon-10 and a production label: not
+    eligible."""
     today = _ist_today()
     d22, d23, d30 = (today - dt.timedelta(days=n) for n in (22, 23, 30))
     _scan_days(db, d30, today, skip=set(_weekdays_after(d22, 2)))
     _seed(db, run="r30", symbol="OLD", day=d30, score=45.0)
-    _label(db, _seed(db, run="r23", symbol="LAB", day=d23, score=72.0), m.INCUMBENT)
+    _label(db, _seed(db, run="r23", symbol="LAB", day=d23, score=72.0), m.INCUMBENT, end=d23 + dt.timedelta(days=21))
     _seed(db, run="r23", symbol="SAME", day=d23, score=65.0)
     other = _seed(db, run="r22", symbol="OTHER", day=d22, score=55.0)
     _label(db, other, m.CHALLENGER, horizon=10)
     _label(db, other, TARGET_VERSION)
+    _label(db, other, m.INCUMBENT, "stop", end=d22 + dt.timedelta(days=20))   # early: settles nothing
     table = _report(db)
     assert table[("all", m.INCUMBENT, "ALL", "ALL")][:2] == (3, 1)        # OLD, LAB, SAME
     assert table[("all", m.CHALLENGER, "ALL", "ALL")][:2] == (3, 0)
     # by score band: OLD <50, SAME 60-70 (unlabelled, same day as LAB), LAB 70+; OTHER (50-60) absent
     assert {k[3] for k in table if k[:3] == ("all", m.INCUMBENT, "Buy")} == {"ALL", "<50", "60-70", "70+"}
+
+
+@needs_sql
+def test_report_counts_a_day_whose_every_decision_is_labelled(db):
+    """Two missed sessions; no full-window label anywhere. Day 22: both passes labelled early under
+    both policies -> a complete cohort, eligible. Day 23: one pass labelled, one not -> waits."""
+    today = _ist_today()
+    d22, d23, d30 = (today - dt.timedelta(days=n) for n in (22, 23, 30))
+    _scan_days(db, d30, today, skip=set(_weekdays_after(d22, 2)))
+    for symbol in ("A", "B"):
+        obs = _seed(db, run="r22", symbol=symbol, day=d22)
+        for policy in m.POLICIES:
+            _label(db, obs, policy, "stop", end=d22 + dt.timedelta(days=5))
+    first = _seed(db, run="r23", symbol="C", day=d23)
+    for policy in m.POLICIES:
+        _label(db, first, policy, "target", end=d23 + dt.timedelta(days=5))
+    _seed(db, run="r23", symbol="D", day=d23)
+    assert _report(db)[("all", m.INCUMBENT, "ALL", "ALL")][:2] == (2, 2)          # A and B only
 
 
 # ---------- corporate actions / price basis ----------
@@ -2205,11 +2435,11 @@ def test_the_runtime_upserts_dispositions_and_cannot_delete_them(roles_db):
 
 
 @needs_sql
-def test_the_report_states_final_excluded_expired_and_retrying(roles_db):
+def test_the_report_states_final_excluded_expired_retrying_and_open(roles_db):
     """Each state from the real dates (IST today), at its boundaries; stored labels win over a stale
-    disposition; every pass old enough to be selected counts, with no row as `no_record` (22 days in,
-    21 out, non-passes out); excluded wins over expired; earlier conclusions are counted; examples
-    carry symbol, day, attempts, message."""
+    disposition; every pass decided before today counts, with no row as `no_record` (22 days
+    retrying, 21 open; today's pass and non-passes out); excluded wins over expired; earlier
+    conclusions are counted; examples carry symbol, day, attempts, message."""
     today = (pd.Timestamp.now(tz="Asia/Kolkata")).date()
     recent, old = today - dt.timedelta(days=30), today - dt.timedelta(days=61)
     edge = today - dt.timedelta(days=60)
@@ -2222,6 +2452,7 @@ def test_the_report_states_final_excluded_expired_and_retrying(roles_db):
         ("norow", "NOROW", recent), ("norowlab", "NOROWLAB", recent),
         ("d22", "D22", today - dt.timedelta(days=22)), ("d21", "D21", today - dt.timedelta(days=21)))}
     _seed(roles_db, run="lost", symbol="FAILEDPASS", day=recent, passed=False)   # not a pass: never counted
+    _seed(roles_db, run="now", symbol="TODAYPASS", day=today)                    # decided today: not yet
     actions = (("INE002A01018", "Split", recent + dt.timedelta(days=3)),
                ("INE467B01029", "Dividend", recent + dt.timedelta(days=3)),
                ("INE040A01034", "Split", recent - dt.timedelta(days=1)),     # before the decision
@@ -2256,6 +2487,7 @@ def test_the_report_states_final_excluded_expired_and_retrying(roles_db):
         ("labelled", "final"): (3, 3, "no_benchmark:1, window_problem:1",
                                 [f"DONE {recent} x2", f"NOROWLAB {recent} x0", f"STALE {recent} x1"]),
         ("no_record", "retrying"): (2, 0, None, [f"D22 {today - dt.timedelta(days=22)} x0", f"NOROW {recent} x0"]),
+        ("no_record", "open"): (1, 0, None, [f"D21 {today - dt.timedelta(days=21)} x0"]),          # early checks
         ("corporate_action", "excluded"): (1, 1, None, [f"INE002A01018 {recent} x1"]),
         ("corporate_action", "retrying"): (1, 1, None, [f"INE467B01029 {recent} x1"]),   # a dividend: retried
         ("no_fill", "excluded"): (2, 2, None, [f"INE030A01027 {recent} x1",              # ex-dated today
@@ -2267,7 +2499,8 @@ def test_the_report_states_final_excluded_expired_and_retrying(roles_db):
         ("window_problem", "retrying"): (1, 1, None, [f"RETRY {recent} x1 - TouchDisagreement: day 5"]),
     }
     assert "('bonus', 'split', 'rights issue')" in DISPOSITION_REPORT
-    # The universe and ages are PENDING_SQL's (shadow passes 22-60 days old).
+    # The universe is the maturation's (shadow passes with levels); ages are PENDING_SQL's (22-60 days).
     assert f"'{s2.STAGE2_SHADOW_VERSION}' AND o.stage2_pass" in DISPOSITION_REPORT
-    assert f"::date - {m.FIRST_ELIGIBLE_DAYS}\n" in DISPOSITION_REPORT and f"::date - {m.RETRY_DAYS} THEN" in DISPOSITION_REPORT
+    assert f"::date - {m.FIRST_ELIGIBLE_DAYS} THEN 'open'" in DISPOSITION_REPORT
+    assert f"::date - {m.RETRY_DAYS} THEN" in DISPOSITION_REPORT
     assert tuple(m.KNOWN_ACTIONS) == ("bonus", "split", "rights issue")      # same list as PENDING_SQL

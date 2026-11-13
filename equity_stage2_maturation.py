@@ -74,12 +74,22 @@ per stock and decision day, one daily and one one-minute history request (ending
 last session), and one NIFTY one-minute request per decision window, each after the 0.2 s pause
 the shadow Stage-2 uses; at most
 `MAX_DECISIONS_PER_RUN` decisions and `BUDGET_SECONDS` per run (checked between decisions; a
-budget stop makes the run PARTIAL). Only decisions whose 15 sessions have completed on the NIFTY
-calendar take one of those slots, so decisions still waiting (holiday clusters) never use one.
+budget stop makes the run PARTIAL). Decisions whose 15 sessions have completed on the NIFTY
+calendar take those slots first, so decisions still waiting (holiday clusters) never crowd them out.
 Half the slots go to the newest completed decisions, half to the oldest (ties within a day
 reshuffled daily): new decisions never wait behind ones that stay unlabelled (ambiguous evidence;
 retried until `RETRY_DAYS` old), and the ones closest to expiry go first. Every failure except a
 lost lease is contained: the scan's own evidence is already committed and stays the run's result.
+
+Early checks (13 Nov): the slots completed decisions leave go to open passes (decided before
+today, younger than FIRST_ELIGIBLE_DAYS; early_shadow_passes rotates through them, never checked
+first, then the longest unchecked by their disposition row). Each runs the same label on the
+window so far (window_end: up to the last completed session, no time exit): the price-basis,
+window and touch checks report their problems now instead of after 15 sessions, and a pair whose
+policies have both already exited at a stop or target is stored, the same label the full window
+gives (a later session cannot change an exit that has happened; its window ends at the last
+session checked, so the outcomes report never takes it as proof that the day's horizon is over).
+Otherwise the pass counts as `open` and nothing is stored.
 
 Dispositions (`save_dispositions`, table `stage2_shadow_dispositions`, DDL
 `sql/stage2_shadow_dispositions.sql`, run by the owner): at the end of a run, every decision it
@@ -91,9 +101,10 @@ held, failed and expired passes can be listed (`sql/stage2_shadow_dispositions_r
 the passes ever rejected by a check counted, also when a retry labelled them. A run stopped by a
 rejected token keeps the rows of the decisions before it; a lost lease or a killed job writes none
 (the report starts from the shadow passes and takes "labelled" from the stored labels, so a pass
-labelled then is still final, and a pass with no row shows as `no_record`). It
-records, it never selects: retries, exclusions and expiry are unchanged. A failed disposition
-write makes the run PARTIAL (`DispositionWriteFailed`); the labels already stored stand.
+labelled then is still final, and a pass with no row shows as `no_record`). Early checks
+write rows too (`open` while a policy is still running), and their `last_at` orders the early
+rotation; retries of completed decisions, exclusions and expiry do not read the table. A failed
+disposition write makes the run PARTIAL (`DispositionWriteFailed`); the labels already stored stand.
 """
 from __future__ import annotations
 
@@ -132,6 +143,9 @@ ENTRY_QUALITY = "app_contract_first_minute_in_entry_window"
 MAX_DECISIONS_PER_RUN = 60   # <= 241 requests a run: Upstox allows 1000 per 30 min per API
 BUDGET_SECONDS = 300.0
 FIRST_ELIGIBLE_DAYS = 22   # 15 sessions after the decision day, the run day's bar excluded
+EARLY_SETTLE_SESSIONS = 5  # completed sessions after an early exit before it is stored (late adjustments)
+EARLY_LAST_DAYS = 21       # 15 sessions after a session day end at least this many days later: an
+                           # early label's window ends sooner (sql/stage2_shadow_outcomes_report.sql)
 RETRY_DAYS = 60            # stop retrying an unlabelled decision after this many days
 DEFAULT_COST_BPS = 30.0    # the existing maturation's fallback when no estimate was recorded
 STALE_BENCHMARK_DAYS = 6   # NSE closures never exceed this: an older last NIFTY bar is a stale answer
@@ -150,6 +164,10 @@ FAILURE_DETAIL_LIMIT = 20
 
 _MISSING = f"""(SELECT count(*) FROM {SCHEMA}.prediction_targets t
            WHERE t.observation_id = o.observation_id AND t.target_version = ANY(%s)) < %s"""
+_NO_KNOWN_ACTION = f"""NOT EXISTS (SELECT 1 FROM {SCHEMA}.corporate_actions c
+                      WHERE c.isin = split_part(o.instrument_key, '|', 2)
+                        AND lower(trim(c.action_type)) = ANY(%s)
+                        AND c.ex_date > o.as_of_date AND c.ex_date <= %s)"""
 
 # Cheap: every shadow pass in the window still missing a label (ids and decision days only).
 PENDING_SQL = f"""
@@ -159,11 +177,25 @@ PENDING_SQL = f"""
       AND o.entry IS NOT NULL AND o.stop IS NOT NULL AND o.target IS NOT NULL
       AND o.as_of_date BETWEEN %s AND %s
       AND {_MISSING}
-      AND NOT EXISTS (SELECT 1 FROM {SCHEMA}.corporate_actions c
-                      WHERE c.isin = split_part(o.instrument_key, '|', 2)
-                        AND lower(trim(c.action_type)) = ANY(%s)
-                        AND c.ex_date > o.as_of_date AND c.ex_date <= %s)
+      AND {_NO_KNOWN_ACTION}
     ORDER BY o.as_of_date DESC, o.observation_id
+"""
+
+# Open passes for early checks (see early_shadow_passes): decided before today and younger than
+# FIRST_ELIGIBLE_DAYS, still missing a label; least recently checked first (never checked, then by
+# their disposition's last attempt), then the oldest decision.
+EARLY_SQL = f"""
+    SELECT o.observation_id, o.as_of_date
+    FROM {SCHEMA}.scanner_observations o
+    LEFT JOIN {SCHEMA}.stage2_shadow_dispositions d
+           ON d.observation_id = o.observation_id AND d.label_version = %s
+    WHERE o.strategy_version = %s AND o.stage2_pass
+      AND o.entry IS NOT NULL AND o.stop IS NOT NULL AND o.target IS NOT NULL
+      AND o.as_of_date > %s AND o.as_of_date < %s
+      AND {_MISSING}
+      AND {_NO_KNOWN_ACTION}
+    ORDER BY d.last_at NULLS FIRST, o.as_of_date, o.observation_id
+    LIMIT %s
 """
 
 # Full rows for the decisions selected this run, with the inputs their ledger batch recorded.
@@ -201,7 +233,7 @@ DISPOSITION_SQL = f"""
 # order (the most specific reason first: an unreadable action also counts as corporate_action).
 NOT_LABELLED = ("unreadable_action", "corporate_action", "provider_rejected", "failed", "deferred",
                 "basis_mismatch", "window_problem", "no_trading", "no_fill", "no_benchmark",
-                "invalid_levels", "outside_levels")
+                "invalid_levels", "outside_levels", "open")
 # Label counts, never a reason: `unlabelled` moves with every policy left without a label, so it
 # names a decision only when nothing else moved (a reason counted later is named, not hidden by it).
 LABEL_COUNTS = ("stored", "already_stored", "unlabelled")
@@ -310,6 +342,22 @@ def pending_shadow_passes(repo, *, today: dt.date) -> list[tuple]:
         )).fetchall())
 
 
+def early_shadow_passes(repo, *, today: dt.date, limit: int) -> list[tuple]:
+    """(observation_id, as_of_date) of up to `limit` open shadow passes for an early check.
+
+    Open: decided before today and younger than FIRST_ELIGIBLE_DAYS (their 15 sessions cannot have
+    completed), not yet labelled, no known non-dividend action since the decision day. Ordered so
+    repeated runs rotate through all of them (never checked first, then the longest unchecked,
+    per the disposition table), oldest decision first.
+    """
+    versions = [shadow_target_version(policy) for policy in POLICIES]
+    with repo.connect() as conn:
+        return list(conn.execute(EARLY_SQL, (
+            SHADOW_LABEL_VERSION, STAGE2_SHADOW_VERSION, today - dt.timedelta(days=FIRST_ELIGIBLE_DAYS),
+            today, versions, len(versions), list(KNOWN_ACTIONS), today, limit,
+        )).fetchall())
+
+
 def decision_rows(repo, observation_ids: list[str]) -> list[tuple]:
     """Raw full rows for the selected decisions (parsed one by one by the caller); newest first."""
     if not observation_ids:
@@ -377,6 +425,17 @@ def exit_session(as_of: dt.date, benchmark: pd.DataFrame | None, today: dt.date)
     return sessions[HORIZON_SESSIONS - 1] if len(sessions) >= HORIZON_SESSIONS else None
 
 
+def window_end(as_of: dt.date, benchmark: pd.DataFrame | None, today: dt.date) -> tuple[dt.date | None, bool]:
+    """(last session of the label window, final): the exit session once completed (final), else
+    the last completed regular session on or after the decision day (an early window: a stop or
+    target touched in it is already the trade's exit), else (None, False)."""
+    end = exit_session(as_of, benchmark, today)
+    if end is not None:
+        return end, True
+    sessions = [d for d in regular_sessions(benchmark, today) if d >= as_of]
+    return (sessions[-1], False) if sessions else (None, False)
+
+
 def _naive_ist(value) -> pd.Timestamp:
     """A timestamp as a naive IST wall-clock time (the bars' own convention)."""
     at = pd.Timestamp(value)
@@ -391,7 +450,9 @@ def trade_contract(decision: Mapping, benchmark: pd.DataFrame, today: dt.date) -
     Entry is the open of the first minute bar that starts after the decision time and by the end
     of that window (a bar that started before the decision could not be bought at its open);
     the exit session comes from the NIFTY calendar. `sessions` is every session from the
-    decision day to the exit session: the window both labels and the benchmark use.
+    decision day to the exit session: the window both labels and the benchmark use. Before the
+    exit session has completed, the window ends at the last completed session (`final` False,
+    `exit_at` None: no time exit; see window_end).
     """
     decided_at = _naive_ist(decision["evaluated_at"])
     as_of = decision["as_of_date"]
@@ -402,14 +463,14 @@ def trade_contract(decision: Mapping, benchmark: pd.DataFrame, today: dt.date) -
         return None, "no_entry_window"
     # The window the app showed (recorded with the decision), else the same function's answer.
     entry_until = decision.get("entry_valid_until") or timing["entry_valid_until"]
-    end = exit_session(as_of, benchmark, today)
+    end, final = window_end(as_of, benchmark, today)
     if end is None:
         return None, "awaiting"
     calendar = regular_sessions(benchmark, today)
     if as_of not in calendar:
         return None, f"the decision day {as_of} is not a regular NIFTY session"
-    return {"decided_at": decided_at, "entry_until": _naive_ist(entry_until),
-            "exit_at": pd.Timestamp(dt.datetime.combine(end, INTRADAY_TIME_EXIT)),
+    return {"decided_at": decided_at, "entry_until": _naive_ist(entry_until), "final": final,
+            "exit_at": pd.Timestamp(dt.datetime.combine(end, INTRADAY_TIME_EXIT)) if final else None,
             "sessions": [d for d in calendar if as_of <= d <= end]}, ""
 
 
@@ -455,7 +516,7 @@ def _path_days(contract: dict, daily: pd.DataFrame, minutes: pd.DataFrame) -> li
 
 
 def _walk(contract: dict, minutes: pd.DataFrame, stop: float, target: float) -> dict | str:
-    """The trade on one-minute bars, or "no_fill" / "outside_levels" / "no_exit_bar".
+    """The trade on one-minute bars, or "no_fill" / "outside_levels" / "no_exit_bar" / "open".
 
     Entry: see trade_contract. Then bar by bar until the 15:15 exit: a bar whose low reaches the
     stop ends it (stop first when one bar reaches both), filled at the stop, or at the bar's open
@@ -464,7 +525,9 @@ def _walk(contract: dict, minutes: pd.DataFrame, stop: float, target: float) -> 
     of the first bar from 15:15 on the exit day, or at the close of its last bar before 15:15,
     either within BENCH_GAP of 15:15 (else "no_exit_bar": the feed stops early or the stock did
     not trade near the exit; never an exit hours early). `exit_on_open` says which price the
-    benchmark must match.
+    benchmark must match. In an early window (`exit_at` None) a touch is the same exit the full
+    window gives; without one the trade is still "open". `gapped`: the exit bar opened beyond the
+    level (an unadjusted split, bonus or consolidation looks exactly like this).
     """
     at = minutes.index
     # The entry window never leaves the decision day (build_trade_timing caps it at 15:15).
@@ -475,7 +538,7 @@ def _walk(contract: dict, minutes: pd.DataFrame, stop: float, target: float) -> 
     if not stop < entry < target:
         return "outside_levels"
     exit_at = contract["exit_at"]
-    path = minutes.loc[(at >= entry_at) & (at < exit_at)]
+    path = minutes.loc[(at >= entry_at) & (at < exit_at)] if exit_at is not None else minutes.loc[at >= entry_at]
     stopped = path["Low"].to_numpy(dtype=float) <= stop
     touched = stopped | (path["High"].to_numpy(dtype=float) >= target)
     if touched.any():
@@ -485,9 +548,11 @@ def _walk(contract: dict, minutes: pd.DataFrame, stop: float, target: float) -> 
             gap = opened < stop   # never the entry bar: its open is the entry, above the stop
             return {"entry_at": entry_at, "entry": entry, "outcome": "stop", "exit_at": stamp,
                     "exit": opened if gap else float(stop), "exit_on_open": gap,
-                    "fill": "gap_open" if gap else "stop"}
+                    "fill": "gap_open" if gap else "stop", "gapped": gap}
         return {"entry_at": entry_at, "entry": entry, "outcome": "target", "exit_at": stamp,
-                "exit": float(target), "exit_on_open": False, "fill": "target"}
+                "exit": float(target), "exit_on_open": False, "fill": "target", "gapped": opened > target}
+    if exit_at is None:
+        return "open"
     after = minutes.loc[(at >= exit_at) & (at <= exit_at + BENCH_GAP)]
     if not after.empty:
         return {"entry_at": entry_at, "entry": entry, "outcome": "horizon", "exit_at": after.index[0],
@@ -497,6 +562,15 @@ def _walk(contract: dict, minutes: pd.DataFrame, stop: float, target: float) -> 
         return "no_exit_bar"
     return {"entry_at": entry_at, "entry": entry, "outcome": "horizon", "exit_at": before.index[-1],
             "exit": float(before.iloc[-1]["Close"]), "exit_on_open": False, "fill": "time_exit_last_close"}
+
+
+def _settled(contract: dict, trade: dict) -> bool:
+    """An early exit that can be stored: not through a gap, and EARLY_SETTLE_SESSIONS completed
+    sessions after it, so a corporate action the feed lists or adjusts late (a demerger, a split
+    ex-dated on or just before the exit) has shown up in this fetch's basis check or guard."""
+    exit_day = trade["exit_at"].date()
+    after = sum(1 for day in contract["sessions"] if day > exit_day)
+    return not trade["gapped"] and after >= EARLY_SETTLE_SESSIONS
 
 
 def _touch_problem(contract: dict, daily: pd.DataFrame, minutes: pd.DataFrame, stop: float,
@@ -623,6 +697,16 @@ def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFr
     (`no_benchmark`): a later run retries with fresh bars for both. Only a policy whose own
     levels are invalid (`invalid_levels`), or that the actual entry price is not strictly inside
     (`outside_levels`), maps to None alone: that never changes on a retry.
+
+    Early window (no completed exit session yet, see window_end): the same checks run on the
+    sessions so far, and the labels are stored only when every policy already exited at a stop or
+    target (the full window gives the same trade) and each exit is settled (_settled: no exit bar
+    opened beyond its level, and EARLY_SETTLE_SESSIONS sessions have completed since): a
+    corporate action the feed has not listed or adjusted yet (a demerger, a late split) shows as a
+    gap or a shifted path, and an early label could never be corrected, so it waits until a later
+    fetch is adjusted (basis check) or listed (guard). Otherwise `open` is counted and nothing
+    stored. An early window never ends EARLY_LAST_DAYS or more after the
+    decision day (the outcomes report tells early from full-window labels by that).
     """
     daily, minutes = _before(daily, today), _before(minutes, today)
     bench_daily, bench_minutes = _before(benchmark, today), _before(benchmark_minutes, today)
@@ -655,13 +739,22 @@ def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFr
         CHALLENGER: challenger_levels(decision["entry"], decision["atr"],
                                       decision["resistance20"], decision["resistance60"]),
     }
-    labels = {}
+    labels, still_open = {}, False
     for policy, level in levels.items():
         if level is None:
             _count(notes, "invalid_levels")
             labels[policy] = None
             continue
         trade = _walk(contract, minutes, *level)
+        if trade == "open" or (isinstance(trade, dict) and not contract["final"] and not _settled(contract, trade)):
+            # Still running, or an exit not settled yet: checked so far, stored later.
+            until = contract["sessions"][-1] if trade == "open" else trade["exit_at"].date()
+            touch = _touch_problem(contract, daily, minutes, *level, until=until)
+            if touch is not None:
+                _problem(notes, decision, "TouchDisagreement", touch)
+                return none
+            still_open, labels[policy] = True, None
+            continue
         if trade == "no_fill":
             _count(notes, "no_fill")
             return none
@@ -698,6 +791,10 @@ def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFr
             "cost_bps": float(decision["cost_bps"]), "entry_quality": ENTRY_QUALITY,
             "stop": level[0], "target": level[1],
         }
+    if still_open or (not contract["final"]
+                      and contract["sessions"][-1] >= decision["as_of_date"] + dt.timedelta(days=EARLY_LAST_DAYS)):
+        _count(notes, "open")
+        return none
     return labels
 
 
@@ -882,8 +979,8 @@ def _history(cache: dict, decision: Mapping, *, client, token: str, today: dt.da
     """(daily, minutes, exit session, NIFTY minutes) for a stock and decision day, once per run.
 
     Minutes (the stock's, then NIFTY's for the same window, shared by every stock with that
-    window) are fetched only once the exit session (exit_session, NIFTY calendar) has completed,
-    from the decision day to it.
+    window) are fetched from the decision day to the window's last session (window_end: the exit
+    session once completed, else the last completed session for an early check).
     """
     key = (decision["instrument_key"], decision["as_of_date"])
     if key not in cache:
@@ -898,7 +995,7 @@ def _history(cache: dict, decision: Mapping, *, client, token: str, today: dt.da
                 raise ProviderRejected(str(exc)) from exc
             raise
         # An empty answer (HTTP 200, no candles: a renamed or delisted key) stays quietly deferred.
-        end = None if _before(daily, today).empty else exit_session(as_of, benchmark, today)
+        end = None if _before(daily, today).empty else window_end(as_of, benchmark, today)[0]
         minutes = bench_minutes = None
         if end is not None:
             sleep(REQUEST_PAUSE_SECONDS)
@@ -1033,17 +1130,35 @@ def _record_dispositions(repo, rows: list[tuple], summary: dict, failures: list[
                          "message": f"{type(exc).__name__}: {exc}"[:200]})
 
 
+def _early(repo, *, today: dt.date, limit: int, summary: dict, failures: list[dict]) -> list[tuple]:
+    """early_shadow_passes for the slots left; a failed query is reported (PARTIAL), not fatal."""
+    try:
+        return early_shadow_passes(repo, today=today, limit=limit)
+    except (LeaseLost, PermissionError):
+        raise
+    except Exception as exc:
+        LOGGER.warning("Stage-2 maturation: early-check selection failed: %s", type(exc).__name__)
+        failures.append({"observation_id": None, "error_kind": "EarlySelectionFailed",
+                         "message": f"{type(exc).__name__}: {exc}"[:200]})
+        return []
+
+
 def _select(repo, client, token: str, *, today: dt.date, fetch_daily: Callable,
             sleep: Callable[[float], None], summary: dict, failures: list[dict]):
-    """(NIFTY benchmark, raw rows of the completed decisions selected this run).
+    """(NIFTY benchmark, raw rows of the decisions selected this run).
 
-    Raises when the benchmark is empty: no label can carry an excess return without it.
+    Completed decisions first (completed_decisions); the slots they leave go to open passes for an
+    early check (early_shadow_passes: the data checks run on the sessions so far, and a pair whose
+    policies both already exited is labelled). Raises when the benchmark is empty: no label can
+    carry an excess return without it.
     """
     pending = pending_shadow_passes(repo, today=today)
     summary["pending"] = len(pending)
-    if not pending:
+    # The early query's own cap is the whole budget: completed decisions take theirs below.
+    early = _early(repo, today=today, limit=MAX_DECISIONS_PER_RUN, summary=summary, failures=failures)
+    if not pending and not early:
         return None, []
-    earliest = min(pd.Timestamp(as_of).date() for _, as_of in pending) - dt.timedelta(days=5)
+    earliest = min(pd.Timestamp(as_of).date() for _, as_of in [*pending, *early]) - dt.timedelta(days=5)
     sleep(REQUEST_PAUSE_SECONDS)
     benchmark = _before(fetch_daily(client, token, NIFTY_KEY, earliest, today - dt.timedelta(days=1)), today)
     if benchmark.empty:
@@ -1052,7 +1167,13 @@ def _select(repo, client, token: str, *, today: dt.date, fetch_daily: Callable,
         raise ValueError("NIFTY benchmark history is stale")
     selected, summary["awaiting_sessions"] = completed_decisions(pending, benchmark, today=today)
     summary["selected"] = len(selected)
-    rows = decision_rows(repo, selected)
+    early_ids = [observation_id for observation_id, _ in early[:MAX_DECISIONS_PER_RUN - len(selected)]]
+    summary["early"] = len(early_ids)
+    selected = selected + early_ids
+    # Completed decisions first (a budget stop leaves early checks undone first), each group in
+    # DECISIONS_SQL order (newest first).
+    early_set = set(early_ids)
+    rows = sorted(decision_rows(repo, selected), key=lambda row: row[0] in early_set)
     for missing in sorted(set(selected) - {row[0] for row in rows}):
         summary["failed"] += 1
         failures.append({"observation_id": missing, "error_kind": "MissingDecisionInputs",
@@ -1090,20 +1211,20 @@ def mature_shadow_passes(repo, client, token: str, *, today: dt.date,
     if not maturation_enabled(environ):
         return {"status": "DISABLED", "reason": f"{ENABLE_ENV} is not enabled"}
     started = clock()
-    summary = {"status": "SUCCESS", "pending": 0, "awaiting_sessions": 0, "selected": 0, "stored": 0,
+    summary = {"status": "SUCCESS", "pending": 0, "awaiting_sessions": 0, "selected": 0, "early": 0, "stored": 0,
                "already_stored": 0, "deferred": 0, "unlabelled": 0, "no_benchmark": 0,
                "no_fill": 0, "no_trading": 0, "outside_levels": 0, "invalid_levels": 0, "window_problem": 0,
                "corporate_action": 0, "unreadable_action": 0, "basis_mismatch": 0,
-               "provider_rejected": 0, "failed": 0, "stopped": None}
+               "provider_rejected": 0, "open": 0, "failed": 0, "stopped": None}
     failures: list[dict] = []
     dispositions: list[tuple] = []
     try:
         _guard(check_lease)
         benchmark, rows = _select(repo, client, token, today=today, fetch_daily=fetch_daily, sleep=sleep,
                                   summary=summary, failures=failures)
-        # Selected decisions missing from their ledger batch (the only failures _select records).
+        # Selected decisions missing from their ledger batch; a failed early query names no decision.
         dispositions += [_disposition_row(item["observation_id"], "failed", {"failed": 1}, [item])
-                         for item in failures]
+                         for item in failures if item.get("observation_id") is not None]
         cache: dict = {}
         for row in rows:
             if clock() - started > BUDGET_SECONDS:

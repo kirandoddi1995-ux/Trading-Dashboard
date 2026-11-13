@@ -3,9 +3,12 @@
 --
 -- Decisions: shadow passes at least 22 days old (IST date, as maturation) whose 15-session horizon has
 -- completed: 15 sessions of the shadow scan after the decision day (it runs every NSE session; a missed
--- scan only delays eligibility, it never brings it forward), or any pass of that day is already labelled
--- (maturation counts sessions on NIFTY's own bars, so a label settles the day for every pass of it, and
--- coverage is never judged on the labelled passes alone). A stock that passed in both scans of one day counts
+-- scan only delays eligibility, it never brings it forward), or any pass of that day already has a
+-- full-window label (maturation counts sessions on NIFTY's own bars, so such a label settles the day for
+-- every pass of it, and coverage is never judged on the labelled passes alone). Full-window: its window
+-- ends at the 15th session, at least 21 days after the decision day; an early label (both policies
+-- exited at a stop or target before the horizon completed) ends sooner and settles nothing), or every
+-- decision of that day is labelled under both policies (a complete cohort, even if all exited early). A stock that passed in both scans of one day counts
 -- once: its earliest scan that day, chosen BEFORE looking at labels, so both policies are scored on
 -- the same decisions. Policies: incumbent-levels-v1 (the recorded stop/target) and atr15-stop-v1
 -- (stop at entry - 1.5 ATR). Label version net-excess-app-contract-v1 only.
@@ -31,17 +34,27 @@ first_scans AS (
       AND o.as_of_date <= (now() AT TIME ZONE 'Asia/Kolkata')::date - 22
     ORDER BY o.instrument_key, o.as_of_date, o.observed_at, o.observation_id
 ),
-labelled_days AS MATERIALIZED (   -- a label proves NIFTY completed the horizon for that whole day
+labelled_days AS MATERIALIZED (   -- a full-window label proves NIFTY completed the horizon for that day
     SELECT DISTINCT o.as_of_date
     FROM quant_app.scanner_observations o
     JOIN quant_app.prediction_targets t ON t.observation_id = o.observation_id AND t.horizon_sessions = 15
+     AND t.label_end_date >= o.as_of_date + 21
     JOIN policies p ON t.target_version = 'stage2-shadow:net-excess-app-contract-v1:' || p.policy
     WHERE o.strategy_version = 'equity-stage2-scheduled-shadow-v1'
+),
+complete_days AS MATERIALIZED (   -- every decision of the day labelled under both policies: nothing left out
+    SELECT f.as_of_date
+    FROM first_scans f
+    GROUP BY f.as_of_date
+    HAVING bool_and((SELECT count(DISTINCT t.target_version) FROM quant_app.prediction_targets t
+                     JOIN policies p ON t.target_version = 'stage2-shadow:net-excess-app-contract-v1:' || p.policy
+                     WHERE t.observation_id = f.observation_id AND t.horizon_sessions = 15) = 2)
 ),
 decisions AS (
     SELECT f.* FROM first_scans f
     WHERE (SELECT count(*) FROM scan_sessions s WHERE s.as_of_date > f.as_of_date) >= 15
        OR f.as_of_date IN (SELECT as_of_date FROM labelled_days)
+       OR f.as_of_date IN (SELECT as_of_date FROM complete_days)
 ),
 actions AS (
     -- LEFT JOIN: a decision whose ledger entry is missing still counts as eligible (action 'unknown').
