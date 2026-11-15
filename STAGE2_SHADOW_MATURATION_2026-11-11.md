@@ -467,3 +467,16 @@ and disposition precedence (`invalid_levels` / `outside_levels` before `open`, k
   to 3 for about 60 days), unpaced, and its NIFTY window the same.
 - `storage_policy.BUDGETS` gives `prediction_targets` 2 MB (advisory, no gate): at ~80 rows a day that is
   reached in about 2-3 months; review the budget then.
+
+## Re-score report (15 Nov)
+Why: the zero-Buys study (`claude/status_2026-11-15_zero_buys_root_cause.md`) found the target tied to the stop
+(1.4 x risk floor) pins reward:risk near 1.4, so the score's risk_reward component (`_scale(net R:R, 1, 4)`) is
+~12.7 for every pass and 70 is out of reach. `sql/stage2_shadow_rescore_report.sql` (read-only) recomputes each
+shadow pass's action per level policy (recorded levels; 1.5-ATR challenger), reward:risk scale (1-4 live, 1-3,
+1-2) and threshold (70 live, 65, 60), with the outcomes of the labels behind each variant's Buys and Watches.
+One pass per stock per day (the first scan, as the outcomes report counts); net R:R rounded to 2 dp as
+calculate_trade_math does; `unscorable` counts passes missing score, risk_reward or ATR. Self-check: the live
+variant equals the recorded action. Nothing changes the live rule. First run (15 Nov, 102 passes): live 0 Buys;
+challenger with the live scale and 70: 2; challenger at 65: 14; challenger with scale 1-2 at 70: 15; scale 1-2 at
+60: 42. Recorded levels stay at 0-2 Buys under any variant (71 of 102 are wide). Outcomes fill in as labels arrive (early labels, full labels from 4 Dec); early labels are stop/target
+exits only, so read `full_*` columns or the outcomes report for unbiased comparisons.
