@@ -9,13 +9,13 @@ from streamlit.testing.v1 import AppTest
 
 ROOT = Path(__file__).resolve().parents[1]
 PINS = {'streamlit': '1.66.1', 'pillow': '13.0.0', 'certifi': '2026.10.23',
-        'opentelemetry-api': '1.45.1', 'opentelemetry-sdk': '1.45.1',
-        'opentelemetry-exporter-otlp-proto-http': '1.45.1',
-        'opentelemetry-proto': '1.45.1',
-        'opentelemetry-exporter-otlp-proto-common': '1.45.1',
-        'opentelemetry-semantic-conventions': '0.66b1',
-        'opentelemetry-exporter-http-transport': '0.66b1',
-        'opentelemetry-exporter-otlp-common': '0.66b1'}
+        'opentelemetry-api': '1.45.2', 'opentelemetry-sdk': '1.45.2',
+        'opentelemetry-exporter-otlp-proto-http': '1.45.2',
+        'opentelemetry-proto': '1.45.2',
+        'opentelemetry-exporter-otlp-proto-common': '1.45.2',
+        'opentelemetry-semantic-conventions': '0.66b2',
+        'opentelemetry-exporter-http-transport': '0.66b2',
+        'opentelemetry-exporter-otlp-common': '0.66b2'}
 
 
 def test_exact_reviewed_security_profile_is_installed_and_constrained():
