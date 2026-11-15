@@ -2330,6 +2330,119 @@ DISPOSITION_DDL = (ROOT / "sql/stage2_shadow_dispositions.sql").read_text()
 DISPOSITION_REPORT = (ROOT / "sql/stage2_shadow_dispositions_report.sql").read_text()
 
 
+RESCORE_REPORT = (ROOT / "sql/stage2_shadow_rescore_report.sql").read_text()
+
+
+def _set_input(pg, obs, path, value):
+    """Set one ledger-candidate field (a jsonb path) of a seeded pass."""
+    pg.execute("UPDATE quant_app.evidence_ledger_events SET payload = jsonb_set(payload, '{candidates}', "
+               "(SELECT jsonb_agg(CASE WHEN c->>'decision_id' = %s THEN jsonb_set(c, %s::text[], "
+               "to_jsonb(%s::numeric)) ELSE c END) FROM jsonb_array_elements(payload->'candidates') c)) "
+               "WHERE event_type = 'DECISION_BATCH_EVALUATED'", (obs, path, value))
+
+
+def _scored(pg, obs, score, rr_component, atr=None):
+    """Give a seeded pass the score inputs the live scan records (score, risk_reward, horizon) and,
+    optionally, another ATR."""
+    if atr is not None:
+        _set_input(pg, obs, "{inputs_used,equity_capture,inputs,atr_val}", atr)
+    pg.execute("UPDATE quant_app.evidence_ledger_events SET payload = jsonb_set(payload, '{candidates}', "
+               "(SELECT jsonb_agg(CASE WHEN c->>'decision_id' = %s THEN jsonb_set(jsonb_set(c, "
+               "'{inputs_used,score}', to_jsonb(%s::numeric)), '{inputs_used,features}', "
+               "jsonb_build_object('horizon_days', 15, 'components', jsonb_build_object('risk_reward', %s::numeric))) "
+               "ELSE c END) FROM jsonb_array_elements(payload->'candidates') c)) "
+               "WHERE event_type = 'DECISION_BATCH_EVALUATED'", (obs, score, rr_component))
+
+
+@needs_sql
+def test_rescore_report_recomputes_actions_per_policy_scale_and_threshold(db):
+    """Pass 100/80/128, ATR 2, 20 bps: the incumbent is wide (target 28 > 2 x sqrt(15) ATR) under
+    every variant. The challenger (97 / 104.86, net R:R ~1.455) fits the gate; recorded score 66 with
+    risk_reward 12.7 re-scores to about 66.4 (scale 1-4), 67.5 (1-3), 70.9 (1-2), so it is a Buy at 65
+    and 60 for every scale and at 70 only on the 1-2 scale. Live variant = the recorded action (Watch).
+    Its full-window label counts in the Buy outcomes; the incumbent's label in Watch."""
+    obs = _seed(db, run="rs", symbol="RS", day=D0, score=66.0, action="Watch")
+    _scored(db, obs, 66.0, 12.666666666666663)
+    _label(db, obs, m.CHALLENGER, "target", excess=0.02, end=D0 + dt.timedelta(days=21))
+    _label(db, obs, m.INCUMBENT, "horizon", excess=-0.01, end=D0 + dt.timedelta(days=21))
+    rows = {(r[0], float(r[1]), r[2]): r[3:] for r in db.execute(RESCORE_REPORT).fetchall()}
+    assert len(rows) == 18 and all(r[0] == 1 and r[1] == 0 for r in rows.values())   # 1 pass, 0 recorded Buys
+    buys = {key for key, r in rows.items() if r[2] == 1}
+    assert buys == {(m.CHALLENGER, h, t) for h in (4.0, 3.0, 2.0) for t in (65, 60)} | {(m.CHALLENGER, 2.0, 70)}
+    assert all(rows[(m.INCUMBENT, h, t)][3] == 1 for h in (4.0, 3.0, 2.0) for t in (70, 65, 60))   # wide
+    challenger_buy = rows[(m.CHALLENGER, 4.0, 65)]
+    assert (challenger_buy[5], float(challenger_buy[6]), float(challenger_buy[7])) == (1, 0.02, 1.0)
+    assert (challenger_buy[8], float(challenger_buy[9])) == (1, 0.02)
+    assert rows[(m.CHALLENGER, 4.0, 70)][4] == 1                                     # gate ok, score Watch
+    assert float(rows[(m.INCUMBENT, 4.0, 70)][10]) == -0.01                          # Watch outcome
+    # The challenger target formula is the maturation's own (levels_for_stop).
+    assert m.challenger_levels(100.0, 2.0, 103.0, 103.0) == (97.0, 104.86)
+
+
+@needs_sql
+def test_rescore_report_boundaries_costs_stop_arm_and_early_labels(db):
+    """Score 69.3 (risk_reward 12.7): the challenger (net R:R 1.46) re-scores to 69.7 on the live
+    scale (Watch at 70; without the cost on either side, or without removing the recorded component,
+    it would cross 70) and above 70 on
+    1-3 and 1-2. Its early label (window ends 20 days on) counts as labelled, not full-window. A pass
+    with a 25% stop and a target inside the ATR limit is wide by the stop arm alone: never a Buy."""
+    near = _seed(db, run="rb", symbol="NEAR", day=D0, score=69.3, action="Watch")
+    _scored(db, near, 69.3, 12.666666666666663)
+    _label(db, near, m.CHALLENGER, "stop", excess=-0.03, end=D0 + dt.timedelta(days=20))
+    far = _seed(db, run="rb", symbol="FARSTOP", day=D0, score=95.0, action="Watch")
+    _scored(db, far, 95.0, 12.666666666666663, atr=5.0)
+    db.execute("UPDATE quant_app.scanner_observations SET stop = 75, target = 135 WHERE observation_id = %s", (far,))
+    rows = {(r[0], float(r[1]), r[2]): r[3:] for r in db.execute(RESCORE_REPORT).fetchall()}
+    assert all(rows[(m.INCUMBENT, h, t)][2] == 0 for h in (4.0, 3.0, 2.0) for t in (70, 65, 60))
+    assert all(rows[(m.INCUMBENT, h, t)][3] == 2 for h in (4.0, 3.0, 2.0) for t in (70, 65, 60))  # NEAR target, FARSTOP stop
+    live = rows[(m.CHALLENGER, 4.0, 70)]
+    assert live[2] == 1                                       # FARSTOP's challenger only; NEAR stays Watch at 69.7
+    assert rows[(m.CHALLENGER, 3.0, 70)][2] == rows[(m.CHALLENGER, 2.0, 70)][2] == 2
+    early = rows[(m.CHALLENGER, 2.0, 70)]
+    assert (early[5], early[8], early[9]) == (1, 0, None)     # NEAR's label is early: labelled, not full-window
+
+
+@needs_sql
+def test_rescore_report_self_check_gate_resistance_clamp_and_first_scan(db):
+    """Recorded levels (ATR 2, 20 bps), horizon 15:
+    BUY    96/106, net R:R 1.38, score 75: Buy under every variant; recorded Buy (the self-check).
+    LOW    96/105, net R:R 1.14: below 1.30, never a Buy, not counted as score-Watch.
+    RES    80/128 (wide); a resistance at 105 makes the challenger target 104.2 (net R:R 1.25): never a Buy.
+    CLAMP  98/105, net R:R 2.18, score 50, risk_reward 39.3: the 1-2 scale caps at 100, so 59.1 < 60.
+    UNSC   80/128 (wide) with no risk_reward recorded: unscorable only, not wide, no Watch outcome.
+    BUY's second scan that day (score 99, recorded Buy) is not counted: first scan per stock per day."""
+    buy = _seed(db, run="rc", symbol="BUY", day=D0, score=75.0, action="Buy")
+    _scored(db, buy, 75.0, 12.666666666666666)
+    _seed(db, run="rc2", symbol="BUY", day=D0, observed=f"{D0.isoformat()}T09:07:57Z", score=99.0, action="Buy",
+          obs="obs-rc2-BUY-late")
+    _scored(db, "obs-rc2-BUY-late", 99.0, 0.0)
+    low = _seed(db, run="rc", symbol="LOW", day=D0, score=50.0, action="Watch")
+    _scored(db, low, 50.0, 0.0)
+    res = _seed(db, run="rc", symbol="RES", day=D0, score=95.0, action="Watch")
+    _scored(db, res, 95.0, 12.666666666666666)
+    for side in ("resistance20", "resistance60"):
+        _set_input(db, res, "{inputs_used,equity_capture,inputs,levels,%s}" % side, 105.0)
+    clamp = _seed(db, run="rc", symbol="CLAMP", day=D0, score=50.0, action="Watch")
+    _scored(db, clamp, 50.0, 39.333333333333336)
+    unsc = _seed(db, run="rc", symbol="UNSC", day=D0, score=80.0, action="Watch")
+    _label(db, unsc, m.INCUMBENT, "stop", excess=-0.5, end=D0 + dt.timedelta(days=21))
+    for obs, stop, target in ((buy, 96, 106), (low, 96, 105), (clamp, 98, 105)):
+        db.execute("UPDATE quant_app.scanner_observations SET stop = %s, target = %s WHERE observation_id = %s",
+                   (stop, target, obs))
+    rows = {(r[0], float(r[1]), r[2]): r[3:] for r in db.execute(RESCORE_REPORT).fetchall()}
+    for policy in m.POLICIES:
+        for h in (4.0, 3.0, 2.0):
+            for t in (70, 65, 60):
+                passes, recorded, buys, wide, score_watch = rows[(policy, h, t)][:5]
+                assert (passes, recorded, buys) == (5, 1, 1), (policy, h, t)
+                assert rows[(policy, h, t)][-1] == 1                     # UNSC: unscorable
+                if policy == m.INCUMBENT:
+                    assert (wide, score_watch) == (1, 1), (h, t)         # RES wide; CLAMP score-Watch; LOW none
+                    assert rows[(policy, h, t)][10] is None          # UNSC's label is no Watch outcome
+    assert m.challenger_levels(100.0, 2.0, 105.0, 105.0) == (97.0, 104.2)
+
+
+
 @pytest.fixture
 def roles_db(db):
     """The `db` fixture plus the live roles and grants the table file relies on, then the file."""
