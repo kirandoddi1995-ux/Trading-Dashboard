@@ -6,7 +6,7 @@ import pandas as pd
 from amfi_ingestion import current_ranking_records, parse_amfi_open_nav
 from prediction_validation import (
     PRODUCTION_CALIBRATION_POLICY,
-    TARGET_VERSION,
+    LEGACY_TARGET_VERSION,
     TargetDefinition,
     compute_forward_target,
     evidence_maturity,
@@ -35,6 +35,7 @@ def test_amfi_new_format_is_strict_and_only_ranks_current_direct_growth():
 
 
 def test_exact_intraday_entry_and_target_before_stop_sequence():
+    """The legacy label (LEGACY_TARGET_VERSION): first minute after the signal, target before stop."""
     days = pd.bdate_range("2026-01-02", periods=8)
     prices = pd.DataFrame({
         "Open": [100] * 8, "High": [101, 111, 101, 101, 101, 101, 101, 101],
@@ -50,7 +51,7 @@ def test_exact_intraday_entry_and_target_before_stop_sequence():
         prices, days[0], TargetDefinition(5, entry_rule="exact_intraday"),
         stop=95, target=110, intraday=intraday,
     )
-    assert result["target_version"] == TARGET_VERSION
+    assert result["target_version"] == LEGACY_TARGET_VERSION
     assert result["entry_quality"] == "next_session_opening_5m_ohlcv_vwap"
     assert result["outcome"] == "target"
 

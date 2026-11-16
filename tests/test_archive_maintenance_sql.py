@@ -50,8 +50,9 @@ const readline=require('readline');
   try {const m=JSON.parse(line);
    if(m.close){await db.close();process.stdout.write('{}\n');break;}
    if(m.script){await db.exec(m.script);process.stdout.write('{}\n');continue;}
-   const r=await db.query(m.sql,m.params||[]);
-   process.stdout.write(JSON.stringify({rows:r.rows.map(row=>r.fields.map(f=>row[f.name]))})+'\n');
+   // rowMode array: columns by position (named rows lose repeated names such as count, count).
+   const r=await db.query(m.sql,m.params||[],{rowMode:'array'});
+   process.stdout.write(JSON.stringify({rows:r.rows})+'\n');
   }catch(e){process.stdout.write(JSON.stringify({error:e.message})+'\n');}
  }
 })().catch(e=>{console.error(e.message);process.exitCode=1;});

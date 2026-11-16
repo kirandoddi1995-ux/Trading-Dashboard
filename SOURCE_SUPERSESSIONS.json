@@ -24,8 +24,8 @@
     "scheduled_collector.py": [
       {
         "predecessor_legacy_sha256": "6be0f30152472309f3e83378f6053ed9f1a8b09e2c10be4aecef5343d7554dde",
-        "reason": "STAGE2_SHADOW_MATURATION_2026-11-11.md",
-        "successor_raw_sha256": "6c07f0d5f0779afee16f3625bb95ca38f7f87d18823ce55f9a1b8354cc24c725"
+        "reason": "PRODUCTION_LABEL_SUCCESSOR_2026-11-16.md",
+        "successor_raw_sha256": "e2626d13bcfdcc199fcef336bafe0df73d69e73da06fae14f7041b2a2c5bc8a4"
       }
     ],
     "tests/test_archive_commissioning_hold.py": [
@@ -38,13 +38,13 @@
     "tests/test_archive_maintenance_sql.py": [
       {
         "predecessor_legacy_sha256": "f15784af5e85477a10b313bca66ecd9ee8f14ef62372e07de6c619c75705fdf1",
-        "reason": "ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md",
-        "successor_raw_sha256": "e4796d4b041f429c7d09b118dcd7f82e5fa886a235ed1ac56df3f8f84e42a171"
+        "reason": "PRODUCTION_LABEL_SUCCESSOR_2026-11-16.md",
+        "successor_raw_sha256": "b870ef3f53a73ef42b617b1ed6bcd1581a98575281051a3da2bad69fef013055"
       },
       {
         "predecessor_legacy_sha256": "1ebdde71e127e865b045e4fb4d088eb097c821548748a785f2d0a12783073095",
-        "reason": "ARCHIVE_DELETION_RECOMMISSIONING_2026-11-04.md",
-        "successor_raw_sha256": "e4796d4b041f429c7d09b118dcd7f82e5fa886a235ed1ac56df3f8f84e42a171"
+        "reason": "PRODUCTION_LABEL_SUCCESSOR_2026-11-16.md",
+        "successor_raw_sha256": "b870ef3f53a73ef42b617b1ed6bcd1581a98575281051a3da2bad69fef013055"
       }
     ],
     "tests/test_archive_storage_relief.py": [

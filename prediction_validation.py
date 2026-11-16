@@ -15,7 +15,13 @@ from scipy.optimize import minimize
 from scipy.stats import norm
 
 
-TARGET_VERSION = "net-excess-execution-v2"
+# The production equity label: the app's own trade plan on one-minute bars against NIFTY over the
+# same minutes (equity_stage2_maturation.label_production_decision; the shadow labels' definition).
+TARGET_VERSION = "net-excess-app-contract-v1"
+# compute_forward_target's definition (kept for the research tests): NIFTY from the entry day's
+# open to the outcome day's close, a later-day entry slip, a time exit after the 14th session.
+# Superseded on 16 Nov 2026 before any label used it (0 stored); never written to production.
+LEGACY_TARGET_VERSION = "net-excess-execution-v2"
 
 
 def canonical_target(values) -> tuple:
@@ -92,9 +98,11 @@ def _frame(frame: pd.DataFrame) -> pd.DataFrame:
 def compute_forward_target(prices: pd.DataFrame, as_of_date, definition: TargetDefinition,
                            stop: float, target: float, benchmark: pd.DataFrame | None = None,
                            intraday: pd.DataFrame | None = None, signal_timestamp=None) -> dict | None:
-    """Label a long signal with explicit execution and conservative sequencing.
+    """Label a long signal with explicit execution and conservative sequencing (LEGACY_TARGET_VERSION).
 
-    Exact production labels use one-minute candles. After-market signals enter
+    Superseded: production labels are TARGET_VERSION (equity_stage2_maturation); this function
+    is no longer called by the collector and its labels never carry TARGET_VERSION.
+    Exact labels here use one-minute candles. After-market signals enter
     at the next session's opening five-minute OHLCV-VWAP proxy; during-market
     signals enter at the first one-minute open strictly after the signal. The
     legacy daily-open path remains available only as clearly versioned fallback
@@ -198,7 +206,7 @@ def compute_forward_target(prices: pd.DataFrame, as_of_date, definition: TargetD
             benchmark_return = float(bench.iloc[-1]["Close"] / bench.iloc[0]["Open"] - 1.0)
     excess = net_return - benchmark_return if benchmark_return is not None else None
     return {
-        "target_version": TARGET_VERSION if entry_quality != "daily_open_fallback" else FALLBACK_TARGET_VERSION,
+        "target_version": LEGACY_TARGET_VERSION if entry_quality != "daily_open_fallback" else FALLBACK_TARGET_VERSION,
         "horizon_sessions": definition.horizon_sessions,
         "entry_date": window.index[0].date().isoformat(),
         "label_end_date": window.index[-1].date().isoformat(),

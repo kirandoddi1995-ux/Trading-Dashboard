@@ -166,7 +166,7 @@ def test_shadow_versions_never_collide_with_the_production_label():
                          "stage2-shadow:net-excess-app-contract-v1:atr15-stop-v1"}
     assert TARGET_VERSION not in {INC, CH}
     source = (ROOT / "production_repository.py").read_text()
-    assert "target_version='net-excess-execution-v2'" in source  # the readiness count is exact
+    assert f"target_version='{TARGET_VERSION}'" in source  # the readiness count is exact
     assert "place_order" not in (ROOT / "equity_stage2_maturation.py").read_text()
     report = (ROOT / "sql/stage2_shadow_outcomes_report.sql").read_text()
     assert f"'stage2-shadow:{m.SHADOW_LABEL_VERSION}:' || p.policy" in report
@@ -2617,3 +2617,410 @@ def test_the_report_states_final_excluded_expired_retrying_and_open(roles_db):
     assert f"::date - {m.FIRST_ELIGIBLE_DAYS} THEN 'open'" in DISPOSITION_REPORT
     assert f"::date - {m.RETRY_DAYS} THEN" in DISPOSITION_REPORT
     assert tuple(m.KNOWN_ACTIONS) == ("bonus", "split", "rights issue")      # same list as PENDING_SQL
+
+
+# ---------- production close-mode label (shared engine, TARGET_VERSION) ----------
+
+def _app_payload(horizon=15, cost=20.0, **inputs_over):
+    """An app decision's DECISION_EVALUATED payload (only the fields the production label reads)."""
+    inputs = {"atr_val": 2.0, "levels": {"resistance20": 103.0, "resistance60": 103.0},
+              "latest_indicators": {"Open": 100.0, "High": 100.0, "Low": 100.0, "Close": 100.0}}
+    inputs.update(inputs_over)
+    return {"decision_at": EVALUATED.astimezone(dt.timezone.utc).isoformat(),
+            "identifiers": {"target_version": TARGET_VERSION, "horizon_sessions": horizon},
+            "costs": {"round_trip_bps": cost},
+            "features": {"raw_values_used": {"equity_capture": {"inputs": inputs}}}}
+
+
+def _app_observation(stop=80.0, target=128.0):
+    """A pending app decision row as ProductionRepository.pending_observations returns it."""
+    return {"observation_id": "app-1", "as_of_date": D0, "instrument_key": "NSE_EQ|SYN",
+            "trading_symbol": "SYN", "entry": 100.0, "stop": stop, "target": target, "horizon_sessions": 15}
+
+
+def _produce(decision, daily, minutes, *, nifty=None, today=TODAY, actions=(), repo=None):
+    """label_production_decision with fake fetchers: (label, daily, notes, fetched keys)."""
+    nifty_daily, nifty_minutes = nifty or (daily, minutes)
+    fetched = []
+
+    def fetch_daily(_c, _t, key, _f, _to):
+        """Fake daily fetcher: NIFTY's or the stock's bars, each request recorded."""
+        fetched.append(("daily", key))
+        return nifty_daily if key == m.NIFTY_KEY else daily
+
+    def fetch_minutes(_c, _t, key, _f, _to):
+        """Fake minute fetcher: NIFTY's or the stock's bars, each request recorded."""
+        fetched.append(("minutes", key))
+        return nifty_minutes if key == m.NIFTY_KEY else minutes
+
+    notes = {}
+    label, hist = m.label_production_decision(
+        repo, decision, cache={}, client=None, token="t", today=today, benchmark=m._before(nifty_daily, today),
+        fetch_daily=fetch_daily, fetch_minutes=fetch_minutes, notes=notes,
+        fetch_actions=lambda _c, _t, _k: list(actions), sleep=lambda _s: None)
+    return label, hist, notes, fetched
+
+
+def test_production_decision_reads_the_app_payload():
+    """Decision time, cost, horizon, anchor and entry window come from the DECISION_EVALUATED payload."""
+    timing = {"entry_valid_until": "2026-11-02T10:24:00+05:30"}
+    decision = m.production_decision(_app_observation(), _app_payload(horizon=5, cost=14.1, timing=timing))
+    assert decision["horizon_sessions"] == 5 and decision["cost_bps"] == 14.1
+    assert decision["evaluated_at"] == pd.Timestamp(EVALUATED) and decision["as_of_date"] == D0
+    assert decision["anchor"] == {"Open": 100.0, "High": 100.0, "Low": 100.0}
+    assert decision["entry_valid_until"] == pd.Timestamp("2026-11-02T10:24:00+05:30")
+    assert m.production_decision(_app_observation(), {**_app_payload(), "costs": {}})["cost_bps"] == m.DEFAULT_COST_BPS
+    with pytest.raises(KeyError):
+        m.production_decision(_app_observation(), {**_app_payload(), "features": {}})
+
+
+def test_production_label_is_the_shared_label_under_target_version():
+    """Same decision, same levels: the production label equals the shadow incumbent's, version aside."""
+    daily, minutes = _path(jump_day=5)
+    label, _, notes, _ = _produce(m.production_decision(_app_observation(), _app_payload()), daily, minutes)
+    shadow = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY)[m.INCUMBENT]
+    assert label == {**shadow, "target_version": TARGET_VERSION} and notes == {}
+    assert label["target_version"] == "net-excess-app-contract-v1" != INC
+
+
+def test_production_label_benchmark_is_the_minute_window_not_the_day_open():
+    """NIFTY +1% at 09:45, before the 10:10 entry: the old label charged it; the new one does not."""
+    daily, minutes = _path()
+    label, _, _, _ = _produce(m.production_decision(_app_observation(), _app_payload()), daily, minutes,
+                              nifty=_nifty((0, 30)))
+    assert label["benchmark_return"] == 0.0 and label["outcome"] == "horizon"
+    assert label["exit_timestamp"] == f"{label['label_end_date']}T15:15:00"
+
+
+def test_production_label_uses_the_recorded_horizon():
+    """Horizon 5: the time exit is 15:15 on the 5th session after the decision day."""
+    daily, minutes = _path()
+    label, _, _, _ = _produce(m.production_decision(_app_observation(), _app_payload(horizon=5)), daily, minutes)
+    assert label["horizon_sessions"] == 5
+    assert label["label_end_date"] == _days(D0, 6)[5].isoformat()
+    assert label["exit_timestamp"] == f"{_days(D0, 6)[5].isoformat()}T15:15:00"
+
+
+def test_production_label_waits_for_the_full_horizon_without_any_request():
+    """Before the 15th session has completed: deferred, nothing fetched, even if the target was hit."""
+    daily, minutes = _path(jump_day=1, jump_to=130.0)
+    early_today = _days(D0, 8)[7]
+    label, hist, notes, fetched = _produce(m.production_decision(_app_observation(), _app_payload()),
+                                           daily, minutes, today=early_today)
+    assert (label, hist, notes, fetched) == (None, None, {"deferred": 1}, [])
+    # No completed session after the decision day at all ("awaiting"): also a quiet deferral.
+    label, hist, notes, fetched = _produce(m.production_decision(_app_observation(), _app_payload()),
+                                           daily, minutes, today=D0)
+    assert (label, hist, notes, fetched) == (None, None, {"deferred": 1}, [])
+
+
+def test_production_label_full_window_only_in_label_decision():
+    """early=False: an exit before the window completed is not stored (no early labels in production)."""
+    daily, minutes = _path(jump_day=1, jump_to=130.0)
+    decision = m.production_decision(_app_observation(), _app_payload())
+    notes = {}
+    out = m.label_decision(decision, daily=daily, minutes=minutes, benchmark=daily, benchmark_minutes=minutes,
+                           today=_days(D0, 12)[11], notes=notes, levels={m.PRODUCTION: (80.0, 128.0)},
+                           versions={m.PRODUCTION: TARGET_VERSION}, early=False)
+    assert out == {m.PRODUCTION: None} and notes == {}
+
+
+def test_production_label_holds_back_a_corporate_action_before_any_history_request():
+    """A bonus ex-dated after the decision day: held back, archived, no history fetched."""
+    archived = []
+
+    class Repo:
+        def archive_corporate_actions(self, isin, actions):
+            archived.append((isin, len(actions)))
+
+    daily, minutes = _path()
+    bonus = {"name": "Bonus", "ex_date": (D0 + dt.timedelta(days=3)).isoformat(), "ratio": "1:1"}
+    observation = {**_app_observation(), "instrument_key": "NSE_EQ|INE002A01018"}
+    label, _, notes, fetched = _produce(m.production_decision(observation, _app_payload()), daily, minutes,
+                                        actions=[bonus], repo=Repo())
+    assert label is None and notes == {"corporate_action": 1}
+    assert fetched == [] and archived == [("INE002A01018", 1)]
+
+
+def test_production_label_counts_an_unreadable_action_once_and_an_empty_history_as_no_history():
+    """An unreadable action is unreadable_action only (retried, not the final corporate_action); an
+    empty daily answer after the requests is no_history (an attempt), not a free deferral."""
+    class Repo:
+        def archive_corporate_actions(self, isin, actions):
+            """Best-effort archive."""
+
+    daily, minutes = _path()
+    odd = {"name": "Dividend", "amt": 5, "expiry_date": (D0 + dt.timedelta(days=4)).strftime("%d %b %Y")}
+    observation = {**_app_observation(), "instrument_key": "NSE_EQ|INE467B01029"}
+    label, _, notes, fetched = _produce(m.production_decision(observation, _app_payload()), daily, minutes,
+                                        actions=[odd], repo=Repo())
+    assert label is None and fetched == [] and notes["unreadable_action"] == 1 and "corporate_action" not in notes
+    label, _, notes, fetched = _produce(m.production_decision(_app_observation(), _app_payload()),
+                                        daily.iloc[0:0], minutes, nifty=(daily, minutes))
+    assert label is None and notes == {"no_history": 1} and ("daily", "NSE_EQ|SYN") in fetched
+
+
+def test_close_mode_maturation_end_to_end_with_the_real_label(monkeypatch):
+    """update_matured_targets with the real label_production_decision on fake bars: the shared label is
+    stored, then its OUTCOME_MATURED event on the stock's 15 sessions, and the labelled disposition."""
+    import scheduled_collector as collector
+    from test_prospective_collection import MemoryRepository   # the in-memory ledger the collector tests use
+    daily, minutes = _path(jump_day=5)
+
+    class Repo(MemoryRepository):
+        def __init__(self):
+            """One pending app decision and its DECISION_EVALUATED event."""
+            super().__init__()
+            self.saved = []
+            self.ledger.append({"aggregate_id": "decision:app-1", "event_type": "DECISION_EVALUATED",
+                                "idempotency_key": "app-1-evaluated", "payload": _app_payload()})
+
+        def pending_observations(self, **_kwargs):
+            """The one pending row."""
+            return [_app_observation()]
+
+        def save_prediction_target(self, observation_id, target):
+            """Record the label."""
+            self.saved.append((observation_id, target))
+
+        def archive_corporate_actions(self, isin, actions):
+            """Best-effort archive."""
+
+    repo, written = Repo(), []
+    monkeypatch.setattr(collector, "production_payload",
+                        lambda _repo, oid: next(e["payload"] for e in repo.ledger if e["aggregate_id"] == f"decision:{oid}"))
+    monkeypatch.setattr(collector, "save_dispositions", lambda _repo, rows, _lease: written.extend(rows))
+    real_outcome = collector.DecisionEvidenceSpine.outcome
+    # The synthetic TODAY is after the real clock; the spine checks the outcome is not in the future.
+    monkeypatch.setattr(collector.DecisionEvidenceSpine, "outcome", lambda self, **kw: real_outcome(
+        self, now=dt.datetime.combine(TODAY, dt.time(), tzinfo=dt.timezone.utc), **kw))
+    summary = collector.update_matured_targets(
+        repo, None, "t", today=TODAY, fetch_daily=lambda _c, _t, _k, _f, _to: daily,
+        fetch_minutes=lambda _c, _t, _k, _f, _to: minutes, fetch_actions=lambda _c, _t, _k: [],
+        sleep=lambda _s: None)
+    expected, _, _, _ = _produce(m.production_decision(_app_observation(), _app_payload()), daily, minutes)
+    assert summary["failures"] == [] and (summary["status"], summary["attempted"], summary["stored"]) == ("SUCCESS", 1, 1)
+    assert repo.saved == [("app-1", expected)] and expected["target_version"] == TARGET_VERSION
+    matured = next(e for e in repo.ledger if e["event_type"] == "OUTCOME_MATURED")["payload"]
+    assert len(matured["completed_session_closes"]) == 15 and matured["actual_forward_return"] == expected["net_return"]
+    assert [(r[0], r[2]) for r in written] == [("app-1", "labelled")]
+
+
+@pytest.mark.parametrize("stop,target", [(101.0, 128.0), (80.0, 99.0), (128.0, 80.0)])
+def test_production_label_outside_levels_gives_no_label(stop, target):
+    """An entry not strictly between the recorded stop and target (or stop above target): no label."""
+    daily, minutes = _path()
+    label, _, notes, _ = _produce(m.production_decision(_app_observation(stop, target), _app_payload()),
+                                  daily, minutes)
+    assert label is None and notes == {"outside_levels": 1}
+
+
+def test_production_label_reports_a_basis_mismatch():
+    """The fetched history is off the recorded price basis (a halved history): no label, listed."""
+    daily, minutes = _path()
+    label, _, notes, _ = _produce(m.production_decision(_app_observation(), _app_payload()),
+                                  _scaled(daily, 0.5), _scaled(minutes, 0.5), nifty=(daily, minutes))
+    assert label is None and notes["basis_mismatch"] == 1
+    assert notes["basis_problems"][0]["observation_id"] == "app-1"
+
+
+def test_production_payload_needs_exactly_one_decision_event():
+    """The DECISION_EVALUATED payload is read from the ledger; zero or two events is an error."""
+    class Conn:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params):
+            """The payload query must ask for this decision's DECISION_EVALUATED event."""
+            assert "DECISION_EVALUATED" in sql and params == ("decision:app-1",)
+            return self
+
+        def fetchall(self):
+            return self.rows
+
+    class Repo:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def connect(self):
+            return Conn(self.rows)
+
+    assert m.production_payload(Repo([(json.dumps({"a": 1}),)]), "app-1") == {"a": 1}
+    assert m.production_payload(Repo([({"a": 2},)]), "app-1") == {"a": 2}
+    for rows in ([], [({},), ({},)]):
+        with pytest.raises(ValueError, match="DECISION_EVALUATED"):
+            m.production_payload(Repo(rows), "app-1")
+    with pytest.raises(m.DuplicateDecision):          # two events: final, never retried
+        m.production_payload(Repo([({},), ({},)]), "app-1")
+    assert "duplicate_decision" in m.PRODUCTION_FINAL
+
+
+def _app_decision(pg, obs, *, version=TARGET_VERSION, horizon=15, passed=True, matured=False):
+    """One app decision: a passed scanner row and its DECISION_EVALUATED event (and an outcome)."""
+    pg.execute("INSERT INTO quant_app.scanner_observations VALUES (%s,%s,%s::timestamptz,%s,%s,%s,%s,true,%s,"
+               "NULL,72,100,80,128,'{}'::jsonb)",
+               (obs, D0, EVALUATED.isoformat(), "NSE_EQ|SYN", "SYN", "equity-scanner-v19.0", D0, passed))
+    payload = {**_app_payload(horizon=horizon), "decision_id": obs}
+    payload["identifiers"]["target_version"] = version
+    events = [("DECISION_EVALUATED", payload)] + ([("OUTCOME_MATURED", {"decision_id": obs})] if matured else [])
+    for kind, body in events:
+        pg.execute("INSERT INTO quant_app.evidence_ledger_events VALUES (gen_random_uuid(),%s,1,%s,now(),now(),"
+                   "'t','a',%s,%s::jsonb,'p',%s,'sha256',1,NULL)",
+                   (f"decision:{obs}", kind, f"{obs}-{kind}", json.dumps(body), f"{obs}-{kind}"))
+
+
+class _RepoSelf(SqlRepo):
+    """Enough of ProductionRepository to run its own SQL methods on the harness."""
+
+    configured = True
+
+    def ensure_schema(self):
+        """The harness built the tables."""
+
+
+@needs_sql
+def test_production_pending_query_selects_unmatured_passes_of_the_current_version(roles_db):
+    """pending_observations (the real SQL): passes stamped TARGET_VERSION without an outcome, by default."""
+    from production_repository import ProductionRepository
+    _app_decision(roles_db, "new")
+    _app_decision(roles_db, "legacy", version="net-excess-execution-v2")
+    _app_decision(roles_db, "watch", passed=False)
+    _app_decision(roles_db, "done", matured=True)
+    _app_decision(roles_db, "five", horizon=5)
+    roles_db.execute("INSERT INTO quant_app.evidence_ledger_events VALUES (gen_random_uuid(),%s,2,%s,now(),now(),"
+                     "'t','a',%s,%s::jsonb,'p',%s,'sha256',1,NULL)",
+                     ("decision:five", "DECISION_EVALUATED", "five-again", json.dumps(_app_payload()), "five-again"))
+    rows = ProductionRepository.pending_observations(_RepoSelf(roles_db))
+    assert sorted(row["observation_id"] for row in rows) == ["five", "new"]   # one row per decision
+    assert {row["observation_id"]: row["horizon_sessions"] for row in rows} == {"new": 15, "five": 5}
+    legacy = ProductionRepository.pending_observations(_RepoSelf(roles_db), target_version="net-excess-execution-v2")
+    assert [row["observation_id"] for row in legacy] == ["legacy"]
+    payload = m.production_payload(SqlRepo(roles_db), "new")
+    decision = m.production_decision(next(r for r in rows if r["observation_id"] == "new"), payload)
+    assert (decision["horizon_sessions"], decision["cost_bps"], decision["evaluated_at"]) == (15, 20.0, pd.Timestamp(EVALUATED))
+
+
+@needs_sql
+def test_production_stats_count_only_current_version_labels(db):
+    """stats() (the real SQL) counts TARGET_VERSION labels, not the legacy or shadow versions."""
+    from production_repository import ProductionRepository
+    db.send({"script": "CREATE TABLE quant_app.universe_snapshots (x int); CREATE TABLE quant_app.mf_nav (x int);"
+                       "CREATE TABLE quant_app.collection_runs (finished_at timestamptz, status text);"})
+    for obs, version in (("a", TARGET_VERSION), ("b", "net-excess-execution-v2"), ("c", m.INCUMBENT)):
+        _app_decision(db, obs)
+        _label(db, obs, version)
+    assert ProductionRepository.stats(_RepoSelf(db))["targets"] == 1
+
+
+@needs_sql
+def test_production_pending_query_age_and_final_disposition_filters(roles_db):
+    """exit_since runs from the estimated exit day (decision day + horizon in weekdays + a week), so a
+    long horizon is kept until it can mature; a final reason for TARGET_VERSION leaves the decision
+    out (another version's row, or a retryable reason, does not); never-tried decisions come first;
+    a stored label (its outcome event missing) comes back with the row."""
+    from production_repository import ProductionRepository
+    for obs in ("old", "final", "retry", "shadow-row", "fresh"):
+        _app_decision(roles_db, obs)
+    _app_decision(roles_db, "long", horizon=60)
+    roles_db.execute("UPDATE quant_app.scanner_observations SET as_of_date = %s WHERE observation_id IN ('old','long')",
+                     (D0 - dt.timedelta(days=1),))
+    _label(roles_db, "fresh", TARGET_VERSION)
+    m.save_dispositions(SqlRepo(roles_db), [("final", TARGET_VERSION, "no_fill", "{}"),
+                                            ("retry", TARGET_VERSION, "basis_mismatch", "{}"),
+                                            ("shadow-row", "other-version", "no_fill", "{}")], None)
+    repo = _RepoSelf(roles_db)
+    exit_15 = D0 + dt.timedelta(days=(15 * 7 + 4) // 5 + 7)      # D0's estimated exit + slack
+    rows = ProductionRepository.pending_observations(repo, exit_since=exit_15,
+                                                     final_dispositions=list(m.PRODUCTION_FINAL))
+    assert sorted(r["observation_id"] for r in rows) == ["fresh", "long", "retry", "shadow-row"]
+    assert rows[-1]["observation_id"] == "retry"                  # tried before: after the never-tried
+    stored = {r["observation_id"]: r["stored_label"] for r in rows}
+    assert stored["fresh"]["outcome"] == "target" and stored["fresh"]["outcome_date"] == "2026-11-10"
+    assert stored["retry"] is None
+    everything = ProductionRepository.pending_observations(repo)
+    assert len(everything) == 6
+    # Never tried: the earliest estimated exit first (D0's 15 sessions before the 60-session decision).
+    ids = [r["observation_id"] for r in everything]
+    assert ids[0] == "old" and ids[3] == "long" and set(ids[4:]) == {"final", "retry"}
+    # ready_before: a decision that cannot have completed (fewer calendar days than sessions) is not read.
+    ready = ProductionRepository.pending_observations(repo, ready_before=D0 + dt.timedelta(days=16))
+    assert sorted(r["observation_id"] for r in ready) == ["final", "fresh", "old", "retry", "shadow-row"]
+
+
+def test_production_precheck_answers_weekend_and_late_decisions_without_any_request():
+    """A decision after 15:15 or on a day NSE was closed has no entry window: final no_entry_window, no
+    request; a recorded time off its decision day, or an open day missing from NIFTY's bars, is a
+    reported window problem, retried."""
+    daily, minutes = _path()
+    late = {**_app_payload(), "decision_at": "2026-11-02T10:20:00+00:00"}            # 15:50 IST
+    label, _, notes, fetched = _produce(m.production_decision(_app_observation(), late), daily, minutes)
+    assert (label, notes, fetched) == (None, {"no_entry_window": 1}, [])
+    saturday = D0 - dt.timedelta(days=2)
+    weekend = {**_app_payload(), "decision_at": "2026-10-31T04:40:00+00:00"}
+    label, _, notes, fetched = _produce(m.production_decision({**_app_observation(), "as_of_date": saturday}, weekend),
+                                        daily, minutes)
+    assert (label, notes, fetched) == (None, {"no_entry_window": 1}, [])
+    off_day = {**_app_payload(), "decision_at": "2026-11-03T04:40:00+00:00"}
+    label, _, notes, fetched = _produce(m.production_decision(_app_observation(), off_day), daily, minutes)
+    assert label is None and fetched == [] and notes["window_problem"] == 1
+    assert "not on the decision day" in notes["basis_problems"][0]["message"]
+    # An open weekday missing from this run's NIFTY bars is a gap, not a closed day: retried.
+    gap = daily.loc[daily.index.normalize() != pd.Timestamp(D0)]
+    label, _, notes, fetched = _produce(m.production_decision(_app_observation(), _app_payload()), daily, minutes,
+                                        nifty=(gap, minutes))
+    assert label is None and fetched == [] and notes["window_problem"] == 1 and "no_entry_window" not in notes
+    assert "no_entry_window" in m.PRODUCTION_FINAL and "window_problem" not in m.PRODUCTION_FINAL
+    # A special session is not in the regular calendar the label uses: no regular entry, final.
+    assert m._closed_day(dt.date(2024, 1, 20)) and not m._closed_day(D0)
+    # A year the reviewed calendar does not cover yet: weekends are closed, weekdays are not assumed so.
+    assert m._closed_day(dt.date(2031, 1, 4)) and not m._closed_day(dt.date(2031, 1, 6))
+
+
+def test_history_cache_keys_on_the_horizon():
+    """Two decisions on one stock and day with different horizons fetch their own windows."""
+    daily, minutes = _path()
+    windows = []
+
+    def fetch_minutes(_c, _t, key, start, end):
+        """Records the stock's requested window."""
+        if key != m.NIFTY_KEY:
+            windows.append((start, end))
+        return minutes
+
+    cache = {}
+    for horizon in (5, 15):
+        decision = m.production_decision(_app_observation(), _app_payload(horizon=horizon))
+        m._history(cache, decision, client=None, token="t", today=TODAY, fetch_daily=lambda *a: daily,
+                   fetch_minutes=fetch_minutes, sleep=lambda _s: None, benchmark=m._before(daily, TODAY))
+    assert windows == [(D0, _days(D0, 6)[5]), (D0, _days(D0, 16)[15])]
+
+
+def test_only_the_legacy_label_and_its_historical_cohort_name_the_old_production_version():
+    """Every production reader follows TARGET_VERSION: the old string may appear only where it means the
+    legacy label or data recorded under it (and in tests and docs)."""
+    import model_training_pipeline as mtp
+    allowed = {"prediction_validation.py",            # LEGACY_TARGET_VERSION
+               "equity_research_observations.py"}     # the approved 89-decision cohort recorded under it
+    # The shared engine names it only as history: in its module docstring or a comment, never in code.
+    lines = (ROOT / "equity_stage2_maturation.py").read_text().splitlines()
+    first_import = next(i for i, line in enumerate(lines) if line.startswith(("import ", "from ")))
+    assert all(i < first_import or line.lstrip().startswith("#")
+               for i, line in enumerate(lines) if "net-excess-execution-v2" in line)
+    allowed.add("equity_stage2_maturation.py")
+    found = set()
+    for path in ROOT.rglob("*"):
+        if (path.suffix in {".py", ".yml", ".yaml", ".sql", ".ts"} and "tests" not in path.parts
+                and ".git" not in path.parts and "node_modules" not in path.parts
+                and "net-excess-execution-v2" in path.read_text(errors="ignore")):
+            found.add(path.relative_to(ROOT).as_posix())
+    assert found <= allowed, found - allowed
+    workflow = (ROOT / ".github/workflows/model-training-readiness.yml").read_text()
+    assert f"--target-version {TARGET_VERSION}" in workflow
+    assert mtp.production_smoke.__kwdefaults__["target_version"] == TARGET_VERSION

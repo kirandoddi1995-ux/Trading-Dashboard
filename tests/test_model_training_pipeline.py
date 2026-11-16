@@ -142,6 +142,7 @@ def test_shadow_artifact_api_requires_independent_promotion_evidence():
 
 
 def test_scheduled_check_treats_insufficient_as_healthy_fail_closed(monkeypatch):
+    """The scheduled check reads the current production label version and fails closed on too little evidence."""
     calls = []
 
     def smoke(**kwargs):
@@ -158,7 +159,7 @@ def test_scheduled_check_treats_insufficient_as_healthy_fail_closed(monkeypatch)
     assert calls == [{
         "features": ["scanner_composite_score"],
         "strategy_id": "equity-scanner-v19.0",
-        "target_version": "net-excess-execution-v2",
+        "target_version": "net-excess-app-contract-v1",   # prediction_validation.TARGET_VERSION
         "horizon_sessions": 15,
     }]
 

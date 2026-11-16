@@ -8,13 +8,14 @@ UTC = dt.timezone.utc
 
 def _equity_record(index, day, *, matured=True, eligible=True, feature=True,
                    strategy_id="equity-scanner-v19.0", horizon_sessions=15):
+    """An equity decision/outcome record on the current contract (overrides via kwargs)."""
     decision_at = dt.datetime.combine(day, dt.time(4, 30), tzinfo=UTC)
     return {
         "decision_id": f"decision-{index}",
         "decision_at": decision_at.isoformat(),
         "asset_class": "equity",
         "strategy_id": strategy_id,
-        "target_version": "net-excess-execution-v2",
+        "target_version": "net-excess-app-contract-v1",
         "horizon_sessions": horizon_sessions,
         "feature_names": ["scanner_composite_score"] if feature else [],
         "matured": matured,

@@ -1257,33 +1257,70 @@ class ProductionRepository:
             ))
             conn.commit()
 
-    def pending_observations(self, *, target_version="net-excess-execution-v2",
-                             limit=100) -> list[dict]:
-        """Return passed signals missing their immutable decision-horizon outcome."""
+    def pending_observations(self, *, target_version="net-excess-app-contract-v1",
+                             limit=100, exit_since=None, final_dispositions=None,
+                             ready_before=None) -> list[dict]:
+        """Return passed signals missing their immutable decision-horizon outcome.
+
+        `exit_since`: only decisions whose estimated exit day (the decision day plus the horizon in
+        weekdays, plus a week of holiday slack) is on or after this date, so the retry window runs
+        from the exit, whatever the horizon. `final_dispositions`: leave out decisions whose
+        disposition for `target_version` (stage2_shadow_dispositions, written by the close-mode
+        maturation) is one of these final reasons. `ready_before`: leave out decisions that cannot
+        have completed by then (fewer calendar days than horizon sessions since the decision day; a
+        lower bound, the exact check is the caller's), so waiting long horizons cannot fill the scan.
+        Order: never-tried decisions first by estimated exit day, then the least recently tried, so
+        retried failures cannot crowd new decisions out.
+        `stored_label`: this version's prediction_targets row when it already exists (a label whose
+        OUTCOME_MATURED event was not written), else None.
+        """
         self.ensure_schema()
+        horizon = "(decision.payload->'identifiers'->>'horizon_sessions')::integer"
+        filters, params = "", [str(target_version), str(target_version), str(target_version)]
+        if exit_since is not None:
+            filters += f" AND o.as_of_date + (({horizon} * 7 + 4) / 5 + 7) >= %s"
+            params.append(exit_since)
+        if ready_before is not None:
+            filters += f" AND o.as_of_date + {horizon} < %s"
+            params.append(ready_before)
+        if final_dispositions:
+            filters += """
+                  AND (tried.disposition IS NULL OR NOT tried.disposition = ANY(%s))"""
+            params.append(list(final_dispositions))
         with self.connect() as conn:
             rows = conn.execute(f"""
                 SELECT o.observation_id,o.as_of_date,o.observed_at,o.instrument_key,o.trading_symbol,
-                       o.entry,o.stop,o.target,o.feature_json,
-                       (decision.payload->'identifiers'->>'horizon_sessions')::integer AS horizon_sessions
+                       o.entry,o.stop,o.target,o.feature_json,{horizon} AS horizon_sessions,
+                       (SELECT to_jsonb(t) FROM {SCHEMA}.prediction_targets t
+                        WHERE t.observation_id=o.observation_id AND t.target_version=%s
+                          AND t.horizon_sessions={horizon}) AS stored_label
                 FROM {SCHEMA}.scanner_observations o
-                JOIN {SCHEMA}.evidence_ledger_events decision
-                  ON decision.aggregate_id='decision:' || o.observation_id
-                 AND decision.event_type='DECISION_EVALUATED'
+                JOIN LATERAL (
+                    SELECT e.aggregate_id, e.payload FROM {SCHEMA}.evidence_ledger_events e
+                    WHERE e.aggregate_id='decision:' || o.observation_id AND e.event_type='DECISION_EVALUATED'
+                    ORDER BY e.sequence_no LIMIT 1
+                ) decision ON TRUE
+                LEFT JOIN {SCHEMA}.stage2_shadow_dispositions tried
+                  ON tried.observation_id=o.observation_id AND tried.label_version=%s
                 WHERE o.stage2_pass=TRUE AND o.entry IS NOT NULL AND o.stop IS NOT NULL AND o.target IS NOT NULL
                   AND decision.payload->'identifiers'->>'target_version'=%s
-                  AND (decision.payload->'identifiers'->>'horizon_sessions')::integer > 0
+                  AND {horizon} > 0
                   AND NOT EXISTS (
                       SELECT 1 FROM {SCHEMA}.evidence_ledger_events outcome
                       WHERE outcome.aggregate_id=decision.aggregate_id
                         AND outcome.event_type='OUTCOME_MATURED'
-                  )
-                ORDER BY o.as_of_date,o.instrument_key
+                  ){filters}
+                ORDER BY tried.last_at NULLS FIRST, o.as_of_date + ({horizon} * 7 + 4) / 5, o.as_of_date,
+                         o.instrument_key
                 LIMIT %s
-            """, (str(target_version), int(limit))).fetchall()
+            """, (*params, int(limit))).fetchall()
         names = ["observation_id", "as_of_date", "observed_at", "instrument_key", "trading_symbol",
-                 "entry", "stop", "target", "features", "horizon_sessions"]
-        return [dict(zip(names, row)) for row in rows]
+                 "entry", "stop", "target", "features", "horizon_sessions", "stored_label"]
+        result = [dict(zip(names, row)) for row in rows]
+        for row in result:
+            if isinstance(row["stored_label"], str):
+                row["stored_label"] = json.loads(row["stored_label"])
+        return result
 
     def archive_mf_nav(self, records: Iterable[Mapping], *, source="AMFI NAVOpen.txt", source_hash="") -> int:
         self.ensure_schema()
@@ -1711,6 +1748,7 @@ class ProductionRepository:
         return records
 
     def stats(self) -> dict:
+        """Row counts for the status panel; `targets` counts production labels (the current TARGET_VERSION)."""
         if not self.configured:
             return {"configured": False}
         self.ensure_schema()
@@ -1719,7 +1757,7 @@ class ProductionRepository:
                 SELECT
                     (SELECT COUNT(*) FROM {SCHEMA}.universe_snapshots),
                     (SELECT COUNT(*) FROM {SCHEMA}.scanner_observations),
-                    (SELECT COUNT(*) FROM {SCHEMA}.prediction_targets WHERE target_version='net-excess-execution-v2'),
+                    (SELECT COUNT(*) FROM {SCHEMA}.prediction_targets WHERE target_version='net-excess-app-contract-v1'),
                     (SELECT COUNT(*) FROM {SCHEMA}.mf_nav),
                     (SELECT MAX(finished_at) FROM {SCHEMA}.collection_runs WHERE status='SUCCESS'),
                     (SELECT COUNT(*) FROM {SCHEMA}.evidence_ledger_events)

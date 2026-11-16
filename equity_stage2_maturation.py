@@ -33,10 +33,13 @@ decision's estimated round-trip costs:
 
 Both policies are labelled from one fetch and stored together, or not at all (a missing NIFTY
 window for either, `no_benchmark`, retries both later), so a pair never mixes two fetches.
-The production label (`prediction_validation.compute_forward_target`, `net-excess-execution-v2`)
-is unchanged: it reads minute bars only on days whose daily bar shows a touch, lets an in-session
-entry slip to a later day and ends a time exit after the 14th session, which is why it is not
-used here (the earlier shadow version built on it never stored a label).
+The old production label (`prediction_validation.compute_forward_target`, now
+`LEGACY_TARGET_VERSION` `net-excess-execution-v2`) reads minute bars only on days whose daily bar
+shows a touch, lets an in-session entry slip to a later day and ends a time exit after the 14th
+session. Since 16 Nov 2026 this module's label is the production label too: `TARGET_VERSION` is
+`net-excess-app-contract-v1`, written by the close-mode maturation through
+`label_production_decision` (the decision's recorded levels and horizon, full windows only; see
+PRODUCTION_LABEL_SUCCESSOR_2026-11-16.md).
 
 Price basis (corporate actions): the recorded entry, stop and target are on the price basis of
 the decision day, but Upstox history is back-adjusted to the day it is fetched. A split, bonus,
@@ -62,7 +65,7 @@ then sits inside the window).
 
 Each label is one append-only `prediction_targets` row under a shadow-only target version
 `stage2-shadow:<label version>:<policy>`, so the app's calibration, readiness counts and training
-(which read `net-excess-execution-v2`) never see them. Buy and Watch, the score and repeated scans
+(which read `TARGET_VERSION`) never see them. Buy and Watch, the score and repeated scans
 are all kept: the read-only report `sql/stage2_shadow_outcomes_report.sql` splits by them.
 
 Why not a DECISION_EVALUATED event per pass (the spec's other Phase 5 option): the app's
@@ -124,7 +127,8 @@ import pandas as pd
 from equity_stage2_collector import (
     IST, NIFTY_KEY, REQUEST_PAUSE_SECONDS, STAGE2_SHADOW_VERSION, UPSTOX_API, LeaseLost,
 )
-from nifty_session_calendar import SPECIAL
+from nifty_session_calendar import SPECIAL, cash_session
+from prediction_validation import TARGET_VERSION
 from production_repository import SCHEMA, _date_value, _executemany
 from trade_contracts import INTRADAY_TIME_EXIT, build_trade_timing
 
@@ -415,25 +419,33 @@ def regular_sessions(benchmark: pd.DataFrame | None, today: dt.date) -> list[dt.
     return _regular(_before(benchmark, today).index)
 
 
-def exit_session(as_of: dt.date, benchmark: pd.DataFrame | None, today: dt.date) -> dt.date | None:
-    """The HORIZON_SESSIONS-th completed regular session after the decision day, or None if not yet.
+def exit_session(as_of: dt.date, benchmark: pd.DataFrame | None, today: dt.date,
+                 horizon: int = HORIZON_SESSIONS) -> dt.date | None:
+    """The `horizon`-th (shadow: HORIZON_SESSIONS) completed regular session after the decision day, or None.
 
     The app's mandatory exit day; completed_decisions selects on the same count (regular_sessions),
     so selection, the fetch range and the label window agree.
     """
     sessions = [d for d in regular_sessions(benchmark, today) if d > as_of]
-    return sessions[HORIZON_SESSIONS - 1] if len(sessions) >= HORIZON_SESSIONS else None
+    return sessions[horizon - 1] if len(sessions) >= horizon else None
 
 
-def window_end(as_of: dt.date, benchmark: pd.DataFrame | None, today: dt.date) -> tuple[dt.date | None, bool]:
+def window_end(as_of: dt.date, benchmark: pd.DataFrame | None, today: dt.date,
+               horizon: int = HORIZON_SESSIONS) -> tuple[dt.date | None, bool]:
     """(last session of the label window, final): the exit session once completed (final), else
     the last completed regular session on or after the decision day (an early window: a stop or
     target touched in it is already the trade's exit), else (None, False)."""
-    end = exit_session(as_of, benchmark, today)
+    end = exit_session(as_of, benchmark, today, horizon)
     if end is not None:
         return end, True
     sessions = [d for d in regular_sessions(benchmark, today) if d >= as_of]
     return (sessions[-1], False) if sessions else (None, False)
+
+
+def _horizon(decision: Mapping) -> int:
+    """The decision's label horizon in sessions: the recorded one (production), else HORIZON_SESSIONS."""
+    horizon = decision.get("horizon_sessions")
+    return HORIZON_SESSIONS if horizon is None else int(horizon)
 
 
 def _naive_ist(value) -> pd.Timestamp:
@@ -446,7 +458,8 @@ def trade_contract(decision: Mapping, benchmark: pd.DataFrame, today: dt.date) -
     """(the app's trade plan for this decision, "" ) or (None, why not).
 
     `build_trade_timing` is what the app showed: enter within ENTRY_WINDOW_MINUTES of the decision
-    (never past 15:15), exit at the stop or target, else no later than 15:15 on the 15th session.
+    (never past 15:15), exit at the stop or target, else no later than 15:15 on the horizon's last
+    session (shadow: the 15th; production: the decision's recorded horizon).
     Entry is the open of the first minute bar that starts after the decision time and by the end
     of that window (a bar that started before the decision could not be bought at its open);
     the exit session comes from the NIFTY calendar. `sessions` is every session from the
@@ -458,12 +471,13 @@ def trade_contract(decision: Mapping, benchmark: pd.DataFrame, today: dt.date) -
     as_of = decision["as_of_date"]
     if decided_at.date() != as_of:
         return None, f"decision time {decided_at} is not on the decision day {as_of}"
-    timing = build_trade_timing(decision["evaluated_at"], horizon_sessions=HORIZON_SESSIONS)
+    horizon = _horizon(decision)
+    timing = build_trade_timing(decision["evaluated_at"], horizon_sessions=horizon)
     if not timing["entry_window_open"]:
         return None, "no_entry_window"
     # The window the app showed (recorded with the decision), else the same function's answer.
     entry_until = decision.get("entry_valid_until") or timing["entry_valid_until"]
-    end, final = window_end(as_of, benchmark, today)
+    end, final = window_end(as_of, benchmark, today, horizon)
     if end is None:
         return None, "awaiting"
     calendar = regular_sessions(benchmark, today)
@@ -682,8 +696,15 @@ def _count(notes: dict | None, key: str) -> None:
 
 def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFrame,
                    benchmark: pd.DataFrame | None, benchmark_minutes: pd.DataFrame | None,
-                   today: dt.date, notes: dict | None = None) -> dict[str, dict | None]:
+                   today: dt.date, notes: dict | None = None,
+                   levels: Mapping[str, tuple[float, float] | None] | None = None,
+                   versions: Mapping[str, str] | None = None,
+                   early: bool = True) -> dict[str, dict | None]:
     """Labels per policy for one decision whose exit session has completed (see exit_session).
+
+    The shared label (SHADOW_LABEL_VERSION): shadow passes use the two POLICIES (levels None) and
+    the shadow target versions; the production close-mode maturation (label_production_decision)
+    passes its one recorded level pair, its own target version and early=False (full windows only).
 
     `benchmark` and `benchmark_minutes` are NIFTY's daily and one-minute bars. The label executes
     the app's own trade plan (trade_contract, _walk) on the stock's one-minute bars, net of the
@@ -710,7 +731,7 @@ def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFr
     """
     daily, minutes = _before(daily, today), _before(minutes, today)
     bench_daily, bench_minutes = _before(benchmark, today), _before(benchmark_minutes, today)
-    none = {policy: None for policy in POLICIES}
+    none = {policy: None for policy in (POLICIES if levels is None else levels)}
     problem = _basis_problem(decision, daily=daily, minutes=minutes)
     if problem is not None:
         LOGGER.warning("Stage-2 maturation: %s %s", decision.get("trading_symbol"), problem)
@@ -727,6 +748,8 @@ def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFr
         elif why != "awaiting":
             _problem(notes, decision, "WindowProblem", why)
         return none
+    if not early and not contract["final"]:
+        return none   # the caller only selects completed windows; an early check is not asked for
     window = _window_problem(contract, daily, minutes)
     if window is not None:
         if window[0] == "no_trading":
@@ -734,11 +757,12 @@ def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFr
         else:
             _problem(notes, decision, "WindowProblem", window[1])
         return none
-    levels = {
-        INCUMBENT: (decision["stop"], decision["target"]),
-        CHALLENGER: challenger_levels(decision["entry"], decision["atr"],
-                                      decision["resistance20"], decision["resistance60"]),
-    }
+    if levels is None:
+        levels = {
+            INCUMBENT: (decision["stop"], decision["target"]),
+            CHALLENGER: challenger_levels(decision["entry"], decision["atr"],
+                                          decision["resistance20"], decision["resistance60"]),
+        }
     labels, still_open = {}, False
     for policy, level in levels.items():
         if level is None:
@@ -778,7 +802,8 @@ def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFr
         gross = trade["exit"] / trade["entry"] - 1.0
         net = gross - float(decision["cost_bps"]) / 10_000.0
         labels[policy] = {
-            "target_version": shadow_target_version(policy), "horizon_sessions": HORIZON_SESSIONS,
+            "target_version": (versions or {}).get(policy) or shadow_target_version(policy),
+            "horizon_sessions": _horizon(decision),
             "entry_date": contract["sessions"][0].isoformat(),
             "label_end_date": contract["sessions"][-1].isoformat(),
             "outcome_date": trade["exit_at"].date().isoformat(), "outcome": trade["outcome"],
@@ -982,7 +1007,7 @@ def _history(cache: dict, decision: Mapping, *, client, token: str, today: dt.da
     window) are fetched from the decision day to the window's last session (window_end: the exit
     session once completed, else the last completed session for an early check).
     """
-    key = (decision["instrument_key"], decision["as_of_date"])
+    key = (decision["instrument_key"], decision["as_of_date"], _horizon(decision))
     if key not in cache:
         as_of = decision["as_of_date"]
         sleep(REQUEST_PAUSE_SECONDS)
@@ -995,7 +1020,7 @@ def _history(cache: dict, decision: Mapping, *, client, token: str, today: dt.da
                 raise ProviderRejected(str(exc)) from exc
             raise
         # An empty answer (HTTP 200, no candles: a renamed or delisted key) stays quietly deferred.
-        end = None if _before(daily, today).empty else window_end(as_of, benchmark, today)[0]
+        end = None if _before(daily, today).empty else window_end(as_of, benchmark, today, _horizon(decision))[0]
         minutes = bench_minutes = None
         if end is not None:
             sleep(REQUEST_PAUSE_SECONDS)
@@ -1040,6 +1065,115 @@ def _mature_one(repo, decision: Mapping, *, history: tuple, benchmark: pd.DataFr
             _guard(check_lease)
             repo.save_prediction_target(decision["observation_id"], label)
             summary["stored"] += 1
+
+
+PRODUCTION = "recorded-levels"
+# Production dispositions that a retry cannot change (the decision's own window or levels):
+# ProductionRepository.pending_observations leaves such decisions out of later close runs.
+PRODUCTION_FINAL = ("no_entry_window", "no_fill", "no_trading", "outside_levels", "corporate_action",
+                    "duplicate_decision")
+
+
+class DuplicateDecision(ValueError):
+    """An app decision with more than one DECISION_EVALUATED event: never labelled (final)."""
+PRODUCTION_DECISION_SQL = f"""
+SELECT payload FROM {SCHEMA}.evidence_ledger_events
+WHERE aggregate_id = %s AND event_type = 'DECISION_EVALUATED'
+"""
+
+
+def _closed_day(day: dt.date) -> bool:
+    """True when `day` had no regular NSE session: closed (weekend, listed holiday) or a special session
+    (not in the regular calendar the label uses); an unreviewed year: weekends only."""
+    try:
+        return cash_session(day)["kind"] in {"CLOSED", "SPECIAL"}
+    except ValueError:
+        return day.weekday() >= 5
+
+
+def production_decision(observation: Mapping, payload: Mapping) -> dict:
+    """The shared label's inputs for one app decision: its pending row and DECISION_EVALUATED payload.
+
+    The payload records the decision time, the round-trip cost estimate, the horizon and (in the
+    equity capture) the entry window the app showed and the last completed daily bar, the same
+    fields a shadow pass's ledger batch carries. Raises KeyError/ValueError when they are absent.
+    """
+    inputs = payload["features"]["raw_values_used"]["equity_capture"]["inputs"]
+    cost = (payload.get("costs") or {}).get("round_trip_bps")
+    return {
+        "observation_id": str(observation["observation_id"]),
+        "instrument_key": str(observation["instrument_key"]),
+        "trading_symbol": observation.get("trading_symbol"),
+        "as_of_date": pd.Timestamp(observation["as_of_date"]).date(),
+        "entry": float(observation["entry"]), "stop": float(observation["stop"]),
+        "target": float(observation["target"]),
+        "horizon_sessions": int(payload["identifiers"]["horizon_sessions"]),
+        "cost_bps": DEFAULT_COST_BPS if cost is None else float(cost),
+        "evaluated_at": pd.Timestamp(payload["decision_at"]),
+        "anchor": _anchor(inputs.get("latest_indicators")),
+        "entry_valid_until": _recorded_time((inputs.get("timing") or {}).get("entry_valid_until")),
+    }
+
+
+def production_payload(repo, observation_id: str) -> Mapping:
+    """The one DECISION_EVALUATED payload of an app decision (raises if there is not exactly one)."""
+    with repo.connect() as conn:
+        rows = conn.execute(PRODUCTION_DECISION_SQL, (f"decision:{observation_id}",)).fetchall()
+    if len(rows) > 1:
+        raise DuplicateDecision(f"expected one DECISION_EVALUATED event, found {len(rows)}")
+    if not rows:
+        raise ValueError("expected one DECISION_EVALUATED event, found 0")
+    payload = rows[0][0]
+    return json.loads(payload) if isinstance(payload, str) else payload
+
+
+def label_production_decision(repo, decision: Mapping, *, cache: dict, client, token: str,
+                              today: dt.date, benchmark: pd.DataFrame, fetch_daily: Callable,
+                              fetch_minutes: Callable, notes: dict,
+                              fetch_actions: Callable = fetch_corporate_actions,
+                              sleep: Callable[[float], None] = time.sleep,
+                              check_lease: Callable[[], None] | None = None
+                              ) -> tuple[dict | None, pd.DataFrame | None]:
+    """(TARGET_VERSION label, the stock's daily history) for one app decision, or (None, ...).
+
+    The production close-mode label is the shared label on the decision's recorded stop and
+    target over its recorded horizon, full windows only: the same corporate-action guard,
+    price-basis check, trade plan, touch checks and minute-aligned NIFTY window as the shadow
+    labels. Why there is no label is counted in `notes` (as in mature_shadow_passes): deferred
+    (horizon not completed, nothing fetched), no_entry_window (after the entry window, or a day
+    without a regular NSE session), corporate_action, unreadable_action (instead of corporate_action),
+    no_history (the stock's daily answer was empty), basis_mismatch, window_problem, no_trading,
+    no_fill, outside_levels, no_benchmark.
+    """
+    # No request before the window is known to be complete and tradable (the app's own plan).
+    contract, why = trade_contract(decision, benchmark, today)
+    if contract is not None and not contract["final"] or why == "awaiting":
+        _count(notes, "deferred")
+        return None, None
+    if contract is None:
+        if why == "no_entry_window" or (why.startswith("the decision day") and _closed_day(decision["as_of_date"])):
+            _count(notes, "no_entry_window")   # after 15:15, or a weekend/holiday decision: no trade
+        else:
+            # Recorded time off its decision day, or an open day missing from NIFTY's bars: retried.
+            _problem(notes, decision, "WindowProblem", why)
+        return None, None
+    if _held_back(repo, cache, decision, client=client, token=token, today=today,
+                  fetch_actions=fetch_actions, sleep=sleep, check_lease=check_lease, notes=notes):
+        if not notes.get("unreadable_action"):
+            _count(notes, "corporate_action")
+        return None, None
+    daily, minutes, end, bench_minutes = _history(
+        cache, decision, client=client, token=token, today=today, fetch_daily=fetch_daily,
+        fetch_minutes=fetch_minutes, sleep=sleep, benchmark=benchmark)
+    if end is None:
+        _count(notes, "no_history")   # fetched: an attempt, retried (a renamed or delisted key)
+        return None, daily
+    # Levels the entry is not strictly between (stop >= target included) count as outside_levels.
+    labels = label_decision(decision, daily=daily, minutes=minutes, benchmark=benchmark,
+                            benchmark_minutes=bench_minutes, today=today, notes=notes,
+                            levels={PRODUCTION: (decision["stop"], decision["target"])},
+                            versions={PRODUCTION: TARGET_VERSION}, early=False)
+    return labels[PRODUCTION], daily
 
 
 def _report(repo, summary: dict, failures: list[dict], check_lease: Callable[[], None] | None) -> None:
