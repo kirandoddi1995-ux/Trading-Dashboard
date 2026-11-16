@@ -17,6 +17,7 @@ import socket
 import threading
 import time
 import urllib.parse
+from collections.abc import Mapping
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -34,11 +35,15 @@ from amfi_ingestion import (
     download_amfi_ter,
     load_amfi_open_nav,
 )
-from prediction_validation import TARGET_VERSION, TargetDefinition, compute_forward_target
+from prediction_validation import TARGET_VERSION
 from production_repository import ProductionRepository
 from decision_evidence import DecisionEvidenceSpine
 from equity_stage2_collector import run_shadow_stage2
-from equity_stage2_maturation import mature_shadow_passes
+from equity_stage2_maturation import (
+    NOT_LABELLED, PRODUCTION_FINAL, DuplicateDecision, LeaseLost, ProviderRejected, _guard, label_production_decision,
+    mature_shadow_passes,
+    production_decision, production_payload, save_dispositions,
+)
 from nifty_session_calendar import cash_session
 from scanner_funnel import stage1_prefilter
 from prospective_collection import (
@@ -774,101 +779,226 @@ def fetch_historical_minutes(client: requests.Session, token: str, instrument_ke
     return frame[~frame.index.duplicated(keep="last")]
 
 
+PRODUCTION_LABEL_LIMIT = 40     # decisions attempted (fetched) per close run; ~4 Upstox requests for 15 sessions
+PRODUCTION_PENDING_SCAN = 400   # pending rows read per run, never-tried first (deferred ones cost no request)
+PRODUCTION_RETRY_DAYS = 60      # retried for this long after the estimated exit day, then no longer selected
+PRODUCTION_BUDGET_SECONDS = 300.0
+
+
+def _production_disposition(observation_id: str, notes: dict, stored: bool, failure: dict | None) -> tuple:
+    """(observation_id, TARGET_VERSION, disposition, detail): labelled, else the first reason counted."""
+    if stored:
+        name = "labelled"
+    elif failure is not None:
+        name = "failed"
+    else:
+        name = next((reason for reason in (*NOT_LABELLED, "no_entry_window", "no_history", "duplicate_decision") if notes.get(reason)),
+                    "unlabelled")
+    messages = [f"{item.get('error_kind')}: {item.get('message')}".replace("\x00", "")[:200]
+                for item in ([failure] if failure else []) + notes.get("basis_problems", [])][:3]
+    counts = {key: value for key, value in notes.items() if key != "basis_problems"}
+    detail = {"counts": counts, **({"messages": messages} if messages else {})}
+    return (observation_id, TARGET_VERSION, name, json.dumps(detail, sort_keys=True))
+
+
+def _store_production_label(repo, outcome_spine, decision: dict, label: dict, daily: pd.DataFrame, guard,
+                            *, save: bool = True) -> None:
+    """Save the label (unless already stored), then its OUTCOME_MATURED event with the horizon proof
+    (the stock's sessions after the decision day, up to the label's last session)."""
+    sessions = daily.loc[(daily.index.normalize() > pd.Timestamp(decision["as_of_date"]))
+                         & (daily.index.normalize() <= pd.Timestamp(label["label_end_date"]))]
+    session_closes, source_ids = [], []
+    for session_at, session_row in sessions.iterrows():
+        session_date = pd.Timestamp(session_at).date()
+        session_closes.append(dt.datetime.combine(session_date, dt.time(15, 30), tzinfo=IST).astimezone(dt.timezone.utc))
+        source_ids.append(hashlib.sha256(json.dumps({
+            "instrument_key": decision["instrument_key"],
+            "session_date": session_date.isoformat(),
+            "ohlcv": {
+                name: (None if pd.isna(session_row.get(name)) else float(session_row.get(name)))
+                for name in ("Open", "High", "Low", "Close", "Volume")
+            },
+        }, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
+    guard()
+    # The label first: it is idempotent (an equal row is accepted), so a failed outcome event leaves
+    # the decision pending and the next run completes it; the reverse order would lose the label.
+    if save:
+        repo.save_prediction_target(decision["observation_id"], label)
+    outcome_spine.outcome(
+        decision_id=decision["observation_id"],
+        outcome=str(label["outcome"]).upper(),
+        outcome_at=pd.Timestamp(label["exit_timestamp"]).tz_localize(IST).to_pydatetime(),
+        actual_forward_return=label["net_return"],
+        completed_session_closes=session_closes,
+        source_observation_ids=source_ids,
+        actual_costs={
+            "round_trip_bps": label["cost_bps"], "entry_quality": label["entry_quality"],
+            "gross_return": label["gross_return"], "net_return": label["net_return"],
+        },
+    )
+
+
+def _recover_stored_label(repo, outcome_spine, decision: dict, stored: Mapping, *, client, token: str,
+                          fetch_daily, guard) -> None:
+    """OUTCOME_MATURED for a label saved by an earlier run whose event failed; never re-labels.
+
+    Re-labelling could now disagree (a corporate action since, a revised bar) and strand the stored
+    row. The exit minute is not stored, so the event's outcome time is that session's close: never
+    earlier than the real exit. One daily request gives the horizon proof.
+    """
+    label = {key: stored[key] for key in ("label_end_date", "outcome", "net_return", "gross_return",
+                                          "cost_bps", "entry_quality")}
+    label["exit_timestamp"] = f"{stored['outcome_date']}T15:30:00"
+    daily = fetch_daily(client, token, decision["instrument_key"],
+                        decision["as_of_date"] + dt.timedelta(days=1), pd.Timestamp(stored["label_end_date"]).date())
+    _store_production_label(repo, outcome_spine, decision, label, daily, guard, save=False)
+
+
 def update_matured_targets(repo: ProductionRepository, client: requests.Session, token: str,
-                           *, limit=40) -> dict:
-    pending = repo.pending_observations(target_version=TARGET_VERSION, limit=limit)
+                           *, limit=PRODUCTION_LABEL_LIMIT, today: dt.date | None = None,
+                           fetch_daily=None, fetch_minutes=None, fetch_actions=None,
+                           check_lease=None, sleep=time.sleep, clock=time.monotonic) -> dict:
+    """Close-mode maturation of app decisions: the shared label (TARGET_VERSION) and its OUTCOME_MATURED event.
+
+    Each pending decision (a passed app decision stamped TARGET_VERSION, no outcome yet, at most
+    PRODUCTION_RETRY_DAYS old, no final disposition) is labelled by
+    `equity_stage2_maturation.label_production_decision`: the app's own trade plan on one-minute
+    bars against NIFTY over the same minutes, with the corporate-action and price-basis guards. A
+    decision whose horizon has not completed is deferred without any request. At most `limit`
+    decisions are fetched and labelled per run, within PRODUCTION_BUDGET_SECONDS; the lease is
+    checked before every decision and every write. Why a decision has no label is counted in
+    `unlabelled` and kept as its disposition (stage2_shadow_dispositions, label version
+    TARGET_VERSION); reasons in PRODUCTION_FINAL are never retried. Data problems (window, basis,
+    unreadable corporate actions) are listed in `failures` with a quality event. A rejected token
+    stops the step (FAILED) and lets the rest of the close run go on.
+    """
+    today = today or dt.datetime.now(IST).date()
+    fetch_daily = fetch_daily or fetch_daily_history
+    fetch_minutes = fetch_minutes or fetch_historical_minutes
+    started = clock()
+    def guard() -> None:
+        """A lost lease (any check_lease error) raises LeaseLost before the next write."""
+        _guard(check_lease)
+
+    pending = repo.pending_observations(
+        target_version=TARGET_VERSION, limit=PRODUCTION_PENDING_SCAN,
+        exit_since=today - dt.timedelta(days=PRODUCTION_RETRY_DAYS), final_dispositions=list(PRODUCTION_FINAL),
+        ready_before=today)
+    summary = {"status": "SUCCESS", "pending": len(pending), "attempted": 0, "stored": 0, "failed": 0,
+               "deferred": 0, "unlabelled": {}, "stopped": None, "failures": []}
     if not pending:
-        return {"pending": 0, "stored": 0, "failed": 0, "failures": []}
+        return summary
     earliest = min(pd.Timestamp(row["as_of_date"]).date() for row in pending) - dt.timedelta(days=5)
-    benchmark = fetch_daily_history(client, token, NIFTY_KEY, earliest)
+    try:
+        benchmark = fetch_daily(client, token, NIFTY_KEY, earliest, today - dt.timedelta(days=1))
+    except PermissionError:
+        summary.update(status="FAILED", stopped="TOKEN_REJECTED")
+        summary["failures"].append({"error_kind": "PermissionError", "message": "Upstox rejected the token"})
+        return summary
+    benchmark = benchmark.loc[benchmark.index.normalize() < pd.Timestamp(today)] if not benchmark.empty else benchmark
+    if benchmark.empty:
+        raise ValueError("NIFTY benchmark history is empty")
     outcome_spine = DecisionEvidenceSpine(repo.append_evidence_event, repo)
-    stored, failed, deferred, failures = 0, 0, 0, []
+    cache: dict = {}
+    dispositions: list[tuple] = []
+    extra = {} if fetch_actions is None else {"fetch_actions": fetch_actions}
     for observation in pending:
-        failure_code = "TARGET_INPUT_FETCH_FAILED"
-        failure_message = "Target inputs failed"
+        if summary["attempted"] >= limit or clock() - started > PRODUCTION_BUDGET_SECONDS:
+            summary["stopped"] = "LIMIT" if summary["attempted"] >= limit else "BUDGET"
+            break
+        guard()
+        notes: dict = {}
+        failure, stored, attempted = None, False, False
         try:
-            start = pd.Timestamp(observation["as_of_date"]).date() - dt.timedelta(days=5)
-            history = fetch_daily_history(client, token, observation["instrument_key"], start)
-            evidence_end = min(dt.datetime.now(IST).date(), start + dt.timedelta(days=50))
-            intraday = fetch_historical_minutes(
-                client, token, observation["instrument_key"], start, evidence_end,
-            )
-            features = observation.get("features") or {}
-            cost_bps = float(features.get("execution_cost_bps") or features.get("_execution_cost_bps") or 30.0)
-            observed_at = pd.Timestamp(observation["observed_at"])
-            if observed_at.tzinfo is not None:
-                observed_at = observed_at.tz_convert(IST).tz_localize(None)
-            market_open = observed_at.replace(hour=9, minute=15, second=0, microsecond=0)
-            market_close = observed_at.replace(hour=15, minute=30, second=0, microsecond=0)
-            signal_timestamp = observed_at if market_open <= observed_at <= market_close else None
-            failure_code = "TARGET_GENERATION_FAILED"
-            failure_message = "Target generation failed"
-            horizon = int(observation["horizon_sessions"])
-            completed_sessions = history.loc[
-                history.index.normalize() > pd.Timestamp(observation["as_of_date"]).normalize()
-            ]
-            if len(completed_sessions) < horizon:
-                deferred += 1
+            decision = production_decision(observation, production_payload(repo, observation["observation_id"]))
+            if observation.get("stored_label"):
+                summary["attempted"] += 1
+                attempted = True
+                _recover_stored_label(repo, outcome_spine, decision, observation["stored_label"], client=client,
+                                      token=token, fetch_daily=fetch_daily, guard=guard)
+                summary["stored"] += 1
+                stored = True
+                dispositions.append(_production_disposition(str(observation["observation_id"]), notes, stored, None))
                 continue
-            target = compute_forward_target(
-                history, observation["as_of_date"],
-                TargetDefinition(horizon, round_trip_cost_bps=cost_bps, entry_rule="exact_intraday"),
-                stop=float(observation["stop"]), target=float(observation["target"]), benchmark=benchmark,
-                intraday=intraday, signal_timestamp=signal_timestamp,
-            )
-            if target is None:
-                raise ValueError("Exact target evidence is incomplete or ambiguous")
-            eligible_sessions = completed_sessions.iloc[:horizon]
-            session_closes = []
-            source_ids = []
-            for session_at, session_row in eligible_sessions.iterrows():
-                session_date = pd.Timestamp(session_at).date()
-                session_close = dt.datetime.combine(
-                    session_date, dt.time(15, 30), tzinfo=IST,
-                ).astimezone(dt.timezone.utc)
-                session_closes.append(session_close)
-                source_ids.append(hashlib.sha256(json.dumps({
-                    "instrument_key": observation["instrument_key"],
-                    "session_date": session_date.isoformat(),
-                    "ohlcv": {
-                        name: (None if pd.isna(session_row.get(name)) else float(session_row.get(name)))
-                        for name in ("Open", "High", "Low", "Close", "Volume")
-                    },
-                }, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
-            outcome_date = pd.Timestamp(target["outcome_date"]).date()
-            outcome_at = dt.datetime.combine(
-                outcome_date, dt.time(15, 30), tzinfo=IST,
-            ).astimezone(dt.timezone.utc)
-            outcome_spine.outcome(
-                decision_id=observation["observation_id"],
-                outcome=str(target["outcome"]).upper(),
-                outcome_at=outcome_at,
-                actual_forward_return=target["net_return"],
-                completed_session_closes=session_closes,
-                source_observation_ids=source_ids,
-                actual_costs={
-                    "round_trip_bps": target["cost_bps"],
-                    "entry_quality": target.get("entry_quality"),
-                    "gross_return": target["gross_return"],
-                    "net_return": target["net_return"],
-                },
-            )
-            repo.save_prediction_target(observation["observation_id"], target)
-            stored += 1
+            label, daily = label_production_decision(
+                repo, decision, cache=cache, client=client, token=token, today=today, benchmark=benchmark,
+                fetch_daily=fetch_daily, fetch_minutes=fetch_minutes, notes=notes, sleep=sleep,
+                check_lease=check_lease, **extra)
+            if notes.get("deferred"):
+                summary["deferred"] += 1
+                continue   # nothing fetched, nothing to record
+            summary["attempted"] += 1
+            attempted = True
+            for reason, count in notes.items():
+                if reason != "basis_problems":
+                    summary["unlabelled"][reason] = summary["unlabelled"].get(reason, 0) + count
+            for problem in notes.get("basis_problems", []):
+                summary["failures"].append(problem)
+                guard()
+                repo.record_quality_event("prediction_targets", "WARNING", "TARGET_EVIDENCE_PROBLEM",
+                                          f"No label for observation {problem.get('observation_id')}", problem)
+            if label is not None:
+                _store_production_label(repo, outcome_spine, decision, label, daily, guard)
+                summary["stored"] += 1
+                stored = True
+        except LeaseLost:
+            raise
+        except PermissionError:
+            summary.update(status="FAILED", stopped="TOKEN_REJECTED")
+            summary["failures"].append({"error_kind": "PermissionError", "message": "Upstox rejected the token"})
+            break
+        except DuplicateDecision:
+            summary["attempted"] += 0 if attempted else 1
+            notes["duplicate_decision"] = 1   # final: the evidence contract needs exactly one decision event
+            summary["unlabelled"]["duplicate_decision"] = summary["unlabelled"].get("duplicate_decision", 0) + 1
+        except ProviderRejected:
+            summary["attempted"] += 0 if attempted else 1
+            notes["provider_rejected"] = 1
+            summary["unlabelled"]["provider_rejected"] = summary["unlabelled"].get("provider_rejected", 0) + 1
         except Exception as exc:
-            failed += 1
-            detail = {
+            summary["attempted"] += 0 if attempted else 1
+            summary["failed"] += 1
+            failure = {
                 "observation_id": observation.get("observation_id"),
                 "horizon": observation.get("horizon_sessions"),
                 "error_kind": type(exc).__name__, "message": str(exc)[:300],
             }
-            failures.append(detail)
+            summary["failures"].append(failure)
+            guard()
             repo.record_quality_event(
-                "prediction_targets", "ERROR", failure_code,
-                f"{failure_message} for observation {observation.get('observation_id')}", detail,
+                "prediction_targets", "ERROR", "TARGET_GENERATION_FAILED",
+                f"Target generation failed for observation {observation.get('observation_id')}", failure,
             )
-    return {"pending": len(pending), "stored": stored, "failed": failed, "deferred": deferred,
-            "failures": failures[:50]}
+        dispositions.append(_production_disposition(str(observation["observation_id"]), notes, stored, failure))
+    if dispositions:
+        try:
+            save_dispositions(repo, dispositions, check_lease)
+            summary["dispositions"] = len(dispositions)
+        except LeaseLost:
+            raise
+        except Exception as exc:
+            # Labels stand; without the rows, final reasons are retried until they expire.
+            summary["status"] = "PARTIAL" if summary["status"] == "SUCCESS" else summary["status"]
+            summary["failures"].append({"error_kind": "DispositionWriteFailed", "message": type(exc).__name__})
+    # LESSON 12: a hold-back on unreadable data, an error or a time-budget stop must be loud.
+    if summary["status"] == "SUCCESS" and (summary["failures"] or summary["stopped"] == "BUDGET"):
+        summary["status"] = "PARTIAL"
+    summary["failures"] = summary["failures"][:50]
+    return summary
+
+
+def close_run_status(result: Mapping) -> str:
+    """PARTIAL when any close-mode step failed or partly failed (its own status or failure count), else SUCCESS."""
+    bad = {"PARTIAL", "FAILED"}
+    return "PARTIAL" if (
+        result.get("targets", {}).get("failed", 0)
+        or result.get("targets", {}).get("status") in bad
+        or result.get("prospective_shadow", {}).get("status") in bad
+        or result.get("global_cue_shadow", {}).get("status") in bad
+        or result.get("corporate_actions", {}).get("failed", 0)
+        or any((result.get("scheduled_stage1", {}).get(step) or {}).get("status") in bad
+               for step in ("stage2_shadow", "stage2_maturation"))
+    ) else "SUCCESS"
 
 
 def update_corporate_actions(repo: ProductionRepository, client: requests.Session, token: str,
@@ -1069,7 +1199,7 @@ def run(mode: str, *, nav_file=None) -> dict:
                     raise RuntimeError(f"Quote coverage {coverage:.1%} is below 90%")
             if mode in {"close", "all"}:
                 lease.assert_valid()
-                target_result = update_matured_targets(repo, client, token)
+                target_result = update_matured_targets(repo, client, token, check_lease=lease.assert_valid)
                 result["targets"] = target_result
                 record_count += target_result["stored"]
                 mf_result = archive_mutual_funds(repo, client, nav_file=nav_file)
@@ -1106,14 +1236,7 @@ def run(mode: str, *, nav_file=None) -> dict:
                 result["mutual_funds"] = mf_result
                 record_count += mf_result["nav_archived"] + mf_result["disclosures_archived"]
             lease.assert_valid()
-            run_status = "PARTIAL" if (
-                result.get("targets", {}).get("failed", 0)
-                or result.get("prospective_shadow", {}).get("status") in {"PARTIAL", "FAILED"}
-                or result.get("global_cue_shadow", {}).get("status") in {"PARTIAL", "FAILED"}
-                or result.get("corporate_actions", {}).get("failed", 0)
-                or any((result.get("scheduled_stage1", {}).get(step) or {}).get("status")
-                       in {"PARTIAL", "FAILED"} for step in ("stage2_shadow", "stage2_maturation"))
-            ) else "SUCCESS"
+            run_status = close_run_status(result)
             result["status"] = run_status
             repo.finish_run(run_id, status=run_status, record_count=record_count, metadata=result)
             get_registry().record(

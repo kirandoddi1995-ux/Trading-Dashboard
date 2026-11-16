@@ -36,6 +36,7 @@ from scipy.optimize import minimize
 from artifact_security import ArtifactSigner
 from decision_evidence import ExperimentTracker
 from prediction_validation import (
+    TARGET_VERSION,
     calibration_metrics, chronological_holdout_split, paired_log_loss_improvement,
     purged_walk_forward_splits,
 )
@@ -557,7 +558,8 @@ def register_shadow_candidate(registry, artifact: Mapping, *, signer: ArtifactSi
 
 
 def production_smoke(*, database_url=None, features=(), strategy_id="equity-scanner-v19.0",
-                     target_version="net-excess-execution-v2", horizon_sessions=15) -> dict:
+                     target_version=TARGET_VERSION, horizon_sessions=15) -> dict:
+    """Train shadow candidates on matured production labels; UNAVAILABLE without a restricted DATABASE_URL."""
     url = str(database_url or os.environ.get("DATABASE_URL") or "").strip()
     if not url:
         local = pathlib.Path(__file__).resolve().parent / "market_cache.sqlite3"
@@ -591,6 +593,7 @@ def _public_result(result):
 
 
 def main(argv=None) -> int:
+    """CLI: --smoke / --scheduled-check run production_smoke; 0 means healthy, insufficient evidence included."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument(
@@ -600,7 +603,7 @@ def main(argv=None) -> int:
     parser.add_argument("--features", default="scanner_composite_score")
     parser.add_argument("--horizon", type=int, default=15)
     parser.add_argument("--strategy-id", default="equity-scanner-v19.0")
-    parser.add_argument("--target-version", default="net-excess-execution-v2")
+    parser.add_argument("--target-version", default=TARGET_VERSION)
     parser.add_argument(
         "--expect-no-artifact", action="store_true",
         help="Pass only when real evidence safely refuses training/artifact creation",

@@ -411,9 +411,9 @@ and disposition precedence (`invalid_levels` / `outside_levels` before `open`, k
 ## Limits
 - One-minute evidence (the stock's and NIFTY's) must be available from Upstox for the label to be exact;
   otherwise the decision is retried, never labelled from daily bars.
-- The production label (`net-excess-execution-v2`, written by the inactive close-mode maturation) keeps the
-  day-bar NIFTY window and the execution issues listed under the label version; give it a successor version
-  before that maturation is switched back on, and keep its v2 rows (backlog).
+- Done 16 Nov: the production label's successor is this label (`TARGET_VERSION` = `net-excess-app-contract-v1`,
+  PRODUCTION_LABEL_SUCCESSOR_2026-11-16.md); no v2 row ever existed. Lines above that name
+  `net-excess-execution-v2` as the production label describe the state before that date.
 - The entry takes the bar's open; the app also says "at or below the displayed ask", which is not modelled.
 - Levels stay at two decimals for this frozen comparison; NSE tick sizes (dated, per price band) are not
   applied. An execution-quality successor should round side-aware to the instrument's dated tick and
