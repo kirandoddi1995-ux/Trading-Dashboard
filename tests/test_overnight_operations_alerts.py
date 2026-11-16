@@ -142,18 +142,24 @@ def test_missing_schema_and_recreation_rejected(tmp_path: Path) -> None:
         operations.AlertJournal(instance.path)
 
 
+NOTICE = 'Storage/capture health requires review. Alert ID: '  # TelegramSender's constant text
+
+
 def telegram(post: operations.HTTPSPost, *, commissioned: bool = True) -> operations.TelegramSender:
-    return operations.TelegramSender('123456:' + 'x' * 30, '123', post, lambda: NOW, commissioned)
+    return operations.TelegramSender('123456:' + 'x' * 30, '-1001234567890', post, lambda: NOW, commissioned)
 
 
 def test_telegram_redacted_payload_no_paid_broadcast() -> None:
+    """Constant notice, paid broadcast off, and no token or chat id in the repr. The chat id has a '-'
+    so it can never match the hex memory address the default object repr prints."""
     seen: list[bytes] = []
 
     def post(path: str, data: bytes) -> tuple[int, bytes]:
+        """Fake Telegram API: record the request and echo a valid receipt."""
         assert path.endswith('/sendMessage')
         seen.append(data)
         return 200, json.dumps({'ok': True, 'result': {'message_id': 1,
-            'chat': {'id': 123}, 'date': int(NOW.timestamp()), 'text': json.loads(data)['text']}}).encode()
+            'chat': {'id': -1001234567890}, 'date': int(NOW.timestamp()), 'text': json.loads(data)['text']}}).encode()
 
     sender = telegram(post)
     accepted = sender(alert())
@@ -174,12 +180,24 @@ def test_telegram_bad_reply_redacted(status: int, reply: bytes) -> None:
 
 @pytest.mark.parametrize('field,value', [('message_id', True), ('message_id', 0),
                                        ('date', 0), ('date', int(NOW.timestamp()) + 1),
-                                       ('chat', {'id': 456}), ('chat', {'id': True})])
+                                       ('chat', {'id': 456}), ('chat', {'id': True}),
+                                       ('date', int(NOW.timestamp()) - 61),
+                                       ('chat', {'id': 1001234567890})])
 def test_telegram_wrong_receipt(field: str, value: object) -> None:
-    message: dict[str, object] = {'message_id': 1, 'chat': {'id': 123}, 'date': int(NOW.timestamp())}
+    """A receipt that is right except one field (the notice text included) is never acceptance."""
+    message: dict[str, object] = {'message_id': 1, 'chat': {'id': -1001234567890}, 'date': int(NOW.timestamp()),
+                                  'text': NOTICE + alert().alert_id}
     message[field] = value
     with pytest.raises(operations.OperationError):
         telegram(lambda _p, _d: (200, json.dumps({'ok': True, 'result': message}).encode()))(alert())
+
+
+def test_telegram_wrong_receipt_control_is_accepted() -> None:
+    """The base receipt of test_telegram_wrong_receipt passes, so each case fails on its own field only."""
+    message = {'message_id': 1, 'chat': {'id': -1001234567890}, 'date': int(NOW.timestamp()),
+               'text': NOTICE + alert().alert_id}
+    accepted = telegram(lambda _p, _d: (200, json.dumps({'ok': True, 'result': message}).encode()))(alert())
+    assert accepted.alert_id == alert().alert_id
 
 
 def test_telegram_inactive_does_not_use_transport() -> None:
@@ -237,7 +255,7 @@ def test_canonical_but_malformed_envelope(tmp_path: Path, field: str, value: obj
 
 
 def test_telegram_unrelated_text_not_acceptance() -> None:
-    raw = json.dumps({'ok': True, 'result': {'message_id': 1, 'chat': {'id': 123},
+    raw = json.dumps({'ok': True, 'result': {'message_id': 1, 'chat': {'id': -1001234567890},
         'date': int(NOW.timestamp()), 'text': 'different alert'}}).encode()
     with pytest.raises(operations.OperationError, match='REPLY_UNVERIFIED'):
         telegram(lambda _p, _d: (200, raw))(alert())
