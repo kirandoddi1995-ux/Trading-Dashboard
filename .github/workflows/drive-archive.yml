@@ -169,6 +169,14 @@ jobs:
               args += ['--proven-after', os.environ['PROVEN_AFTER'].strip()]
           raise SystemExit(main(args))
           PY
+      - name: Phone alert when this run fails (no-op until the Telegram secrets exist)
+        if: failure() || cancelled()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          JOB_STATUS: ${{ job.status }}
+          ALERT_LABEL: archive-${{ inputs.mode || github.event_name }}
+        run: python3 run_failure_alert.py --label "$ALERT_LABEL"
   on-time-check:
     # Late schedule only: did tonight's on-time archive job already succeed? Its own job,
     # so it alone gets `actions: read` and the token. Fail open: continue-on-error, and
