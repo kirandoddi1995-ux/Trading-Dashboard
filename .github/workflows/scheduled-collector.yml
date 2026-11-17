@@ -1,4 +1,6 @@
 name: Scheduled evidence collector
+# Run title "Collector <mode>": run_watchdog.py tells the scan dispatches from close/manual runs.
+run-name: Collector ${{ inputs.mode }}
 
 on:
   # Dispatch-only: both manual runs and the external scheduler use this entry.
