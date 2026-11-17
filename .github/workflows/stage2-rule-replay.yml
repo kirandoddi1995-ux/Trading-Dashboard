@@ -3,18 +3,26 @@ name: Stage-2 rule replay (research)
 # Manual only. Replays the app's Stage-2 decision core on ~8 years of Upstox daily bars for the
 # current NIFTY 500 under four pre-registered trade-level rules (stage2_rule_replay.py) and
 # reports Buys and their net / NIFTY-excess outcomes. Reads only: no database, no orders.
+# from_run: skip the replay and re-summarise that run's shards (the full report is also printed to
+# the log, for readers who cannot download artifacts).
 on:
   workflow_dispatch:
+    inputs:
+      from_run:
+        description: Re-summarise this earlier run's shards instead of replaying (run id, digits)
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: stage2-rule-replay
+  group: stage2-rule-replay-${{ inputs.from_run || 'replay' }}
   cancel-in-progress: false
 
 jobs:
   replay:
+    if: ${{ inputs.from_run == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     strategy:
@@ -47,7 +55,21 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read   # download-artifact from another run
     steps:
+      - name: Check from_run is a run of this workflow on this repository
+        if: ${{ inputs.from_run != '' }}
+        env:
+          FROM_RUN: ${{ inputs.from_run }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          [[ "$FROM_RUN" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "from_run must be a run id"; exit 1; }
+          origin=$(gh api "repos/$REPO/actions/runs/$FROM_RUN" --jq '.path + " " + .head_repository.full_name')
+          [[ "$origin" == ".github/workflows/stage2-rule-replay.yml $REPO" ]] || { echo "run $FROM_RUN is $origin"; exit 1; }
+
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
@@ -61,8 +83,16 @@ jobs:
           pattern: replay-shard-*
           merge-multiple: true
           path: shards
+          run-id: ${{ inputs.from_run || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Summarise (the report says whether all 8 shards are present)
-        run: python stage2_rule_replay.py summarise shards/replay-shard-*.json --out stage2-rule-replay-report.json
+        env:
+          RUN: ${{ inputs.from_run || github.run_id }}
+        run: |
+          compgen -G 'shards/replay-shard-*.json' >/dev/null || { echo "no replay shards in run $RUN"; exit 1; }
+          python stage2_rule_replay.py summarise shards/replay-shard-*.json --out stage2-rule-replay-report.json
+      - name: Print the full report
+        run: cat stage2-rule-replay-report.json
       - uses: actions/upload-artifact@v6
         with:
           name: stage2-rule-replay-report
