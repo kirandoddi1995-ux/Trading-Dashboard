@@ -2,6 +2,8 @@
 # job on pull requests. Not app, test-suite or archive dependencies.
 # pytest is pinned through the repo's constraints so the gate's --coverage run uses the same
 # pytest as the test suite (a different pytest on the path breaks some tests).
+# GitHub's dependency graph did not re-check this file when ../constraints.txt changed (the root-level
+# -c files did): after a security bump in constraints.txt, touch this file or its alerts stay open.
 -c ../constraints.txt
 coverage==7.17.2
 pyflakes==3.2.0
