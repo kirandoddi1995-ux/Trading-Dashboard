@@ -38,7 +38,7 @@ jobs:
         run: >-
           python model_training_pipeline.py --scheduled-check
           --strategy-id equity-scanner-v19.0
-          --target-version net-excess-app-contract-v1
+          --target-version net-excess-app-contract-v2
           --features scanner_composite_score
           --horizon 15 > model-readiness-result.json
       - name: Show model evaluation result

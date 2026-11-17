@@ -19,7 +19,7 @@
 -- decisions = shadow passes; attempts = runs that tried them; earlier_reasons = other conclusions
 -- these passes had on earlier attempts (e.g. a touch-check rejection before a label), with counts;
 -- examples = up to 20 passes, newest first: symbol, decision day, attempts, first message.
--- Label version net-excess-app-contract-v1 only.
+-- Label version net-excess-app-contract-v2 only.
 WITH latest AS MATERIALIZED (
     SELECT o.observation_id, coalesce(d.reasons, '{}'::text[]) AS reasons,
            coalesce(d.attempts, 0) AS attempts, d.last_at,
@@ -27,13 +27,13 @@ WITH latest AS MATERIALIZED (
            d.detail->'messages'->>0 AS message,
            (SELECT count(DISTINCT t.target_version) FROM quant_app.prediction_targets t
             WHERE t.observation_id = o.observation_id
-              AND t.target_version IN ('stage2-shadow:net-excess-app-contract-v1:incumbent-levels-v1',
-                                       'stage2-shadow:net-excess-app-contract-v1:atr15-stop-v1')) = 2
+              AND t.target_version IN ('stage2-shadow:net-excess-app-contract-v2:incumbent-levels-v1',
+                                       'stage2-shadow:net-excess-app-contract-v2:atr15-stop-v1')) = 2
                AS labelled,
            coalesce(d.disposition, 'no_record') AS last_disposition, o.instrument_key
     FROM quant_app.scanner_observations o
     LEFT JOIN quant_app.stage2_shadow_dispositions d
-           ON d.observation_id = o.observation_id AND d.label_version = 'net-excess-app-contract-v1'
+           ON d.observation_id = o.observation_id AND d.label_version = 'net-excess-app-contract-v2'
     WHERE o.strategy_version = 'equity-stage2-scheduled-shadow-v1' AND o.stage2_pass
       AND o.entry IS NOT NULL AND o.stop IS NOT NULL AND o.target IS NOT NULL
       AND o.as_of_date < (now() AT TIME ZONE 'Asia/Kolkata')::date

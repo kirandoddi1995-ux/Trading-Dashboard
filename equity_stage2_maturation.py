@@ -16,6 +16,10 @@ Label `SHADOW_LABEL_VERSION`: the app's own trade plan (`trade_contracts.build_t
 what the app shows with every decision), executed on the stock's one-minute bars, net of the
 decision's estimated round-trip costs:
 
+- the stop and target on NSE's tick for the decision's month (tick_size: the band of the
+  stock's latest close before that month, NSE/CMTR/67133), each rounded down like every sell
+  order, the stop-loss trigger included (on_tick; the repo's buys-up, sells-down rule); a level that rounds to no positive price is
+  `invalid_levels`, and a decision without that month-end close is a reported problem;
 - entry at the open of the first minute bar that starts after the decision time and within the
   entry window the app showed (15 minutes, never past 15:15) on the decision day; no such bar =
   no trade (`no_fill`, no label), never a later day;
@@ -37,7 +41,7 @@ The old production label (`prediction_validation.compute_forward_target`, now
 `LEGACY_TARGET_VERSION` `net-excess-execution-v2`) reads minute bars only on days whose daily bar
 shows a touch, lets an in-session entry slip to a later day and ends a time exit after the 14th
 session. Since 16 Nov 2026 this module's label is the production label too: `TARGET_VERSION` is
-`net-excess-app-contract-v1`, written by the close-mode maturation through
+`net-excess-app-contract-v2`, written by the close-mode maturation through
 `label_production_decision` (the decision's recorded levels and horizon, full windows only; see
 PRODUCTION_LABEL_SUCCESSOR_2026-11-16.md).
 
@@ -120,6 +124,7 @@ import os
 import re
 import time
 import urllib.parse
+from decimal import ROUND_FLOOR, Decimal
 from typing import Callable, Mapping
 
 import pandas as pd
@@ -140,9 +145,10 @@ INCUMBENT = "incumbent-levels-v1"
 CHALLENGER = "atr15-stop-v1"
 POLICIES = (INCUMBENT, CHALLENGER)
 VERSION_PREFIX = "stage2-shadow"
-# The app's own trade plan, executed on one-minute bars (see label_decision). Replaces
-# "net-excess-execution-v2.minute-aligned-v1", which no stored label ever used.
-SHADOW_LABEL_VERSION = "net-excess-app-contract-v1"
+# The app's own trade plan, executed on one-minute bars with the levels on NSE's tick (see
+# label_decision). Replaces net-excess-app-contract-v1 (levels at the recorded two decimals) and
+# "net-excess-execution-v2.minute-aligned-v1"; no stored label ever used either.
+SHADOW_LABEL_VERSION = "net-excess-app-contract-v2"
 ENTRY_QUALITY = "app_contract_first_minute_in_entry_window"
 MAX_DECISIONS_PER_RUN = 60   # <= 241 requests a run: Upstox allows 1000 per 30 min per API
 BUDGET_SECONDS = 300.0
@@ -162,7 +168,16 @@ ANCHOR_TOLERANCE = 0.001   # the scan's last completed daily bar re-fetched: flo
 ANCHOR_FIELDS = ("Open", "High", "Low")
 ANCHOR_LOOKBACK = 2        # bars before the decision day searched for it: one session of feed lag at
                            # scan time; more would let an older bar match after a rescale
-HISTORY_LEAD_DAYS = 10     # daily history starts this long before the decision day (anchor + holidays)
+# Daily history starts this long before the 1st of the decision month: tick_size's reference close
+# (the latest close before that month) and the basis anchor (2 bars before the decision day).
+TICK_LOOKBACK_DAYS = 31
+# NSE capital-market tick sizes from 15 Apr 2025 (circular NSE/CMTR/67133, consolidated in
+# NSE/CMTR/73927 of 28 Apr 2026): (upper price bound inclusive, tick). The band is set by the
+# latest close before the month (on its last trading day) and applies for the whole month.
+# (upper bound, tick): below 250 -> 0.01; 250 to 1000 -> 0.05; above 1000 to 5000 -> 0.10 ...
+TICK_BANDS_FROM = dt.date(2025, 4, 15)
+TICK_BELOW_250 = Decimal("0.01")
+TICK_BANDS = ((1000, "0.05"), (5000, "0.10"), (10000, "0.50"), (20000, "1.00"), (math.inf, "5.00"))
 ISIN_PATTERN = re.compile(r"IN[A-Z0-9]{9}[0-9]")
 FAILURE_DETAIL_LIMIT = 20
 
@@ -529,6 +544,63 @@ def _path_days(contract: dict, daily: pd.DataFrame, minutes: pd.DataFrame) -> li
     return sorted(set(contract["sessions"]) | {d for d in stamped if first < d < last})
 
 
+def tick_size(daily: pd.DataFrame, as_of: dt.date) -> Decimal | None:
+    """NSE's tick for the decision's month, or None without a reference close.
+
+    The reference is the stock's latest close before the 1st of the decision month (NSE: the
+    latest available close on the previous month's last trading day sets the month's tick), from
+    up to TICK_LOOKBACK_DAYS of history. Limits: the history is on today's price basis, so a
+    corporate action between that close and the decision day can move the band (rare; near the
+    band edges or after a split); and the band stays the decision month's for the whole path,
+    though NSE resets it on the 1st of each later month.
+    """
+    if as_of < TICK_BANDS_FROM:
+        raise ValueError(f"no NSE tick table before {TICK_BANDS_FROM}")
+    before = daily.loc[daily.index.normalize() < pd.Timestamp(as_of.replace(day=1))] if not daily.empty else daily
+    if before.empty:
+        return None
+    close = float(before["Close"].iloc[-1])
+    if not math.isfinite(close) or close <= 0:
+        return None
+    if close < 250:
+        return TICK_BELOW_250
+    return next(Decimal(tick) for bound, tick in TICK_BANDS if close <= bound)
+
+
+def on_tick(level: float, tick: Decimal) -> float | None:
+    """A sell level on the tick at or below it (every exit is a sell; sells round down), or None.
+
+    Six decimals first, so a level already on the tick stays put although its float sits just below
+    it (104.85 is stored as 104.8499999..., which a plain floor would move to 104.80).
+    """
+    price = Decimal(str(round(float(level), 6)))
+    rounded = (price / tick).to_integral_value(rounding=ROUND_FLOOR) * tick
+    return float(rounded) if rounded > 0 else None
+
+
+def _tick_levels(level: tuple[float, float] | None, tick: Decimal) -> tuple[float, float] | None:
+    """(stop, target) on the tick, or None when either is not a positive price (invalid_levels).
+
+    A pair that no longer brackets the entry after rounding is left to _walk (outside_levels).
+    """
+    if level is None:
+        return None
+    try:
+        stop, target = (on_tick(value, tick) for value in level)
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+    return (stop, target) if stop is not None and target is not None else None
+
+
+def _levels_on_tick(levels: Mapping, daily: pd.DataFrame, decision: Mapping, notes: dict | None) -> dict | None:
+    """Every policy's levels on the decision month's tick, or None (reported) without a tick."""
+    tick = tick_size(daily, decision["as_of_date"])
+    if tick is None:
+        _problem(notes, decision, "WindowProblem", "no daily close in the month before the decision day (tick size)")
+        return None
+    return {policy: _tick_levels(level, tick) for policy, level in levels.items()}
+
+
 def _walk(contract: dict, minutes: pd.DataFrame, stop: float, target: float) -> dict | str:
     """The trade on one-minute bars, or "no_fill" / "outside_levels" / "no_exit_bar" / "open".
 
@@ -763,6 +835,9 @@ def label_decision(decision: Mapping, *, daily: pd.DataFrame, minutes: pd.DataFr
             CHALLENGER: challenger_levels(decision["entry"], decision["atr"],
                                           decision["resistance20"], decision["resistance60"]),
         }
+    levels = _levels_on_tick(levels, daily, decision, notes)
+    if levels is None:
+        return none
     labels, still_open = {}, False
     for policy, level in levels.items():
         if level is None:
@@ -1013,7 +1088,8 @@ def _history(cache: dict, decision: Mapping, *, client, token: str, today: dt.da
         sleep(REQUEST_PAUSE_SECONDS)
         try:
             daily = fetch_daily(client, token, decision["instrument_key"],
-                                as_of - dt.timedelta(days=HISTORY_LEAD_DAYS), today - dt.timedelta(days=1))
+                                as_of.replace(day=1) - dt.timedelta(days=TICK_LOOKBACK_DAYS),
+                                today - dt.timedelta(days=1))
         except Exception as exc:
             # Only the per-instrument daily request: NIFTY already proved that endpoint works.
             if _provider_rejected(exc):

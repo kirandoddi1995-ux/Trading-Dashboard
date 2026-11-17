@@ -11,7 +11,7 @@
 -- decision of that day is labelled under both policies (a complete cohort, even if all exited early). A stock that passed in both scans of one day counts
 -- once: its earliest scan that day, chosen BEFORE looking at labels, so both policies are scored on
 -- the same decisions. Policies: incumbent-levels-v1 (the recorded stop/target) and atr15-stop-v1
--- (stop at entry - 1.5 ATR). Label version net-excess-app-contract-v1 only.
+-- (stop at entry - 1.5 ATR). Label version net-excess-app-contract-v2 only.
 -- sample 'all'    = every eligible decision; stats over those labelled under that policy.
 -- sample 'paired' = only decisions labelled under BOTH policies (the like-for-like comparison).
 -- Rows per sample and policy, per recorded action (Buy/Watch), and per action and score band.
@@ -39,7 +39,7 @@ labelled_days AS MATERIALIZED (   -- a full-window label proves NIFTY completed 
     FROM quant_app.scanner_observations o
     JOIN quant_app.prediction_targets t ON t.observation_id = o.observation_id AND t.horizon_sessions = 15
      AND t.label_end_date >= o.as_of_date + 21
-    JOIN policies p ON t.target_version = 'stage2-shadow:net-excess-app-contract-v1:' || p.policy
+    JOIN policies p ON t.target_version = 'stage2-shadow:net-excess-app-contract-v2:' || p.policy
     WHERE o.strategy_version = 'equity-stage2-scheduled-shadow-v1'
 ),
 complete_days AS MATERIALIZED (   -- every decision of the day labelled under both policies: nothing left out
@@ -47,7 +47,7 @@ complete_days AS MATERIALIZED (   -- every decision of the day labelled under bo
     FROM first_scans f
     GROUP BY f.as_of_date
     HAVING bool_and((SELECT count(DISTINCT t.target_version) FROM quant_app.prediction_targets t
-                     JOIN policies p ON t.target_version = 'stage2-shadow:net-excess-app-contract-v1:' || p.policy
+                     JOIN policies p ON t.target_version = 'stage2-shadow:net-excess-app-contract-v2:' || p.policy
                      WHERE t.observation_id = f.observation_id AND t.horizon_sessions = 15) = 2)
 ),
 decisions AS (
@@ -78,7 +78,7 @@ grid AS (
     LEFT JOIN quant_app.prediction_targets t
       ON t.observation_id = a.observation_id
      AND t.horizon_sessions = 15
-     AND t.target_version = 'stage2-shadow:net-excess-app-contract-v1:' || p.policy
+     AND t.target_version = 'stage2-shadow:net-excess-app-contract-v2:' || p.policy
 ),
 paired AS (
     SELECT observation_id FROM grid GROUP BY observation_id HAVING count(outcome) = 2

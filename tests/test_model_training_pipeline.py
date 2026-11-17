@@ -159,7 +159,7 @@ def test_scheduled_check_treats_insufficient_as_healthy_fail_closed(monkeypatch)
     assert calls == [{
         "features": ["scanner_composite_score"],
         "strategy_id": "equity-scanner-v19.0",
-        "target_version": "net-excess-app-contract-v1",   # prediction_validation.TARGET_VERSION
+        "target_version": "net-excess-app-contract-v2",   # prediction_validation.TARGET_VERSION
         "horizon_sessions": 15,
     }]
 

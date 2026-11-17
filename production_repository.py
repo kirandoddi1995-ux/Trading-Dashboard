@@ -1257,7 +1257,7 @@ class ProductionRepository:
             ))
             conn.commit()
 
-    def pending_observations(self, *, target_version="net-excess-app-contract-v1",
+    def pending_observations(self, *, target_version="net-excess-app-contract-v2",
                              limit=100, exit_since=None, final_dispositions=None,
                              ready_before=None) -> list[dict]:
         """Return passed signals missing their immutable decision-horizon outcome.
@@ -1757,7 +1757,7 @@ class ProductionRepository:
                 SELECT
                     (SELECT COUNT(*) FROM {SCHEMA}.universe_snapshots),
                     (SELECT COUNT(*) FROM {SCHEMA}.scanner_observations),
-                    (SELECT COUNT(*) FROM {SCHEMA}.prediction_targets WHERE target_version='net-excess-app-contract-v1'),
+                    (SELECT COUNT(*) FROM {SCHEMA}.prediction_targets WHERE target_version='net-excess-app-contract-v2'),
                     (SELECT COUNT(*) FROM {SCHEMA}.mf_nav),
                     (SELECT MAX(finished_at) FROM {SCHEMA}.collection_runs WHERE status='SUCCESS'),
                     (SELECT COUNT(*) FROM {SCHEMA}.evidence_ledger_events)

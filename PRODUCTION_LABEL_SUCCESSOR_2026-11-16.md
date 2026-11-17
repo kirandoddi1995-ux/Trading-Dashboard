@@ -1,5 +1,8 @@
 # Production label successor: `net-excess-app-contract-v1` (16 Nov 2026)
 
+Update 17 Nov 2026: superseded before any label by `net-excess-app-contract-v2`, the same label with the
+stop and target on NSE's tick (STAGE2_SHADOW_MATURATION_2026-11-11.md, Limits). Below, read v1 as v2.
+
 Backlog 11. Approved by Kiran 16 Nov 2026 ("Yes, build it"), shown to him before merge (label formula change).
 
 ## Why
@@ -80,9 +83,9 @@ One label engine for both shadow and production: the shadow label `net-excess-ap
 - Version stamps: the scheduled Stage-1 batch and the shadow Stage-2 ledger batches also record
   `TARGET_VERSION` (an identifier only; no reader filters on it; shadow labels are unchanged).
 - Deploy: the app (Streamlit) and the collector (GitHub Actions) both run from `main`. A decision the app
-  makes on the old code after the merge is stamped v2 and never labelled; close mode is off, so none is owed.
+  makes on the old code after the merge is stamped net-excess-execution-v2 and never labelled; close mode is off, so none is owed.
 - `app.py` untouched (it imports `TARGET_VERSION`). New app decisions are stamped with the new version, and
-  calibration, readiness and training read it. The 3,449 older decisions stamped v2 have no passes, so no
+  calibration, readiness and training read it. The 3,449 older decisions stamped net-excess-execution-v2 have no passes, so no
   label is owed to them.
 
 ## Test harness fix (same change)

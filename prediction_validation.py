@@ -17,7 +17,7 @@ from scipy.stats import norm
 
 # The production equity label: the app's own trade plan on one-minute bars against NIFTY over the
 # same minutes (equity_stage2_maturation.label_production_decision; the shadow labels' definition).
-TARGET_VERSION = "net-excess-app-contract-v1"
+TARGET_VERSION = "net-excess-app-contract-v2"
 # compute_forward_target's definition (kept for the research tests): NIFTY from the entry day's
 # open to the outcome day's close, a later-day entry slip, a time exit after the 14th session.
 # Superseded on 16 Nov 2026 before any label used it (0 stored); never written to production.
