@@ -26,7 +26,7 @@ Shadow-only. Never places, sizes or recommends an order. Off unless the reposito
   - `atr15-stop-v1`: stop = entry - 1.5 ATR, target from the same target logic (`levels_for_stop`,
     differential-tested against `derive_long_trade_levels`).
   Inputs (ATR, resistance levels, decision time, estimated costs) come from the decision's own ledger batch.
-- Label version `net-excess-app-contract-v1` (13 Nov; replaces `net-excess-execution-v2.minute-aligned-v1`,
+- Label version `net-excess-app-contract-v2` (17 Nov: v1 plus levels on NSE's tick, Limits; v1 13 Nov replaced `net-excess-execution-v2.minute-aligned-v1`,
   which never stored a label): the app's own trade plan (`trade_contracts.build_trade_timing`, shown with every
   decision: "enter only during [decision, +15 min]; exit at target/stop, otherwise no later than 15:15 on the
   15th session"), executed on the stock's one-minute bars, net of the decision's cost estimate:
@@ -97,12 +97,12 @@ Shadow-only. Never places, sizes or recommends an order. Off unless the reposito
     list are caught whenever the provider adjusted them. A pass without a readable bar is a mismatch, not a
     pass (all 93 live passes on 11-12 Nov carry it). Each mismatch is logged with its reason, and any mismatch
     makes the run PARTIAL with the reasons in the quality event (so a false positive is loud on the first
-    labelling run, about 3 Dec; nothing is stored for it). Daily history now starts 10 days before the
-    decision day.
+    labelling run, about 3 Dec; nothing is stored for it). Daily history starts 31 days before the 1st
+    of the decision month (TICK_LOOKBACK_DAYS: the anchor and the tick's reference close).
   - the archive write is best effort: if it fails the decision is still held back this run (and asked again
     next run); a lost lease stops the run before the write.
 - Storage: append-only `prediction_targets` rows (immutable by trigger), `target_version`
-  `stage2-shadow:net-excess-app-contract-v1:<policy>`. The app's calibration, readiness count and training read
+  `stage2-shadow:net-excess-app-contract-v2:<policy>`. The app's calibration, readiness count and training read
   `net-excess-execution-v2` only, so they never see these. No new table, grant or policy: the runtime role
   already has SELECT/INSERT on `prediction_targets` (policy `archive_preserve_runtime`, checked 11 Nov).
   About 2 rows per pass (~39 passes per trading day today).
@@ -411,13 +411,20 @@ and disposition precedence (`invalid_levels` / `outside_levels` before `open`, k
 ## Limits
 - One-minute evidence (the stock's and NIFTY's) must be available from Upstox for the label to be exact;
   otherwise the decision is retried, never labelled from daily bars.
-- Done 16 Nov: the production label's successor is this label (`TARGET_VERSION` = `net-excess-app-contract-v1`,
-  PRODUCTION_LABEL_SUCCESSOR_2026-11-16.md); no v2 row ever existed. Lines above that name
+- Done 16 Nov: the production label's successor is this label (`TARGET_VERSION` = `net-excess-app-contract-v1`, v2 since 17 Nov,
+  PRODUCTION_LABEL_SUCCESSOR_2026-11-16.md); no net-excess-execution-v2.minute-aligned-v1 row ever existed. Lines above that name
   `net-excess-execution-v2` as the production label describe the state before that date.
 - The entry takes the bar's open; the app also says "at or below the displayed ask", which is not modelled.
-- Levels stay at two decimals for this frozen comparison; NSE tick sizes (dated, per price band) are not
-  applied. An execution-quality successor should round side-aware to the instrument's dated tick and
-  recheck stop < entry < target and net reward:risk after rounding (SADBHIN and other low-priced names).
+- Done 17 Nov: label `net-excess-app-contract-v2` puts both levels on NSE's dated tick (band of the stock's latest
+  close before the decision month, NSE/CMTR/67133), rounded down like every sell, before the walk; `_walk` still rechecks
+  stop < entry < target (`outside_levels`). Net reward:risk is not re-gated: the label measures the decision
+  as made. v1 never stored a label; its 181 disposition rows stay as they are, and v2 starts its own.
+  The stop-loss trigger rounds down too (the repo's sells-down rule; a policy choice). Limits: the band
+  stays the decision month's for the whole path (NSE resets it each 1st), and the reference close is on
+  today's price basis (a corporate action before the decision day can move a band edge; rare).
+  App decisions are selected by their own stamp, so one an app built before the rename stamped v1 would
+  never be labelled; on 17 Nov there were none (only 3,449 net-excess-execution-v2 decisions, none a
+  pass), the app redeploys with the merge, and the stamp count is checked again after it.
 - `no_fill`, `no_trading`, `outside_levels` and `invalid_levels` repeat each run until the pass is 60 days old
   (one fetch each, rare). The disposition table (Dispositions, above) shows each such pass with its reason and attempt
   count; making the reasons that cannot change on a retry terminal (no more fetches) is left until the first

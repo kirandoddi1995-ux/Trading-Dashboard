@@ -12,6 +12,8 @@ import json
 import os
 from pathlib import Path
 import re
+from decimal import Decimal
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -162,8 +164,8 @@ def test_challenger_is_the_atr_stop_with_the_same_target_logic():
 
 def test_shadow_versions_never_collide_with_the_production_label():
     """Calibration, readiness counts and training read TARGET_VERSION only."""
-    assert {INC, CH} == {"stage2-shadow:net-excess-app-contract-v1:incumbent-levels-v1",
-                         "stage2-shadow:net-excess-app-contract-v1:atr15-stop-v1"}
+    assert {INC, CH} == {"stage2-shadow:net-excess-app-contract-v2:incumbent-levels-v1",
+                         "stage2-shadow:net-excess-app-contract-v2:atr15-stop-v1"}
     assert TARGET_VERSION not in {INC, CH}
     source = (ROOT / "production_repository.py").read_text()
     assert f"target_version='{TARGET_VERSION}'" in source  # the readiness count is exact
@@ -832,7 +834,7 @@ def test_run_stores_both_policy_labels_with_a_pause_before_every_request(monkeyp
     assert [c[1] for c in fetch.calls] == [m.NIFTY_KEY, "NSE_EQ|SYN", "NSE_EQ|SYN", "NSE_EQ|SYN", m.NIFTY_KEY]
     after = fetch.daily.loc[fetch.daily.index > pd.Timestamp(D0)].index
     assert fetch.calls[1] == ("actions", "NSE_EQ|SYN")             # before any stock history
-    assert fetch.calls[2][2:] == (D0 - dt.timedelta(days=m.HISTORY_LEAD_DAYS), TODAY - dt.timedelta(days=1))
+    assert fetch.calls[2][2:] == (D0.replace(day=1) - dt.timedelta(days=m.TICK_LOOKBACK_DAYS), TODAY - dt.timedelta(days=1))
     assert fetch.calls[3][2:] == fetch.calls[4][2:] == (D0, after[14].date())   # NIFTY: same window
     assert repo.events == []
 
@@ -2681,7 +2683,7 @@ def test_production_label_is_the_shared_label_under_target_version():
     shadow = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
                               benchmark_minutes=minutes, today=TODAY)[m.INCUMBENT]
     assert label == {**shadow, "target_version": TARGET_VERSION} and notes == {}
-    assert label["target_version"] == "net-excess-app-contract-v1" != INC
+    assert label["target_version"] == "net-excess-app-contract-v2" != INC
 
 
 def test_production_label_benchmark_is_the_minute_window_not_the_day_open():
@@ -3024,3 +3026,128 @@ def test_only_the_legacy_label_and_its_historical_cohort_name_the_old_production
     workflow = (ROOT / ".github/workflows/model-training-readiness.yml").read_text()
     assert f"--target-version {TARGET_VERSION}" in workflow
     assert mtp.production_smoke.__kwdefaults__["target_version"] == TARGET_VERSION
+
+
+# ---------- NSE tick size (label v2) ----------
+
+def _month_end_close(daily, close):
+    """The same bars with the last pre-decision-month bar's Close set (Close is not an anchor field)."""
+    daily = daily.copy()
+    last = daily.index[daily.index < pd.Timestamp(D0.replace(day=1))][-1]
+    daily.loc[last, "Close"] = close
+    return daily
+
+
+@pytest.mark.parametrize("close,tick", [
+    (0.5, "0.01"), (249.99, "0.01"), (250.0, "0.05"), (1000.0, "0.05"), (1000.05, "0.10"),
+    (5000.0, "0.10"), (5000.5, "0.50"), (10000.0, "0.50"), (10001.0, "1.00"), (20000.0, "1.00"),
+    (20005.0, "5.00")])
+def test_tick_size_follows_the_nse_bands_on_the_previous_month_close(close, tick):
+    """NSE/CMTR/67133 bands: below 250 strict, the others' upper bounds inclusive."""
+    daily, _ = _path()
+    assert m.tick_size(_month_end_close(daily, close), D0) == Decimal(tick)
+
+
+def test_tick_size_reads_the_previous_month_not_the_decision_month():
+    """A decision on 9 Nov after November closes above 250 still has October's band."""
+    daily, _ = _path()
+    daily.loc[daily.index >= pd.Timestamp(D0), "Close"] = 300.0
+    later = D0 + dt.timedelta(days=7)
+    assert daily.index[daily.index < pd.Timestamp(later)][-1] >= pd.Timestamp(D0)   # a November bar precedes it
+    assert m.tick_size(daily, later) == Decimal("0.01")
+    assert m.tick_size(_month_end_close(daily, 300.0), later) == Decimal("0.05")
+
+
+def test_tick_size_without_a_usable_reference_close():
+    """No bar before the decision month, an invalid close, or a date before the table: no tick."""
+    daily, _ = _path()
+    assert m.tick_size(daily.loc[daily.index >= pd.Timestamp(D0)], D0) is None
+    assert m.tick_size(daily.iloc[0:0], D0) is None
+    for bad in (float("nan"), float("inf"), 0.0, -1.0):
+        assert m.tick_size(_month_end_close(daily, bad), D0) is None
+    with pytest.raises(ValueError):
+        m.tick_size(daily, dt.date(2025, 4, 14))
+
+
+def test_on_tick_rounds_every_exit_down():
+    """Sells round down; a level already on the tick stays; nothing positive is None."""
+    assert m.on_tick(99.95, Decimal("0.05")) == 99.95
+    for level in (104.85, 4.35, 1.15, 0.15):          # floats stored just below their tick
+        assert m.on_tick(level, Decimal("0.05")) == level
+    assert m.on_tick(10.01, Decimal("0.01")) == 10.01
+    assert m.on_tick(104.87, Decimal("0.05")) == 104.85
+    assert m.on_tick(97.004, Decimal("0.05")) == 97.0
+    assert m.on_tick(1234.56, Decimal("0.10")) == 1234.5
+    assert m.on_tick(20004.0, Decimal("5.00")) == 20000.0
+    assert m.on_tick(0.03, Decimal("0.05")) is None
+    assert m._tick_levels((0.03, 104.87), Decimal("0.05")) is None
+    assert m._tick_levels(None, Decimal("0.05")) is None
+    assert m._tick_levels(("x", 1.0), Decimal("0.05")) is None
+    assert m._tick_levels((101.0, 99.0), Decimal("0.05")) == (101.0, 99.0)   # left to _walk
+
+
+def test_label_executes_the_levels_on_the_tick():
+    """Tick 0.05 (October close 300): target 104.87 -> 104.85 is hit and filled there; stop 97.04 -> 97.00."""
+    daily, minutes = _path(jump_day=5)
+    daily = _month_end_close(daily, 300.0)
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY,
+                              levels={m.CHALLENGER: (97.04, 104.87)})
+    ch = labels[m.CHALLENGER]
+    assert (ch["stop"], ch["target"]) == (97.0, 104.85)
+    assert ch["outcome"] == "target" and ch["exit"] == 104.85
+    assert ch["net_return"] == pytest.approx(104.85 / 100 - 1 - 0.002)
+    daily, minutes = _path(drop_day=3)
+    daily = _month_end_close(daily, 300.0)
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY,
+                              levels={m.CHALLENGER: (97.04, 104.87)})
+    assert labels[m.CHALLENGER]["outcome"] == "stop" and labels[m.CHALLENGER]["exit"] == 97.0
+
+
+def test_label_without_a_tick_reference_is_a_reported_problem():
+    """No daily bar before the decision month: nothing stored, reported, retried next run."""
+    daily, minutes = _path(jump_day=5)
+    daily = daily.loc[daily.index >= pd.Timestamp(D0) - pd.Timedelta(days=1)]
+    notes = {}
+    # the basis anchor (30 Oct) goes with it; that guard has its own tests
+    with mock.patch.object(m, "_basis_problem", return_value=None):
+        labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                                  benchmark_minutes=minutes, today=TODAY, notes=notes)
+    assert labels == {m.INCUMBENT: None, m.CHALLENGER: None}
+    assert notes["window_problem"] == 1
+    assert "tick size" in notes["basis_problems"][0]["message"]
+
+
+def test_a_level_that_rounds_to_nothing_is_invalid():
+    """A stop below one tick is not a price: invalid_levels for that policy only."""
+    daily, minutes = _path(jump_day=5)
+    daily = _month_end_close(daily, 300.0)
+    notes = {}
+    labels = m.label_decision(_decision(), daily=daily, minutes=minutes, benchmark=daily,
+                              benchmark_minutes=minutes, today=TODAY, notes=notes,
+                              levels={m.INCUMBENT: (80.0, 128.0), m.CHALLENGER: (0.02, 104.87)})
+    assert labels[m.CHALLENGER] is None and labels[m.INCUMBENT]["outcome"] == "horizon"
+    assert notes["invalid_levels"] == 1
+
+
+def test_production_label_executes_the_levels_on_the_tick():
+    """The production path rounds too: October close 300 (tick 0.05), target 104.87 -> 104.85 hit."""
+    daily, minutes = _path(jump_day=5)
+    daily = _month_end_close(daily, 300.0)
+    label, _, notes, _ = _produce(m.production_decision(_app_observation(stop=97.04, target=104.87),
+                                                        _app_payload()), daily, minutes)
+    assert (label["stop"], label["target"], label["exit"]) == (97.0, 104.85, 104.85)
+    assert label["outcome"] == "target" and label["target_version"] == TARGET_VERSION and notes == {}
+
+
+def test_the_superseded_app_contract_label_is_named_only_as_history():
+    """net-excess-app-contract-v1 never labelled anything: production code names it only in a comment."""
+    for path in ROOT.rglob("*"):
+        if (path.suffix not in {".py", ".yml", ".yaml", ".sql", ".ts"} or "tests" in path.parts
+                or ".git" in path.parts or "node_modules" in path.parts):
+            continue
+        for line in path.read_text(errors="ignore").splitlines():
+            if "net-excess-app-contract-v1" in line:
+                name = path.relative_to(ROOT).as_posix()
+                assert line.lstrip().startswith("#"), (name, line)

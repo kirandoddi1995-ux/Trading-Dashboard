@@ -21,7 +21,7 @@
 -- unscorable = passes missing score, risk_reward or ATR: no action is recomputed for them, and they
 -- are in no other action or outcome column. Passes
 -- with no ledger candidate are left out (the outcomes report keeps them as 'unknown').
--- Outcomes: labels of that policy (net-excess-app-contract-v1). full_* = full-window labels only
+-- Outcomes: labels of that policy (net-excess-app-contract-v2). full_* = full-window labels only
 -- (label_end_date >= decision day + 21): early labels are stop/target exits only, so their average
 -- alone is biased; use the outcomes report for cohort-complete comparisons.
 WITH first_scans AS (
@@ -83,7 +83,7 @@ acted AS (
     FROM variants v
     LEFT JOIN quant_app.prediction_targets t
       ON t.observation_id = v.observation_id AND t.horizon_sessions = 15
-     AND t.target_version = 'stage2-shadow:net-excess-app-contract-v1:' || v.policy
+     AND t.target_version = 'stage2-shadow:net-excess-app-contract-v2:' || v.policy
 )
 SELECT policy, scale_high, threshold,
        count(*) AS passes,
