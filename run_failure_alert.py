@@ -5,7 +5,7 @@ The run exits 0 in every case: the job is already failed and visible in GitHub; 
 or broken alert must never hide that or add a second failure.
 
 - Not configured (TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID repository secret empty): prints
-  RUN_ALERT_NOT_CONFIGURED and sends nothing.
+  RUN_ALERT_NOT_CONFIGURED missing=<secret names> and sends nothing.
 - The message is built only from validated fields (workflow name, label, run link, IST
   time), never from logs or provider text. Transport: `telegram_https_post` (fixed host,
   TLS, no redirects, bounded reply). Outcomes print as one fixed status word; the bot
@@ -56,18 +56,25 @@ def message(env: Mapping[str, str], label: str, now: datetime, test: bool = Fals
 def send(env: Mapping[str, str], label: str, *, test: bool = False,
          post: Callable[[str, bytes], tuple[int, bytes]] | None = None,
          clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> str:
-    """Send one alert; returns the status word to print (never raises)."""
-    post = post or telegram_https_post
-    bot = env.get("TELEGRAM_BOT_TOKEN", "").strip()
-    chat = env.get("TELEGRAM_CHAT_ID", "").strip()
-    if not bot or not chat:
-        return "RUN_ALERT_NOT_CONFIGURED"
-    if BOT_PATTERN.fullmatch(bot) is None or CHAT_PATTERN.fullmatch(chat) is None:
-        return "RUN_ALERT_DESTINATION_INVALID"
+    """Send one run alert; returns the status word to print (never raises)."""
+    destination = _destination(env)
+    if isinstance(destination, str):
+        return destination
     try:
         text = message(env, label, clock(), test)
     except ValueError:
         return "RUN_ALERT_FIELDS_INVALID"
+    return send_text(env, text, post=post)
+
+
+def send_text(env: Mapping[str, str], text: str, *,
+              post: Callable[[str, bytes], tuple[int, bytes]] | None = None) -> str:
+    """Send a ready text (built from validated fields by the caller); never raises."""
+    post = post or telegram_https_post
+    destination = _destination(env)
+    if isinstance(destination, str):
+        return destination
+    bot, chat = destination
     body = json.dumps({"chat_id": chat, "text": text, "disable_web_page_preview": True,
                        "allow_paid_broadcast": False}, separators=(",", ":")).encode()
     try:
@@ -75,6 +82,18 @@ def send(env: Mapping[str, str], label: str, *, test: bool = False,
     except Exception:
         delivered = False
     return "RUN_ALERT_SENT" if delivered else "RUN_ALERT_DELIVERY_UNVERIFIED"
+
+
+def _destination(env: Mapping[str, str]) -> tuple[str, str] | str:
+    """(bot, chat) from the secrets, or the status word when missing or malformed."""
+    bot = env.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat = env.get("TELEGRAM_CHAT_ID", "").strip()
+    if not bot or not chat:
+        missing = [name for name, value in (("TELEGRAM_BOT_TOKEN", bot), ("TELEGRAM_CHAT_ID", chat)) if not value]
+        return "RUN_ALERT_NOT_CONFIGURED missing=" + ",".join(missing)   # secret names only
+    if BOT_PATTERN.fullmatch(bot) is None or CHAT_PATTERN.fullmatch(chat) is None:
+        return "RUN_ALERT_DESTINATION_INVALID"
+    return bot, chat
 
 
 def _delivered(status: int, raw: bytes, text: str, chat: str) -> bool:

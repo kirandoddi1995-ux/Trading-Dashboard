@@ -27,3 +27,20 @@ dispatched, starts no job. The separate durable overnight alert design
 
 `drive-archive.yml` is a pinned source: its `SOURCE_SUPERSESSIONS.json` entry now maps the
 same predecessor to the new bytes, with this note as the reason.
+
+## Watchdog (18 Nov): runs that never start
+
+`run_watchdog.py` + `run-watchdog.yml` (GitHub schedule 06:00 / 10:30 UTC Mon-Fri, 22:30 UTC
+daily; manual = all slots) closes the limits above. After each Supabase Cron slot it lists that
+workflow's main-branch workflow_dispatch runs created in [slot-15 min, slot+2 h] with the slot's
+run title ("Collector scan" via the collector's new `run-name`, "Nightly archive (on-time
+dispatch)"), so a close/manual/feature-branch run cannot stand in for a missed slot.
+
+- OK (success or skipped) and RUNNING (running, or queued < 2 h): log only.
+- MISSING (no run), NOT OK (no success), STUCK (queued > 2 h, never started): one Telegram message.
+- A failed run can give two messages (in-job + watchdog); accepted, because a failed checkout
+  gives only the watchdog's.
+- Slot times are pinned by a test against `supabase/*-cron.sql`; change both together.
+- Not covered: pg_cron jobs that don't dispatch GitHub (purge 7, VACUUM 8), and a GitHub
+  schedule that GitHub drops entirely.
+- `RUN_ALERT_NOT_CONFIGURED missing=<names>` names the absent secret(s) (never values).

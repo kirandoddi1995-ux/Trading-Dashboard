@@ -1,0 +1,38 @@
+name: Run watchdog
+
+# After each Supabase Cron slot, checks that a successful collector / nightly archive run
+# exists for it and sends a Telegram alert when it does not (run_watchdog.py). Catches what
+# the in-job alert cannot: no dispatch, a run dropped from the queue, a failed checkout.
+on:
+  schedule:
+    - cron: '0 6 * * 1-5'     # 11:30 IST: the 10:07 scan
+    - cron: '30 10 * * 1-5'   # 16:00 IST: the 14:37 scan
+    - cron: '30 22 * * *'     # 04:00 IST: the 01:45 nightly archive
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: run-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Check the expected runs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WATCHDOG_SCHEDULE: ${{ github.event.schedule }}
+        run: python run_watchdog.py

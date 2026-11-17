@@ -64,7 +64,7 @@ def test_not_configured_sends_nothing(missing, value):
     else:
         env[missing] = value
     calls = []
-    assert alert.send(env, "scan", post=_post([], calls), clock=lambda: NOW) == "RUN_ALERT_NOT_CONFIGURED"
+    assert alert.send(env, "scan", post=_post([], calls), clock=lambda: NOW) == "RUN_ALERT_NOT_CONFIGURED missing=" + missing
     assert calls == []
 
 
@@ -112,7 +112,8 @@ def test_any_bad_reply_is_unverified_and_never_raises(reply):
 def test_main_always_exits_zero_and_prints_only_the_status(capsys):
     """The CLI exits 0 and prints one status word."""
     assert alert.main(["--label", "scan"], env={}) == 0
-    assert capsys.readouterr().out == "RUN_ALERT_NOT_CONFIGURED\n"
+    out = capsys.readouterr().out
+    assert out == "RUN_ALERT_NOT_CONFIGURED missing=TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID\n"
 
 
 def test_main_never_prints_the_destination(capsys, monkeypatch):
