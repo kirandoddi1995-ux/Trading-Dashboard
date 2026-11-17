@@ -3,8 +3,8 @@
     ".github/workflows/drive-archive.yml": [
       {
         "predecessor_legacy_sha256": "5cc2b4dfc8751315e406285d26b7c2a65281102dad30a7042d66c727c6a2c138",
-        "reason": "ARCHIVE_ON_TIME_DISPATCH_2026-11-10.md",
-        "successor_raw_sha256": "892ff5786743eb8e6fcd1ab938f7c7dd243971a829cf562da32305420fabf023"
+        "reason": "RUN_FAILURE_ALERTS_2026-11-18.md",
+        "successor_raw_sha256": "1e8a65ebb2ff57088dfbb18dad58805a60bafbb8c72ea1425715737e524891c7"
       }
     ],
     "archive_maintenance.py": [

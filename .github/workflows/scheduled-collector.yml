@@ -70,3 +70,11 @@ jobs:
           # Off unless the repository variable is set to 1; writes shadow-only labels.
           SCHEDULED_STAGE2_MATURATION: ${{ vars.SCHEDULED_STAGE2_MATURATION }}
         run: python scheduled_collector.py --mode "${{ inputs.mode }}"
+      - name: Phone alert when this run fails (no-op until the Telegram secrets exist)
+        if: failure() || cancelled()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          JOB_STATUS: ${{ job.status }}
+          ALERT_LABEL: ${{ inputs.mode }}
+        run: python3 run_failure_alert.py --label "$ALERT_LABEL"

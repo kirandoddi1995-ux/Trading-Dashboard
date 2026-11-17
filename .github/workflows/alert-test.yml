@@ -1,0 +1,29 @@
+name: Phone alert test
+
+# One-off check after adding the TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID repository secrets:
+# sends "alerts are working" to the chat. Prints RUN_ALERT_SENT on success.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Send a test alert
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          result=$(python3 run_failure_alert.py --test --label test)
+          echo "$result"
+          [ "$result" = "RUN_ALERT_SENT" ]

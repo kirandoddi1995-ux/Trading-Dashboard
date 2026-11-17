@@ -30,7 +30,7 @@ LINEAGE = ((OTEL_PREVIOUS_RECORD, OTEL_PREVIOUS_RECORD_SHA256, "OTEL_PREVIOUS_RE
 # Each entry maps one exact pinned predecessor to one exact current file; the record
 # itself is pinned here, so editing it requires a reviewed code change too.
 SUPERSESSIONS = "SOURCE_SUPERSESSIONS.json"
-SUPERSESSIONS_SHA256 = "38e4ade23ead019361df6868281ea98c7b8c93f39cb0809daf0e76f32f146a3e"
+SUPERSESSIONS_SHA256 = "ca257c532dd08588091c13fbbd0e71b49c823c32d900f4588131cc99af3cb6b6"
 
 
 def _sha(raw: bytes) -> str:
