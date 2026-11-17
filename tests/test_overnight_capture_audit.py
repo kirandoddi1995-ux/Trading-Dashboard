@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import dataclasses
 from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
@@ -55,6 +56,7 @@ def remote(raw: bytes) -> MemoryDownload:
 
 
 def test_local_journal_readback_and_logical_restore(tmp_path: Path) -> None:
+    """Journal bytes read back exactly; the logical restore keeps every flag off and shows no bar values."""
     producer = make(tmp_path)
     bundle = poll(producer, 1)
     before = producer.path.read_bytes()
@@ -68,7 +70,9 @@ def test_local_journal_readback_and_logical_restore(tmp_path: Path) -> None:
     assert not restored.operational_resume_supported
     assert not restored.generation.training_eligible
     assert not restored.generation.approval_authority
-    assert '25000' not in repr(restored)
+    # Generation's sha256 digests can contain any digits; with them blanked the repr holds no bar values.
+    blanked = dataclasses.replace(restored.generation, sha256='', recipe_sha256='', policy_sha256='')
+    assert '25000' not in repr(dataclasses.replace(restored, generation=blanked))
     with pytest.raises(IntegrityError):
         restore_logical(raw, '0' * 64)
 

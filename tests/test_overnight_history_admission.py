@@ -3,6 +3,7 @@ from datetime import date, datetime, timezone
 import hashlib
 import io
 import json
+import re
 import zipfile
 
 import pytest
@@ -31,13 +32,15 @@ def admit(raw: bytes = RAW, *, permit: history.Permission | None = None, zipped:
 
 
 def test_exact_original_manifest_not_fill_evidence() -> None:
+    """The exact original is kept with its manifest; no fill evidence, no training use, no data in the repr."""
     result = admit(permit=permission())
     body = json.loads(result.manifest)
     assert result.original == RAW and result.rows == (('2024-01-01', '100'),)
     assert body['original_sha256'] == hashlib.sha256(RAW).hexdigest()
     assert not result.intraday_fill_evidence and not body['training_eligible']
     assert not body['source_authenticity_verified'] and not body['row_date_reconciliation_verified']
-    assert '100' not in repr(result)
+    # The repr is only the class name and a memory address (which can itself contain '100', in any case).
+    assert re.fullmatch(r'<overnight_history_admission\.AdmittedOriginal object at 0x[0-9A-Fa-f]+>', repr(result))
 
 
 def test_permission_missing_not_implicitly_free() -> None:
