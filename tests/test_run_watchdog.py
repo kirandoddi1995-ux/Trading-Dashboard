@@ -228,7 +228,7 @@ def test_workflow_schedules_match_the_slots():
     for cron, slot in wd.WATCHES.items():
         minute, hour = (int(v) for v in cron.split()[:2])
         assert (hour * 60 + minute) - (slot.at.hour * 60 + slot.at.minute) >= 60
-    assert "WATCHDOG_SCHEDULE: ${{ github.event.schedule }}" in text
+    assert "WATCHDOG_SCHEDULE: ${{ github.event.schedule || inputs.slot }}" in text
     assert "actions: read" in text and "contents: read" in text and "persist-credentials: false" in text
     assert "run: python run_watchdog.py" in text
 

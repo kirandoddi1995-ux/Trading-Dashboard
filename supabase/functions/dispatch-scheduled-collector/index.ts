@@ -12,9 +12,14 @@ type FixedTarget = Readonly<{ workflow: string; inputs: Readonly<Record<string, 
 // "archive-nightly" = drive-archive.yml mode=nightly: the restore-proven nightly
 // retention run, still gated in the workflow by ARCHIVE_ENABLED and
 // ARCHIVE_NIGHTLY_DELETE. It can never request preview/export/delete/prune inputs.
+// "run-watchdog-HHMM" = run-watchdog.yml slot=<that slot's cron>: read-only check of one
+// scan/archive slot (Supabase Cron starts it on time; GitHub's own cron runs late).
 // Frozen and exported so the tests pin the exact set of targets.
 export const FIXED_TARGETS: Readonly<Record<string, FixedTarget>> = Object.freeze({
   "archive-nightly": Object.freeze({ workflow: "drive-archive.yml", inputs: Object.freeze({ mode: "nightly" }) }),
+  "run-watchdog-1130": Object.freeze({ workflow: "run-watchdog.yml", inputs: Object.freeze({ slot: "0 6 * * 1-5" }) }),
+  "run-watchdog-1600": Object.freeze({ workflow: "run-watchdog.yml", inputs: Object.freeze({ slot: "30 10 * * 1-5" }) }),
+  "run-watchdog-0400": Object.freeze({ workflow: "run-watchdog.yml", inputs: Object.freeze({ slot: "30 22 * * *" }) }),
 });
 
 export type DispatcherConfig = {

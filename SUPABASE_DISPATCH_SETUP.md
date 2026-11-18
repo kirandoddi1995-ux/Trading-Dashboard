@@ -68,3 +68,11 @@ run's `archive` job succeeded (`archive_on_time_check.py`; a held run does not c
 Full steps and rollback: `ARCHIVE_ON_TIME_DISPATCH_2026-11-10.md`. Redeploy the function
 (Edge Functions → `dispatch-scheduled-collector` → Code → paste `index.ts` → Deploy,
 Verify JWT off) before running that SQL.
+
+## Run watchdog targets (added 18 Nov 2026)
+
+The function also accepts `run-watchdog-1130`, `run-watchdog-1600` and `run-watchdog-0400`.
+Each dispatches `run-watchdog.yml` with the fixed input `slot` (its cron); the caller can't
+choose the workflow or input. `supabase/run-watchdog-cron.sql` schedules them at the
+watchdog's three crons; the GitHub `schedule:` stays as a fallback. Redeploy the function
+(same steps as above) before running that SQL. Details: `RUN_FAILURE_ALERTS_2026-11-18.md`.

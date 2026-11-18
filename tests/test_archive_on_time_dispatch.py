@@ -53,7 +53,7 @@ def test_dispatcher_typescript_tests_pass():
     )
     assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-2000:]
     summary = dict(re.findall(r"^# (pass|fail) (\d+)$", result.stdout, re.M))
-    assert summary == {"pass": "10", "fail": "0"}, result.stdout[-2000:]
+    assert summary == {"pass": "12", "fail": "0"}, result.stdout[-2000:]
 
 
 def _http_post_without_body(sql, body_marker):

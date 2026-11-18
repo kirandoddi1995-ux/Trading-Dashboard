@@ -9,13 +9,19 @@ on:
     - cron: '30 10 * * 1-5'   # 16:00 IST: the 14:37 scan
     - cron: '30 22 * * *'     # 04:00 IST: the 01:45 nightly archive
   workflow_dispatch:
+    inputs:
+      slot:
+        description: 'Watched cron (set by the Supabase dispatch); empty = every slot'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: run-watchdog
+  group: run-watchdog-${{ github.event.schedule || inputs.slot || 'all' }}
   cancel-in-progress: false
 
 jobs:
@@ -34,5 +40,5 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          WATCHDOG_SCHEDULE: ${{ github.event.schedule }}
+          WATCHDOG_SCHEDULE: ${{ github.event.schedule || inputs.slot }}
         run: python run_watchdog.py

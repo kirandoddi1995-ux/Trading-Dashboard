@@ -44,3 +44,17 @@ dispatch)"), so a close/manual/feature-branch run cannot stand in for a missed s
 - Not covered: pg_cron jobs that don't dispatch GitHub (purge 7, VACUUM 8), and a GitHub
   schedule that GitHub drops entirely.
 - `RUN_ALERT_NOT_CONFIGURED missing=<names>` names the absent secret(s) (never values).
+
+## On-time watchdog start (18 Nov, later)
+
+GitHub started the 22:30 UTC watchdog at 03:47 UTC (5 h late). `supabase/run-watchdog-cron.sql`
+adds three Supabase Cron jobs at the same three crons. Each sends its own fixed target
+(`run-watchdog-1130`, `-1600`, `-0400`) to `dispatch-scheduled-collector`, which dispatches
+`run-watchdog.yml` with input `slot` = that job's cron (the caller cannot change it). The run
+checks that one slot only, as a scheduled run does. The GitHub schedule stays as a fallback.
+
+- A miss gives one alert from the on-time run, and maybe one more when the late GitHub
+  fallback run arrives (accepted: two beats none).
+- Manual run with `slot` empty: checks every slot (unchanged).
+- Owner steps: redeploy the Edge Function first, then run `supabase/run-watchdog-cron.sql` in
+  the SQL Editor and check the three rows it prints are active.
