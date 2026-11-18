@@ -187,10 +187,41 @@ test("an archive target with a wrong caller secret is refused before contacting 
   assert.equal(calls.length, 0);
 });
 
-test("the only fixed target is archive-nightly = drive-archive.yml mode=nightly, frozen", () => {
-  assert.deepEqual(Object.keys(FIXED_TARGETS), ["archive-nightly"]);
+test("the fixed targets are exactly archive-nightly and the three watchdog slots, frozen", () => {
+  assert.deepEqual(Object.keys(FIXED_TARGETS),
+    ["archive-nightly", "run-watchdog-1130", "run-watchdog-1600", "run-watchdog-0400"]);
   assert.deepEqual(FIXED_TARGETS["archive-nightly"], { workflow: "drive-archive.yml", inputs: { mode: "nightly" } });
+  assert.deepEqual(FIXED_TARGETS["run-watchdog-1130"], { workflow: "run-watchdog.yml", inputs: { slot: "0 6 * * 1-5" } });
+  assert.deepEqual(FIXED_TARGETS["run-watchdog-1600"], { workflow: "run-watchdog.yml", inputs: { slot: "30 10 * * 1-5" } });
+  assert.deepEqual(FIXED_TARGETS["run-watchdog-0400"], { workflow: "run-watchdog.yml", inputs: { slot: "30 22 * * *" } });
   assert.ok(Object.isFrozen(FIXED_TARGETS));
-  assert.ok(Object.isFrozen(FIXED_TARGETS["archive-nightly"]));
-  assert.ok(Object.isFrozen(FIXED_TARGETS["archive-nightly"].inputs));
+  for (const name of Object.keys(FIXED_TARGETS)) {
+    assert.ok(Object.isFrozen(FIXED_TARGETS[name]));
+    assert.ok(Object.isFrozen(FIXED_TARGETS[name].inputs));
+  }
+});
+
+test("a watchdog target dispatches run-watchdog.yml with only its fixed slot, whatever the caller sends", async () => {
+  const { calls, githubFetch } = capture();
+  const handler = createHandler({ githubToken: "github-secret", sharedSecret: "shared-test-secret" }, githubFetch);
+  const response = await handler(request({
+    target: "run-watchdog-1130", schedule: "11:30 IST Monday-Friday", inputs: { slot: "30 22 * * *" }, slot: "x", ref: "evil",
+  }));
+  const body = await response.json();
+  assert.equal(response.status, 202);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/actions\/workflows\/run-watchdog\.yml\/dispatches$/);
+  assert.deepEqual(calls[0].body, { ref: "main", inputs: { slot: "0 6 * * 1-5" } });
+  assert.equal(body.target, "run-watchdog-1130");
+  assert.equal(body.schedule, "11:30 IST Monday-Friday");
+});
+
+test("watchdog targets: bare name, mode or wrong caller secret are refused before contacting GitHub", async () => {
+  await assertTargetRejected({ target: "run-watchdog" });
+  await assertTargetRejected({ target: "run-watchdog-1130", mode: "scan" });
+  const { calls, githubFetch } = capture();
+  const handler = createHandler({ githubToken: "github-secret", sharedSecret: "shared-test-secret" }, githubFetch);
+  const response = await handler(request({ target: "run-watchdog-0400" }, "wrong-secret"));
+  assert.equal(response.status, 401);
+  assert.equal(calls.length, 0);
 });

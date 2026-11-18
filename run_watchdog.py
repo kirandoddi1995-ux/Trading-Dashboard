@@ -21,9 +21,9 @@ RUNNING = running, or queued for under 2 h, at the check: no alert (a hung run h
 timeout and the in-job alert fires). STUCK = queued for over 2 h (never started: no in-job alert). MISSING / NOT_OK alert; a failed run may also have sent the in-job
 alert, so a failure can give two messages (accepted: a failed checkout gives only this one).
 
-The watchdog run started by schedule checks only the slot that schedule watches
-(WATCHES, keyed by the cron string GitHub passes); a manual run checks every slot's latest
-instance. Always exits 0; prints one status word per slot. Standard library only.
+A run checks only the slot it watches: the on-time Supabase dispatch passes that slot's cron
+as input `slot`, the late GitHub fallback schedule passes it as github.event.schedule (both
+keys of WATCHES); a manual run with no slot checks every slot's latest instance. Always exits 0; prints one status word per slot. Standard library only.
 """
 from __future__ import annotations
 
