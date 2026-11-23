@@ -1,4 +1,5 @@
 """Stage-2 rule replay (stage2_rule_replay.py): level rules, decision parity, outcomes, summary."""
+import argparse
 import datetime as dt
 import json
 from pathlib import Path
@@ -721,7 +722,7 @@ def test_width_test_on_seen_data_is_context_only_and_handles_v1_rows():
     """The NIFTY 500 run never decides; v1 rows (no entry / exit day) give A70 but no split or overlap cut."""
     rows = [{k: v for k, v in r.items() if k not in ("entry", "exit_day", "gap_sessions")} for r in _width_run()]
     report = replay.width_test(rows, complete=True, universe="nifty500")
-    assert report["verdict"] == "CONTEXT_ONLY (nifty500 run, not decisive; would be PASS)" and not report["decisive"]
+    assert report["verdict"] == "CONTEXT_ONLY (nifty500 recent run, not decisive; would be PASS)" and not report["decisive"]
     assert report["a70_split"] is None and report["a70_non_overlapping_60bp"] is None
     assert report["a65_excess_60bp"] is None and report["size"]["passes"] == 180
     assert replay.width_test([], complete=True, universe="holdout")["verdict"] == "NO_DECISION"
@@ -851,12 +852,14 @@ def test_blockers_name_every_floor():
 
 
 def test_best_year_is_the_highest_mean_and_2021_joins_2022():
-    """Late-2021 rows count as 2022; the best year is removed for check d."""
-    groups = {"a70": [_wrow("2021-11-10", 9.6), _wrow("2022-02-10", 1.6), _wrow("2023-02-10", -0.4)],
+    """December 2021 rows (the recent runs start 14 Dec 2021) count as 2022; the best year is removed for
+    check d. Out-of-time days (to Nov 2021) keep their own year."""
+    groups = {"a70": [_wrow("2021-12-20", 9.6), _wrow("2022-02-10", 1.6), _wrow("2023-02-10", -0.4)],
               "b": [], "baseline": []}
     gate = replay._gate_inputs(groups, {"1m": None})
     assert set(gate["year_means"]) == {"2022", "2023"} and gate["year_means"]["2022"] == pytest.approx(5.0)
     assert gate["best_year"] == "2022" and gate["without_best_year_mean"] == pytest.approx(-1.0)
+    assert [replay._year(d) for d in ("2021-11-30", "2021-12-01", "2015-03-25")] == ["2021", "2022", "2015"]
 
 
 def test_a_pass_on_the_previous_exit_day_overlaps():
@@ -921,7 +924,7 @@ def test_the_lowest_interval_low_decides(monkeypatch):
 def test_an_incomplete_run_shows_only_its_blockers():
     """No checks, numbers or intervals from an incomplete run (a repeat must stay blind)."""
     report = replay.width_test(_width_run(), complete=False, universe="holdout")
-    assert set(report) == {"universe", "decisive", "blockers", "size", "verdict"}
+    assert set(report) == {"universe", "period", "decisive", "blockers", "size", "verdict"}
     assert report["verdict"] == "NO_DECISION" and report["blockers"] == ["run incomplete"]
     seen = replay.width_test(_width_run(), complete=False, universe="nifty500")
     assert seen["verdict"] == "CONTEXT_ONLY (run incomplete)" and "checks" not in seen
@@ -1006,7 +1009,7 @@ def test_the_failure_rule_counts_against_the_whole_member_list(tmp_path, failed,
 
 def test_members_cli_writes_the_list_and_the_workflow_matrix(tmp_path, monkeypatch):
     """`members --github-output`: the list file plus shards=N and matrix=[0..N-1] for the workflow."""
-    monkeypatch.setattr(replay, "resolve_members", lambda client, name, token: {
+    monkeypatch.setattr(replay, "resolve_members", lambda client, name, token, end=None: {
         "universe": name, "members": [["H", "K"]], "sha256": "d", "nifty500_sha256": "n", "shards": 20,
         "as_of": "2026-11-20"})
     out, gh = tmp_path / "m.json", tmp_path / "gh.txt"
@@ -1016,7 +1019,7 @@ def test_members_cli_writes_the_list_and_the_workflow_matrix(tmp_path, monkeypat
     gh.write_text("earlier=1\n")
     assert replay.main(["members", "--universe", "holdout", "--out", str(out), "--github-output", str(gh)]) == 0
     assert json.loads(out.read_text())["members"] == [["H", "K"]]
-    assert gh.read_text() == f"earlier=1\nshards=20\nmatrix={json.dumps(list(range(20)))}\n"
+    assert gh.read_text() == f"earlier=1\nshards=20\nmatrix={json.dumps(list(range(20)))}\ndays=3000\n"
 
 
 def test_the_failure_share_divides_by_the_member_list_not_members_plus_failures(tmp_path):
@@ -1264,7 +1267,7 @@ def test_a_shard_whose_nifty_ends_before_as_of_records_its_own_last_day(tmp_path
     replay.run_shard(None, "t", shard=0, shards=1, out=tmp_path / "s.json", today=dt.date(2026, 11, 23),
                      days=10, members_file=path)
     header = json.loads((tmp_path / "s.json").read_text())
-    assert (header["as_of"], header["nifty_last_day"]) == ("2024-01-05", "2024-01-03")
+    assert (header["as_of"], header["nifty_last_day"], header["days"]) == ("2024-01-05", "2024-01-03", 10)
 
 
 def test_shards_cut_their_data_at_as_of_and_record_nifty_s_last_day(tmp_path, monkeypatch):
@@ -1327,3 +1330,297 @@ def test_the_most_liquid_third_of_a70_must_also_beat_nifty():
     assert replay._liquid_tercile_mean([{**r, "traded_value_20d": None} for r in a70]) is None
     assert [[len(p) for p in replay._terciles(a70[:n])] for n in (1, 2, 4, 5, 6, 7, 10, 151)] == [
         [0, 0, 1], [0, 1, 1], [1, 1, 2], [1, 2, 2], [2, 2, 2], [2, 2, 3], [3, 3, 4], [50, 50, 51]]   # as equal as possible
+
+
+# ------------------------------------------------- out-of-time tests (PREREG target-only + scanner edge v1) ---
+
+def _oot_day(i):
+    """The i-th month of the out-of-time period, from March 2015."""
+    month = 2 + i
+    return f"{2015 + month // 12}-{month % 12 + 1:02d}-10"
+
+
+def _to_row(day, gross, **kw):
+    """A TO70 row: score 72, stop 15% below entry (inside the cap), target 21 ATR away (blocked by the target only)."""
+    return _wrow(day, gross, stop=85.0, target=142.0, **kw)
+
+
+def _oot_run(months=36, shift=0.0, buys=40):
+    """TO70 rows (6 a month from Mar 2015), Buys and baseline rows for a decisive target-only test."""
+    rows, pattern = [], [4.0, 3.0, 5.0, -1.0, 2.0, 6.0]
+    for i in range(months):
+        day = _oot_day(i)
+        rows += [_to_row(day, g + shift, ticker=f"A{i}-{j}") for j, g in enumerate(pattern)]
+        rows.append({"ticker": f"Z{i}", "day": day, "variant": replay.BASELINE, "pass": True,
+                     "gross_pct": 0.0, "nifty_pct": 0.0, "reason": "TIME"})
+    rows += [_wrow("2015-04-10", 1.0, action="Buy", score=75.0, stop=90.0, target=110.0, ticker=f"B{k}")
+             for k in range(buys)]
+    return rows
+
+
+def _edge_run(months=36, pattern=(3.0, 1.0, 2.0, -1.0, 4.0), baseline=0.0, values=None):
+    """Incumbent Buys (len(pattern) a month from Mar 2015) and baseline rows for a decisive scanner-edge test;
+    `values` gives each Buy's 20-day traded value by its position in the month."""
+    rows = []
+    for i in range(months):
+        day = _oot_day(i)
+        rows += [_wrow(day, g, action="Buy", score=75.0, stop=90.0, target=110.0, ticker=f"B{i}-{j}")
+                 | ({"traded_value_20d": values[j]} if values else {}) for j, g in enumerate(pattern)]
+        rows.append({"ticker": f"Z{i}", "day": day, "variant": replay.BASELINE, "pass": True,
+                     "gross_pct": baseline, "nifty_pct": 0.0, "reason": "TIME"})
+    return rows
+
+
+def test_period_of_names_runs_that_end_before_the_seen_days_out_of_time():
+    """Data ending before 14 Dec 2021 replays only unseen days; the seen runs and v1 files are recent."""
+    assert [replay.period_of(d, 3640) for d in ("2015-01-01", "2021-11-30", "2021-12-01", "2021-12-14", None)] == [
+        "recent", "out_of_time", "recent", "recent", "recent"]
+    assert replay.period_of("2021-11-30", 3000) == "recent" and replay.period_of("2021-11-30") == "recent"
+    assert replay.PERIODS["out_of_time"]["years"] == ("2015", "2016", "2017", "2018", "2019", "2020", "2021")
+    assert replay.PERIODS["recent"]["years"] == replay.WIDTH["years"]
+
+
+def test_the_live_universe_is_the_whole_collector_list_sorted(monkeypatch):
+    """`live` = every collector NSE EQ stock (NIFTY 500 included), sorted; a short list is refused."""
+    rows = [{"trading_symbol": f"S{k:04d}", "instrument_key": f"NSE_EQ|K{k:04d}"} for k in range(2100, 0, -1)]
+    monkeypatch.setattr(replay, "fetch_nse_universe", lambda client: rows)
+    members = replay.live(None)
+    assert len(members) == 2100 and members == sorted(members) and members[0] == ("S0001", "NSE_EQ|K0001")
+    monkeypatch.setattr(replay, "fetch_nse_universe", lambda client: rows[:1999])
+    with pytest.raises(RuntimeError):
+        replay.live(None)
+
+
+def test_members_with_an_end_date_cut_as_of_there(monkeypatch):
+    """`--end`: NIFTY is fetched up to that day and as_of is its last bar; a later bar is refused."""
+    calls = []
+    monkeypatch.setattr(replay, "nifty500", lambda client: [("A", "NSE_EQ|KA")])
+    monkeypatch.setattr(replay, "live", lambda client: [("A", "NSE_EQ|KA"), ("H", "NSE_EQ|KH")])
+    monkeypatch.setattr(replay, "load_bars", lambda client, token, key, *, today, days: calls.append(today) or _path([(1, 1, 1, 1)] * 3))
+    got = replay.resolve_members(None, "live", "t", end=dt.date(2024, 1, 3))
+    assert calls == [dt.date(2024, 1, 3)] and got["as_of"] == "2024-01-03" and got["shards"] == 24
+    assert got["members"] == [["A", "NSE_EQ|KA"], ["H", "NSE_EQ|KH"]]
+    with pytest.raises(RuntimeError):                 # bars to 3 Jan cannot belong to a run ending 2 Jan
+        replay.resolve_members(None, "live", "t", end=dt.date(2024, 1, 2))
+
+
+def test_members_cli_period_sets_the_end_date_and_the_days(tmp_path, monkeypatch):
+    """`members --period out_of_time`: data ends 2021-11-30 and the workflow fetches 3,640 days (one Upstox
+    request); the default period has no end and 3,000 days; an unknown period is an argparse error."""
+    seen, gh = {}, tmp_path / "gh.txt"
+    monkeypatch.setenv("UPSTOX_ANALYTICS_TOKEN", "t")
+    monkeypatch.setattr(replay, "resolve_members", lambda client, name, token, end=None: seen.update(end=end) or {
+        "universe": name, "members": [], "sha256": "d", "nifty500_sha256": "n", "shards": 24, "as_of": "2021-11-30"})
+    assert replay.main(["members", "--universe", "live", "--out", str(tmp_path / "m.json"), "--period", "out_of_time",
+                        "--github-output", str(gh)]) == 0
+    assert seen["end"] == dt.date(2021, 11, 30) and gh.read_text().endswith("days=3640\n")
+    assert replay.main(["members", "--universe", "live", "--out", str(tmp_path / "m.json")]) == 0 and seen["end"] is None
+    with pytest.raises(SystemExit):
+        replay.main(["members", "--universe", "live", "--out", str(tmp_path / "m.json"), "--period", "2015"])
+
+
+@pytest.mark.parametrize("days,ok", [(30, True), (3640, True), (3650, True), (3651, False), (29, False)])
+def test_run_days_stay_inside_upstox_one_decade_limit(days, ok):
+    """Upstox serves at most one decade of daily bars per request: a longer --days is refused up front."""
+    if ok:
+        assert replay._days_arg(str(days)) == days
+    else:
+        with pytest.raises(argparse.ArgumentTypeError):
+            replay._days_arg(str(days))
+
+
+def test_target_only_groups_keep_a70_passes_blocked_only_by_the_target():
+    """TO70: A70 with stop <= 20% below entry (exactly 20% counts as inside the cap); 20.1% is stop-wide; a
+    non-blocked score-72 Watch is not A70; v1 rows (no entry) are in neither TO70 nor stop-wide."""
+    rows = [_to_row("2016-01-10", 1.0, ticker="T"), _wrow("2016-01-10", 1.0, stop=80.0, target=142.0, ticker="E"),
+            _wrow("2016-01-10", 1.0, stop=79.9, target=142.0, ticker="W"), _wrow("2016-01-10", 1.0, ticker="S"),
+            _wrow("2016-01-10", 1.0, stop=90.0, target=110.0, ticker="N"), _wrow("2016-01-10", 1.0, entry=None, ticker="V"),
+            _to_row("2016-01-10", 1.0, score=66.0, ticker="F"), _wrow("2016-01-10", 1.0, score=66.0, ticker="G"),
+            {**_to_row("2016-02-10", 0.0, ticker="X"), "gross_pct": None}]
+    rows[-1].pop("gross_pct")
+    groups = replay.target_only_groups(rows)
+    assert sorted(r["ticker"] for r in groups["to70"]) == ["E", "T"]
+    assert sorted(r["ticker"] for r in groups["stop_wide70"]) == ["S", "W"]
+    assert [r["ticker"] for r in groups["to65"]] == ["F"] and [r["ticker"] for r in groups["to70_no_outcome"]] == ["X"]
+
+
+def test_target_only_test_passes_on_a_good_out_of_time_live_run_and_is_context_elsewhere(monkeypatch):
+    """Decisive only for `live` + out_of_time; it uses the out-of-time years (4 of 7 positive) and seed."""
+    seeds = []
+    real = replay.block_interval
+    monkeypatch.setattr(replay, "block_interval", lambda *a, **k: seeds.append(k.get("seed")) or real(*a, **k))
+    report = replay.target_only_test(_oot_run(), complete=True, universe="live", period="out_of_time")
+    assert report["verdict"] == "PASS" and report["decisive"] and all(report["checks"].values()), report["checks"]
+    assert set(seeds) == {20261124} and report["size"] == {"passes": 216, "months": 36, "buys": 40, "no_outcome": 0}
+    assert set(report["to70_by_year"]) == {"2015", "2016", "2017", "2018"} and report["notes"] == []
+    assert report["to70_excess_60bp"]["n"] == 216 and report["stop_exit_share"] == {"to70": 0.0, "b": 0.0}
+    held = replay.target_only_test(_oot_run(), complete=True, universe="holdout", period="out_of_time")
+    assert held["verdict"] == "CONTEXT_ONLY (holdout out_of_time run, not decisive; would be PASS)"
+    recent = replay.target_only_test(_oot_run(), complete=True, universe="live", period="recent")
+    assert not recent["decisive"] and recent["verdict"].startswith("CONTEXT_ONLY") and recent["verdict"].endswith("FAIL)")
+    assert not replay.width_test(_width_run(), complete=True, universe="holdout", period="out_of_time")["decisive"]
+    assert replay.width_test(_width_run(), complete=True, universe="holdout", period="recent")["decisive"]
+
+
+def test_target_only_test_fails_a_losing_group_and_blocks_a_small_one():
+    """Shifted down: FAIL. 20 months (120 passes): NO_DECISION naming TO70. Incomplete: blind."""
+    assert replay.target_only_test(_oot_run(shift=-3.0), complete=True, universe="live", period="out_of_time")["verdict"] == "FAIL"
+    small = replay.target_only_test(_oot_run(months=20), complete=True, universe="live", period="out_of_time")
+    assert small["verdict"] == "NO_DECISION" and small["blockers"] == ["TO70 under 150 passes", "TO70 in under 24 months"]
+    blind = replay.target_only_test(_oot_run(), complete=False, universe="live", period="out_of_time")
+    assert set(blind) == {"universe", "period", "decisive", "blockers", "size", "verdict"} and blind["verdict"] == "NO_DECISION"
+
+
+def test_four_positive_years_of_seven_are_enough_for_the_out_of_time_target_only_test():
+    """Years 2015-2018 positive, 2019-2021 negative: 4 of 7 passes d (3 would not)."""
+    spec = replay.PERIODS["out_of_time"]
+    years = {y: (1.0 if y < "2019" else -1.0) for y in spec["years"]}
+    gate = _gates(year_means=years, worst_decile={"to70": -14.0, "b": -10.0}, stop_exits={"to70": (25, 100), "b": (20, 100)})
+    assert replay._width_checks(gate, "to70", spec)["d_positive_years"] is True
+    years["2018"] = 0.0
+    assert replay._width_checks({**gate, "year_means": years}, "to70", spec)["d_positive_years"] is False
+
+
+def test_scanner_edge_test_finds_an_edge_in_good_buys(monkeypatch):
+    """Positive Buys every month, above a 0 baseline, in 4 years, liquid third positive: EDGE (out-of-time seed)."""
+    seeds, real = [], replay.block_interval
+    monkeypatch.setattr(replay, "block_interval", lambda *a, **k: seeds.append(k.get("seed")) or real(*a, **k))
+    rows = _edge_run() + [_wrow("2016-01-10", -50.0, score=70.0, ticker="W70")]     # a width-blocked Watch at 70
+    report = replay.scanner_edge_test(rows, complete=True, universe="live", period="out_of_time")
+    assert seeds == [20261124] * 3
+    assert report["b_minus_passes_mean"] == pytest.approx(1.2 - (180 * 1.2 - 50.6) / 181, abs=1e-3)
+    assert report["verdict"] == "EDGE" and all(report["checks"].values()), report["checks"]
+    assert report["size"] == {"buys": 180, "months": 36, "no_outcome": 0} and report["notes"] == []
+    assert report["gate_inputs"]["mean_60"] == pytest.approx(1.2) and report["gate_inputs"]["mean_100"] == pytest.approx(0.8)
+    assert set(report["passes_by_score_60bp"]) == {"70-100", "50-69", "under-50"}
+    assert report["passes_by_score_60bp"]["70-100"]["n"] == 181 and report["b_by_year"]["2019"] == {"n": 0}
+    context = replay.scanner_edge_test(_edge_run(), complete=True, universe="nifty500", period="recent")
+    assert context["verdict"].startswith("CONTEXT_ONLY (nifty500 recent run") and not context["decisive"]
+    assert not replay.scanner_edge_test(_edge_run(), complete=True, universe="live", period="recent")["decisive"]
+    losing = replay.scanner_edge_test(_edge_run(pattern=(-1.0,) * 5), complete=True, universe="live", period="out_of_time")
+    assert losing["verdict"] == "NO_EDGE" and losing["checks"]["edge_mean_60bp_above_0"] is False
+
+
+@pytest.mark.parametrize("check,kwargs", [
+    ("edge_mean_100bp_above_0", {"pattern": (0.9,) * 5}),                       # +0.3 at 60 bp, -0.1 at 100 bp
+    ("edge_above_baseline", {"baseline": 5.0}),
+    ("edge_positive_years", {"months": 34}),                                    # 2015-2017 only: 3 years
+    ("edge_liquid_third_above_0", {"pattern": (4.0, 4.0, 4.0, 4.0, -0.5, -0.5), "values": (1, 2, 3, 4, 9, 9)}),
+])
+def test_each_scanner_edge_check_can_fail_alone(check, kwargs):
+    """Each check flips on its own; the verdict is then NO_EDGE."""
+    report = replay.scanner_edge_test(_edge_run(**kwargs), complete=True, universe="live", period="out_of_time")
+    failed = [name for name, ok in report["checks"].items() if not ok]
+    assert failed == [check] and report["verdict"] == "NO_EDGE"
+
+
+def test_the_scanner_edge_interval_check_uses_the_lowest_low(monkeypatch):
+    """One block length below 0 is enough to fail (the widest interval decides)."""
+    lows = iter([0.5, -0.01, 0.3])
+    monkeypatch.setattr(replay, "block_interval", lambda *a, **k: {"low": next(lows), "high": 2.0, "draws": 10})
+    report = replay.scanner_edge_test(_edge_run(), complete=True, universe="live", period="out_of_time")
+    assert [n for n, ok in report["checks"].items() if not ok] == ["edge_widest_interval_above_0"]
+
+
+def test_scanner_edge_floors_and_the_hidden_loss_gate():
+    """Under 150 Buys or 24 months: NO_DECISION; 4 of 184 Buys without outcome (2.2%) blocks, 3 (1.6%) does not."""
+    few = replay.scanner_edge_test(_edge_run(months=29), complete=True, universe="live", period="out_of_time")
+    assert few["verdict"] == "NO_DECISION" and few["blockers"] == ["under 150 Buys"]
+    short = replay.scanner_edge_test(_edge_run(months=20, pattern=(3.0, 1.0) * 5), complete=True, universe="live",
+                                     period="out_of_time")
+    assert short["blockers"] == ["Buys in under 24 months"]
+    for missing, blocked in ((4, True), (3, False)):
+        rows = _edge_run() + [{k: v for k, v in _wrow("2016-05-10", 0.0, action="Buy", score=75.0, stop=90.0, target=110.0,
+                                                       ticker=f"M{k}").items() if k != "gross_pct"} for k in range(missing)]
+        got = replay.scanner_edge_test(rows, complete=True, universe="live", period="out_of_time")
+        assert got["size"]["no_outcome"] == missing and (got["verdict"] == "NO_DECISION") is blocked
+
+
+def test_the_buy_no_outcome_share_counts_every_buy():
+    """196 Buys + 4 without outcome = 4 / 200 = 2%: allowed (4 / 196 would be over 2%)."""
+    rows = _edge_run(months=28, pattern=(3.0, 1.0, 2.0, -1.0, 4.0, 2.0, 1.0)) + [
+        {k: v for k, v in _wrow("2016-05-10", 0.0, action="Buy", score=75.0, stop=90.0, target=110.0, ticker=f"M{k}").items()
+         if k != "gross_pct"} for k in range(4)]
+    got = replay.scanner_edge_test(rows, complete=True, universe="live", period="out_of_time")
+    assert got["size"] == {"buys": 196, "months": 28, "no_outcome": 4} and got["blockers"] == []
+
+
+def test_scanner_edge_flags_a_mean_carried_by_a_few_big_winners():
+    """Mean > 0 but median < 0: the report says so (not a gate)."""
+    report = replay.scanner_edge_test(_edge_run(pattern=(-0.5, -0.5, -0.5, -0.5, 10.0)), complete=True,
+                                      universe="live", period="out_of_time")
+    assert report["notes"] == ["skewed: a few big winners carry the mean (mean > 0, median < 0)"]
+
+
+def test_an_incomplete_out_of_time_run_is_blind_in_every_test():
+    """Counts only in all three sections (a re-run must not have seen any number)."""
+    report = replay.summarise(_oot_run() + _edge_run(), complete=False, universe="live", period="out_of_time")
+    assert not _keys(report) & {"mean", "median", "low", "high", "win_rate", "t"}
+    assert report["period"] == "out_of_time" and report["scanner_edge_test"]["verdict"] == "NO_DECISION"
+    assert report["target_only_test"]["verdict"] == "NO_DECISION" and report["width_test"]["verdict"].startswith("CONTEXT_ONLY")
+
+
+def test_shards_with_different_as_of_are_incomplete_and_not_out_of_time(tmp_path):
+    """One shard ending 2021-11-30 and one ending today are two data sets: incomplete, period recent."""
+    for shard, as_of in ((0, "2021-11-30"), (1, "2026-11-20")):
+        (tmp_path / f"x{shard}.json").write_text(json.dumps({
+            "version": replay.VERSION, "shard": shard, "shards": 2, "universe": "live", "universe_sha256": "l",
+            "universe_size": 10, "as_of": as_of, "nifty_last_day": as_of, "rows": [], "failed": []}))
+    out = tmp_path / "r.json"
+    assert replay.main(["summarise", *sorted(map(str, tmp_path.glob("x*.json"))), "--out", str(out), "--shards", "2"]) == 0
+    report = json.loads(out.read_text())
+    assert not report["complete"] and report["period"] == "recent"
+    assert "shards disagree on as_of or NIFTY's last day (different data sets)" in report["problems"]
+
+
+@pytest.mark.parametrize("as_of,days,flagged,period", [
+    ("2021-12-01", 3640, True, "recent"), ("2021-12-13", 3640, True, "recent"),   # between the end and the seen start
+    ("2019-06-28", 3640, True, "recent"), ("2021-11-30", 3000, True, "recent"),   # other early data / other history
+    ("2021-11-30", 3640, False, "out_of_time"), ("2021-12-14", 3000, False, "recent"),
+    ("2026-11-20", 3640, True, "recent"), ("2026-11-20", None, False, "recent"),   # recent with more history: no
+    ("2021-11-30", "3640", True, "recent"), ("2026-11-20", "3000", True, "recent")])    # days not a whole number
+def test_only_the_pre_registered_out_of_time_data_decides(tmp_path, as_of, days, flagged, period):
+    """Data ending before the seen days decides only if it is exactly the PREREG's (as_of 2021-11-30, 3,640
+    days); any other early run is a problem, so it is incomplete and blind."""
+    for shard in range(24):
+        (tmp_path / f"g{shard}.json").write_text(json.dumps({
+            "version": replay.VERSION, "shard": shard, "shards": 24, "universe": "live", "universe_sha256": "l",
+            "universe_size": 10, "as_of": as_of, "nifty_last_day": as_of, "days": days, "rows": [], "failed": []}))
+    out = tmp_path / "r.json"
+    assert replay.main(["summarise", *sorted(map(str, tmp_path.glob("g*.json"))), "--out", str(out)]) == 0
+    report = json.loads(out.read_text())
+    unregistered = [p for p in report["problems"] if p.startswith(("data ends before the first seen day",
+                                                                    "a recent run with more than 3000 days",
+                                                                    "a shard header's days is not"))]
+    assert bool(unregistered) is flagged and report["complete"] is not flagged and report["period"] == period
+
+
+def test_shards_that_fetched_different_history_lengths_are_incomplete(tmp_path):
+    """Same as_of but shard 0 fetched 3,640 days and the rest 3,000: two data sets, so incomplete, recent."""
+    for shard in range(24):
+        (tmp_path / f"d{shard}.json").write_text(json.dumps({
+            "version": replay.VERSION, "shard": shard, "shards": 24, "universe": "live", "universe_sha256": "l",
+            "universe_size": 10, "as_of": "2021-11-30", "nifty_last_day": "2021-11-30",
+            "days": 3640 if shard == 0 else 3000, "rows": [], "failed": []}))
+    out = tmp_path / "r.json"
+    assert replay.main(["summarise", *sorted(map(str, tmp_path.glob("d*.json"))), "--out", str(out)]) == 0
+    report = json.loads(out.read_text())
+    assert not report["complete"] and report["period"] == "recent"
+    assert "shards disagree on the history length (days)" in report["problems"]
+
+
+def test_summarise_cli_names_a_run_ending_before_the_seen_days_out_of_time(tmp_path, capsys):
+    """24 live shards with as_of 2021-11-30: period out_of_time, tests A and B decisive, headlines printed."""
+    for shard in range(24):
+        (tmp_path / f"o{shard}.json").write_text(json.dumps({
+            "version": replay.VERSION, "shard": shard, "shards": 24, "universe": "live", "universe_sha256": "l",
+            "universe_size": 100, "as_of": "2021-11-30", "nifty_last_day": "2021-11-30", "days": 3640,
+            "rows": _oot_run() + _edge_run() if shard == 0 else [], "failed": []}))
+    out = tmp_path / "r.json"
+    assert replay.main(["summarise", *sorted(map(str, tmp_path.glob("o*.json"))), "--out", str(out)]) == 0
+    report = json.loads(out.read_text())
+    assert report["complete"] and report["period"] == "out_of_time"
+    assert report["target_only_test"]["decisive"] and report["scanner_edge_test"]["decisive"]
+    assert not report["width_test"]["decisive"]
+    printed = capsys.readouterr().out
+    assert "target_only_test:" in printed and "scanner_edge_test:" in printed and '"period": "out_of_time"' in printed
