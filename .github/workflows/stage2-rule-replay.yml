@@ -1,10 +1,15 @@
 name: Stage-2 rule replay (research)
 
-# Manual only. Replays the app's Stage-2 decision core on ~8 years of Upstox daily bars for the
-# current NIFTY 500 under four pre-registered trade-level rules (stage2_rule_replay.py) and
-# reports Buys and their net / NIFTY-excess outcomes. Reads only: no database, no orders.
-# from_run: skip the replay and re-summarise that run's shards (the full report is also printed to
-# the log, for readers who cannot download artifacts).
+# Manual only. Replays the app's Stage-2 decision core on ~8 years of Upstox daily bars under four
+# pre-registered trade-level rules (stage2_rule_replay.py) and reports Buys, their net / NIFTY-excess
+# outcomes and the width test (PREREG 23 Nov 2026). Reads only: no database, no orders.
+# universe: nifty500 (the 17 Nov list, 8 shards) or holdout (live NSE EQ universe minus NIFTY 500,
+# 20 shards; the decisive width-test run). The `members` job resolves the list once; at most 8
+# shards run at once (Upstox history rate limit, shared with the live collector): run it outside
+# the 10:07 / 14:37 IST scans.
+# from_run: skip the replay and re-summarise that run's shards (universe read from the shard files;
+# the full report is also printed to the log, for readers who cannot download artifacts). Every
+# summary re-uploads the shards it read for 90 days, so a run's raw rows outlive their 30-day artifact.
 on:
   workflow_dispatch:
     inputs:
@@ -12,23 +17,31 @@ on:
         description: Re-summarise this earlier run's shards instead of replaying (run id, digits)
         required: false
         default: ''
+      universe:
+        description: Stocks to replay (ignored with from_run)
+        type: choice
+        options: [nifty500, holdout]
+        default: nifty500
+      seen_nifty500_sha256:
+        description: The 17 Nov shards' universe_sha256 (from its re-summary); the report then says whether the holdout removed exactly that list
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: stage2-rule-replay-${{ inputs.from_run || 'replay' }}
+  group: stage2-rule-replay-${{ inputs.from_run || inputs.universe }}
   cancel-in-progress: false
 
 jobs:
-  replay:
+  members:   # the stock list, resolved once so every shard splits the same list
     if: ${{ inputs.from_run == '' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 300
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    timeout-minutes: 60   # the NIFTY fetch sleeps through a 45-min scan window
+    outputs:
+      shards: ${{ steps.members.outputs.shards }}
+      matrix: ${{ steps.members.outputs.matrix }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -38,11 +51,52 @@ jobs:
           python-version: '3.13'
           cache: pip
       - run: python -m pip install -r requirements.txt
+      - name: Resolve the member list, NIFTY's last published day (as_of) and the shard matrix
+        id: members
+        env:
+          UPSTOX_ANALYTICS_TOKEN: ${{ secrets.UPSTOX_ANALYTICS_TOKEN }}
+          UNIVERSE: ${{ inputs.universe }}
+        run: >-
+          python stage2_rule_replay.py members --universe "$UNIVERSE" --out replay-members.json
+          --github-output "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: replay-members
+          path: replay-members.json
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
+  replay:
+    needs: members
+    if: ${{ inputs.from_run == '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 8   # Upstox: 2,000 history requests per 30 min per user, shared with the live collector
+      matrix:
+        shard: ${{ fromJSON(needs.members.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - uses: actions/download-artifact@v7
+        with:
+          name: replay-members
       - name: Replay this shard
         env:
           UPSTOX_ANALYTICS_TOKEN: ${{ secrets.UPSTOX_ANALYTICS_TOKEN }}
           SHARD: ${{ matrix.shard }}
-        run: python stage2_rule_replay.py run --shard "$SHARD" --shards 8 --days 3000 --out "replay-shard-$SHARD.json"
+          SHARDS: ${{ needs.members.outputs.shards }}
+        run: >-
+          python stage2_rule_replay.py run --shard "$SHARD" --shards "$SHARDS" --members-file replay-members.json
+          --days 3000 --out "replay-shard-$SHARD.json"
       - uses: actions/upload-artifact@v6
         with:
           name: replay-shard-${{ matrix.shard }}
@@ -80,17 +134,31 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - uses: actions/download-artifact@v7
         with:
-          pattern: replay-shard-*
+          # replay-shard-N (a replay) and replay-shards-of-RUN (a copy kept by an earlier summary)
+          pattern: replay-shard*
           merge-multiple: true
           path: shards
           run-id: ${{ inputs.from_run || github.run_id }}
           github-token: ${{ github.token }}
-      - name: Summarise (the report says whether all 8 shards are present)
+      - name: Check shards arrived
         env:
           RUN: ${{ inputs.from_run || github.run_id }}
-        run: |
-          compgen -G 'shards/replay-shard-*.json' >/dev/null || { echo "no replay shards in run $RUN"; exit 1; }
-          python stage2_rule_replay.py summarise shards/replay-shard-*.json --out stage2-rule-replay-report.json
+        run: compgen -G 'shards/replay-shard-*.json' >/dev/null || { echo "no replay shards in run $RUN"; exit 1; }
+      - name: Keep the shards for 90 days before summarising (shard artifacts expire after 30)
+        uses: actions/upload-artifact@v6
+        with:
+          name: replay-shards-of-${{ inputs.from_run || github.run_id }}
+          path: shards/
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+      - name: Summarise (the report says whether every shard of the universe is present)
+        env:
+          RUN: ${{ inputs.from_run || github.run_id }}
+          SEEN: ${{ inputs.seen_nifty500_sha256 }}
+        run: >-
+          python stage2_rule_replay.py summarise shards/replay-shard-*.json --source-run "$RUN"
+          --seen-sha256 "$SEEN" --out stage2-rule-replay-report.json
       - name: Print the full report
         run: cat stage2-rule-replay-report.json
       - uses: actions/upload-artifact@v6
@@ -99,3 +167,4 @@ jobs:
           path: stage2-rule-replay-report.json
           if-no-files-found: error
           retention-days: 90
+          overwrite: true
