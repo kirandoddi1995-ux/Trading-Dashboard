@@ -92,6 +92,22 @@ below entry AND target - entry <= ATR x max(4, 2 sqrt(15))) discard passes that 
              at most 8 shards at once (Upstox: 2,000 history requests / 30 min / user, shared);
              every fetch first sleeps through the live scan windows (weekdays 09:55-10:40 and
              14:25-15:10 IST: wait_outside_scans).
+
+OUT-OF-TIME TESTS (23 Nov 2026; pre-registered in claude/PREREG_2026-11-23_target_only_and_scanner_edge.md v1,
+written before any out-of-time data). Every earlier run's decision days start 14 Dec 2021 (SEEN_FROM), so a run whose
+members as_of is before that date (`members --period out_of_time`: data to 2021-11-30, 3,640 days = one Upstox
+request, inside its one-decade limit) replays only unseen days (~Mar 2015 - Nov 2021); period_of() names it
+"out_of_time" from the shards' as_of.
+  universe   `live` = the whole live collector universe (NIFTY 500 + holdout), 24 shards.
+  test A     target_only_test: TO70 = A70 passes whose stop is <= 20% below entry, i.e. blocked only by the
+             target cap = exactly the trades that dropping that cap would add; the width test's checks a-g
+             with the period's years (2015-2021, >= 4 positive) and seed (PERIODS).
+  test B     scanner_edge_test: do incumbent Buys beat NIFTY after costs? EDGE needs mean > 0 at 60 bp with
+             every 1/3/6-month interval low > 0, mean > 0 at 100 bp, above the baseline, >= 4 positive years
+             and the most liquid third > 0; NO_DECISION under 150 Buys / 24 months or over 2% without outcome.
+  Both are decisive only on a complete `live` out-of-time run; anything else is CONTEXT_ONLY. Survivorship
+  (stocks listed today) lifts long-only means more the further back: a FAIL / NO_EDGE is conservative, a PASS /
+  EDGE an upper bound (the PREREG's live-label check follows).
 """
 from __future__ import annotations
 
@@ -135,7 +151,7 @@ LOGGER = logging.getLogger("stage2_rule_replay")
 VERSION = "stage2-rule-replay-v2"                     # v2: holdout universe; entry / exit day / gaps in rows
 KNOWN_VERSIONS = ("stage2-rule-replay-v1", VERSION)   # v1 = the 17 Nov run (re-summarised, never re-run)
 HORIZON = APP_DEFAULT_SETTINGS.custom_days            # 15 sessions, the app default
-UNIVERSES = {"nifty500": 8, "holdout": 20}            # universe -> shard count (the workflow's matrix)
+UNIVERSES = {"nifty500": 8, "holdout": 20, "live": 24}   # universe -> shard count (the workflow's matrix)
 SHARDS = UNIVERSES["nifty500"]
 FETCH_ATTEMPTS = 3                                    # one history request + two retries
 MAX_FAILED_SHARE = 0.02                               # more failed stocks than this: run incomplete
@@ -157,6 +173,16 @@ WIDTH = {"score": 70.0, "score_a65": 65.0, "mean_60bp": 1.0, "min_passes": 150, 
 BLOCK_MONTHS = (1, 3, 6)
 BOOTSTRAP_DRAWS = 10_000
 BOOTSTRAP_SEED = 20261123
+# Out-of-time tests (PREREG target-only + scanner edge v1, 23 Nov 2026): fixed before any out-of-time run.
+SEEN_FROM = "2021-12-14"                              # first decision day of every run before them
+UPSTOX_MAX_DAYS = 3650                                # daily candles: one decade per request
+PERIODS = {
+    "recent": {"years": WIDTH["years"], "min_positive_years": WIDTH["min_positive_years"], "seed": BOOTSTRAP_SEED,
+               "end": None, "days": 3000},
+    "out_of_time": {"years": tuple(str(y) for y in range(2015, 2022)), "min_positive_years": 4, "seed": 20261124,
+                    "end": "2021-11-30", "days": 3640},
+}
+EDGE = {"min_buys": 150, "min_months": 24, "max_no_outcome_share": 0.02}
 STOP_EXITS = ("STOP", "GAP_STOP", "BOTH_STOP")         # app_runtime.trade_outcome's stop reasons
 
 
@@ -561,8 +587,17 @@ def block_interval(rows: Sequence[Mapping[str, Any]], months: Sequence[str], blo
 
 
 def _year(day: str) -> str:
-    """Calendar year of a replay day; the late-2021 days join 2022 (PREREG check d)."""
-    return "2022" if day[:4] == "2021" else day[:4]
+    """Calendar year of a replay day; December 2021 joins 2022 (width PREREG check d: the recent runs
+    start 14 Dec 2021), so out-of-time days (to Nov 2021) keep their own year."""
+    return "2022" if day[:7] == "2021-12" else day[:4]
+
+
+def period_of(as_of: str | None, days: int | None = None) -> str:
+    """'out_of_time' only for exactly the pre-registered out-of-time data (as_of = its end, `days` of
+    history), else 'recent' (v1 files: None). Any other run ending before SEEN_FROM matches no
+    pre-registered period: _summarise_files marks it a problem (incomplete, blind)."""
+    spec = PERIODS["out_of_time"]
+    return "out_of_time" if as_of == spec["end"] and days == spec["days"] else "recent"
 
 
 def _worst_decile(values: Sequence[float]) -> float | None:
@@ -636,9 +671,10 @@ def _at_least(value: float | None, floor: float | None) -> bool:
     return value is not None and floor is not None and value >= floor
 
 
-def _gate_inputs(groups: Mapping[str, list], intervals: Mapping[str, dict | None]) -> dict:
-    """The unrounded numbers the PREREG checks compare (the report shows them rounded)."""
-    a70 = groups["a70"]
+def _gate_inputs(groups: Mapping[str, list], intervals: Mapping[str, dict | None], key: str = "a70") -> dict:
+    """The unrounded numbers the PREREG checks compare for decision group `key` (the report shows them
+    rounded)."""
+    a70 = groups[key]
     a70_60 = [_excess(r, 60) for r in a70]
     year_means = {year: _mean([_excess(r, 60) for r in a70 if _year(r["day"]) == year])
                   for year in sorted({_year(r["day"]) for r in a70})}
@@ -651,8 +687,8 @@ def _gate_inputs(groups: Mapping[str, list], intervals: Mapping[str, dict | None
         "interval_lows": {name: (i["low"] if i else None) for name, i in intervals.items()},
         "year_means": year_means, "best_year": best,
         "without_best_year_mean": _mean([_excess(r, 60) for r in a70 if _year(r["day"]) != best]),
-        "worst_decile": {"a70": _worst_decile(a70_60), "b": _worst_decile([_excess(r, 60) for r in groups["b"]])},
-        "stop_exits": {"a70": _stop_count(a70), "b": _stop_count(groups["b"])},
+        "worst_decile": {key: _worst_decile(a70_60), "b": _worst_decile([_excess(r, 60) for r in groups["b"]])},
+        "stop_exits": {key: _stop_count(a70), "b": _stop_count(groups["b"])},
         "liquid_tercile_mean_60": _liquid_tercile_mean(a70),
     }
 
@@ -663,40 +699,41 @@ def _liquid_tercile_mean(a70: Sequence[Mapping[str, Any]]) -> float | None:
     return _mean([_excess(r, 60) for r in _terciles(a70)[2]])
 
 
-def _stop_share_ok(stops: Mapping[str, tuple[int, int]]) -> bool:
-    """A70's stop-exit share <= B's + 10 points, compared exactly as fractions."""
-    (a_k, a_n), (b_k, b_n) = stops["a70"], stops["b"]
+def _stop_share_ok(stops: Mapping[str, tuple[int, int]], key: str = "a70") -> bool:
+    """The group's stop-exit share <= B's + 10 points, compared exactly as fractions."""
+    (a_k, a_n), (b_k, b_n) = stops[key], stops["b"]
     margin = Fraction(WIDTH["stop_share_margin"]).limit_denominator(1000)
     return a_n > 0 and b_n > 0 and Fraction(a_k, a_n) <= Fraction(b_k, b_n) + margin
 
 
-def _width_checks(g: Mapping[str, Any]) -> dict[str, bool]:
-    """PREREG checks a-e and g on the unrounded gate inputs `g` (_gate_inputs)."""
+def _width_checks(g: Mapping[str, Any], key: str = "a70", spec: Mapping[str, Any] = PERIODS["recent"]) -> dict[str, bool]:
+    """PREREG checks a-e and g on the unrounded gate inputs `g` (_gate_inputs) of group `key`, with the
+    period's year set (`spec`)."""
     lows, worst = list(g["interval_lows"].values()), g["worst_decile"]
-    positive_years = sum(_above(g["year_means"].get(y), 0.0) for y in WIDTH["years"])
+    positive_years = sum(_above(g["year_means"].get(y), 0.0) for y in spec["years"])
     return {
         "a_mean_60bp_at_least_1pct": _at_least(g["mean_60"], WIDTH["mean_60bp"]),
         "a_mean_100bp_above_0": _above(g["mean_100"], 0.0),
         "a_widest_interval_above_0": bool(lows) and None not in lows and min(lows) > 0,
         "b_median_above_0": _above(g["median_60"], 0.0),
         "c_above_baseline": _above(g["mean_60"], g["baseline_mean_60"]),
-        "d_positive_years": positive_years >= WIDTH["min_positive_years"],
+        "d_positive_years": positive_years >= spec["min_positive_years"],
         "d_without_best_year_above_0": _above(g["without_best_year_mean"], 0.0),
-        "e_worst_decile": _at_least(worst["a70"], None if worst["b"] is None else worst["b"] - WIDTH["tail_margin_pts"]),
-        "e_stop_share": _stop_share_ok(g["stop_exits"]),
+        "e_worst_decile": _at_least(worst[key], None if worst["b"] is None else worst["b"] - WIDTH["tail_margin_pts"]),
+        "e_stop_share": _stop_share_ok(g["stop_exits"], key),
         "g_liquid_tercile_above_0": _above(g["liquid_tercile_mean_60"], 0.0),
     }
 
 
-def _width_blockers(size: Mapping[str, int], complete: bool) -> list[str]:
-    """Why the run cannot decide (PREREG: NO DECISION), empty when it can."""
+def _width_blockers(size: Mapping[str, int], complete: bool, label: str = "A70") -> list[str]:
+    """Why the run cannot decide (PREREG: NO DECISION), empty when it can; `label` names the group."""
     censored = Fraction(size["no_outcome"], size["passes"] + size["no_outcome"]) if size["no_outcome"] else 0
     return [reason for reason, bad in (
         ("run incomplete", not complete),
-        ("over 2% of A70 passes have no outcome (possible hidden losses)",
+        (f"over 2% of {label} passes have no outcome (possible hidden losses)",
          censored > Fraction(WIDTH["max_no_outcome_share"]).limit_denominator(1000)),
-        (f"A70 under {WIDTH['min_passes']} passes", size["passes"] < WIDTH["min_passes"]),
-        (f"A70 in under {WIDTH['min_months']} months", size["months"] < WIDTH["min_months"]),
+        (f"{label} under {WIDTH['min_passes']} passes", size["passes"] < WIDTH["min_passes"]),
+        (f"{label} in under {WIDTH['min_months']} months", size["months"] < WIDTH["min_months"]),
         (f"under {WIDTH['min_buys']} Buys: the tail check cannot be made", size["buys"] < WIDTH["min_buys"]),
     ) if bad]
 
@@ -706,22 +743,28 @@ def _rounded(value: float | None) -> float | None:
     return None if value is None else round(value, 3)
 
 
-def _width_measures(groups: Mapping[str, list], g: Mapping[str, Any], intervals: Mapping[str, dict | None]) -> dict:
-    """The decisive numbers for display (rounded; the gates use `g`)."""
-    a70, (a_k, a_n), (b_k, b_n) = groups["a70"], g["stop_exits"]["a70"], g["stop_exits"]["b"]
+def _width_measures(groups: Mapping[str, list], g: Mapping[str, Any], intervals: Mapping[str, dict | None],
+                    key: str = "a70") -> dict:
+    """The decisive numbers of group `key` for display (rounded; the gates use `g`)."""
+    a70, (a_k, a_n), (b_k, b_n) = groups[key], g["stop_exits"][key], g["stop_exits"]["b"]
     return {
-        "a70_excess_60bp": _stats([_excess(r, 60) for r in a70]),
-        "a70_excess_100bp": _stats([_excess(r, 100) for r in a70]),
+        f"{key}_excess_60bp": _stats([_excess(r, 60) for r in a70]),
+        f"{key}_excess_100bp": _stats([_excess(r, 100) for r in a70]),
         "baseline_excess_60bp": _stats([_excess(r, 60) for r in groups["baseline"]]),
-        "a70_interval_90": {name: None if i is None else {"low": _rounded(i["low"]), "high": _rounded(i["high"]),
-                                                          "draws": i["draws"]} for name, i in intervals.items()},
-        "a70_widest_low": _rounded(min((v for v in g["interval_lows"].values() if v is not None), default=None)),
-        "a70_by_year": {y: _stats([_excess(r, 60) for r in a70 if _year(r["day"]) == y]) for y in g["year_means"]},
+        f"{key}_interval_90": _shown_intervals(intervals),
+        f"{key}_widest_low": _rounded(min((v for v in g["interval_lows"].values() if v is not None), default=None)),
+        f"{key}_by_year": {y: _stats([_excess(r, 60) for r in a70 if _year(r["day"]) == y]) for y in g["year_means"]},
         "best_year": g["best_year"],
-        "a70_without_best_year": _stats([_excess(r, 60) for r in a70 if _year(r["day"]) != g["best_year"]]),
+        f"{key}_without_best_year": _stats([_excess(r, 60) for r in a70 if _year(r["day"]) != g["best_year"]]),
         "worst_decile_60bp": {k: _rounded(v) for k, v in g["worst_decile"].items()},
-        "stop_exit_share": {"a70": _rounded(a_k / a_n) if a_n else None, "b": _rounded(b_k / b_n) if b_n else None},
+        "stop_exit_share": {key: _rounded(a_k / a_n) if a_n else None, "b": _rounded(b_k / b_n) if b_n else None},
     }
+
+
+def _shown_intervals(intervals: Mapping[str, dict | None]) -> dict:
+    """Bootstrap intervals rounded for display."""
+    return {name: None if i is None else {"low": _rounded(i["low"]), "high": _rounded(i["high"]), "draws": i["draws"]}
+            for name, i in intervals.items()}
 
 
 def _width_context(groups: Mapping[str, list], universe: str) -> dict:
@@ -744,49 +787,183 @@ def _width_context(groups: Mapping[str, list], universe: str) -> dict:
     }
 
 
-def _width_notes(a70: Sequence[Mapping[str, Any]], gate: Mapping[str, Any]) -> list[str]:
+def _width_notes(a70: Sequence[Mapping[str, Any]], gate: Mapping[str, Any], label: str = "A70") -> list[str]:
     """Plain-language warnings for the report (not gates): check g cannot be computed, or rests on
-    only part of A70 (rows without a traded value are left out of the terciles)."""
+    only part of the group (rows without a traded value are left out of the terciles)."""
     if gate["liquid_tercile_mean_60"] is None:
-        return ["check g not computable: no A70 row has a traded_value_20d (v1 rows, or no A70 passes) -> g fails"]
+        return [f"check g not computable: no {label} row has a traded_value_20d (v1 rows, or no {label} passes) -> g fails"]
     valued = sum(len(part) for part in _terciles(a70))
     if valued < len(a70):
         return [f"check g on {len(_terciles(a70)[2])} rows of a top third cut from {valued} of {len(a70)} "
-                f"A70 rows ({len(a70) - valued} without a traded value)"]
+                f"{label} rows ({len(a70) - valued} without a traded value)"]
     return []
 
 
-def width_test(rows: Sequence[Mapping[str, Any]], *, complete: bool, universe: str) -> dict:
-    """The pre-registered width test on one run (WIDTH TEST in the module docstring): gate inputs,
-    checks a-e and g, NO DECISION floors (f, completeness, Buys), verdict and the reported context. An
-    incomplete run reports only its blockers and size: a re-run must stay blind to its numbers."""
-    groups = width_groups(rows)
-    a70 = groups["a70"]
-    size = {"passes": len(a70), "months": len({r["day"][:7] for r in a70}), "buys": len(groups["b"]),
-            "no_outcome": len(groups["a70_no_outcome"])}
-    blockers = _width_blockers(size, complete)
-    decisive = universe == "holdout"
-    head = {"universe": universe, "decisive": decisive, "blockers": blockers, "size": size}
+LIMITS_LINE = ("Stage-1 ranking is not replayed (every stock is evaluated every 5th session); "
+               "survivorship (stocks listed today); daily bars; D-open entry without spread; flat costs.")
+
+
+def _run_months(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Every calendar month of the run's replay days (the bootstrap's blocks)."""
+    days = [r["day"] for r in rows if r.get("day")]
+    return calendar_months(min(days), max(days)) if days else []
+
+
+def _verdict_line(verdict: str, decisive: bool, universe: str, period: str) -> str:
+    """The verdict, or CONTEXT_ONLY (with what it would be) for a run the PREREG does not decide on."""
+    return verdict if decisive else f"CONTEXT_ONLY ({universe} {period} run, not decisive; would be {verdict})"
+
+
+def _group_test(rows: Sequence[Mapping[str, Any]], groups: Mapping[str, list], *, key: str, label: str,
+                complete: bool, universe: str, period: str, decisive: bool, context: Mapping[str, Any]) -> dict:
+    """Checks a-g on decision group `key` (width test: A70; target-only test: TO70), NO DECISION floors,
+    verdict and context. An incomplete run reports only its blockers and size: a re-run stays blind."""
+    spec, group = PERIODS[period], groups[key]
+    size = {"passes": len(group), "months": len({r["day"][:7] for r in group}), "buys": len(groups["b"]),
+            "no_outcome": len(groups[f"{key}_no_outcome"])}
+    blockers = _width_blockers(size, complete, label)
+    head = {"universe": universe, "period": period, "decisive": decisive, "blockers": blockers, "size": size}
     if not complete:
         return {**head, "verdict": "NO_DECISION" if decisive else "CONTEXT_ONLY (run incomplete)"}
-    days = [r["day"] for r in rows if r.get("day")]
-    months = calendar_months(min(days), max(days)) if days else []
-    intervals = {f"{block}m": block_interval(a70, months, block) for block in BLOCK_MONTHS}
-    gate = _gate_inputs(groups, intervals)
-    checks = _width_checks(gate)
+    months = _run_months(rows)
+    intervals = {f"{block}m": block_interval(group, months, block, seed=spec["seed"]) for block in BLOCK_MONTHS}
+    gate = _gate_inputs(groups, intervals, key)
+    checks = _width_checks(gate, key, spec)
     verdict = "NO_DECISION" if blockers else ("PASS" if all(checks.values()) else "FAIL")
-    return {**head, "verdict": verdict if decisive else f"CONTEXT_ONLY ({universe} run, not decisive; would be {verdict})",
-            "checks": checks, **_width_measures(groups, gate, intervals), **_width_context(groups, universe),
+    return {**head, "verdict": _verdict_line(verdict, decisive, universe, period), "checks": checks,
+            **_width_measures(groups, gate, intervals, key), **context, "gate_inputs": gate,
+            "notes": _width_notes(group, gate, label), "limits": LIMITS_LINE}
+
+
+def width_test(rows: Sequence[Mapping[str, Any]], *, complete: bool, universe: str, period: str = "recent") -> dict:
+    """The pre-registered width test on one run (WIDTH TEST in the module docstring): decisive only on
+    a recent-period holdout run."""
+    groups = width_groups(rows)
+    context = _width_context(groups, universe) if complete else {}
+    return _group_test(rows, groups, key="a70", label="A70", complete=complete, universe=universe, period=period,
+                       decisive=universe == "holdout" and period == "recent", context=context)
+
+
+def target_only_groups(rows: Sequence[Mapping[str, Any]]) -> dict[str, list]:
+    """Test A groups: TO70 = A70 passes whose stop is <= 20% below entry (blocked only by the target
+    cap; needs the entry, so v2 rows), TO65 the same at score 65-69, stop-wide A70, B and baseline."""
+    base = width_groups(rows)
+    stop_ok = lambda r: r.get("entry") is not None and (r["entry"] - r["stop"]) / r["entry"] <= 0.20  # noqa: E731
+    to70_all = [r for r in _a70(rows) if stop_ok(r)]
+    return {"to70": [r for r in to70_all if "gross_pct" in r], "to70_no_outcome": [r for r in to70_all if "gross_pct" not in r],
+            "to65": [r for r in base["a65"] if stop_ok(r)], "stop_wide70": [r for r in base["a70"] if r.get("entry") is not None and not stop_ok(r)],
+            "b": base["b"], "baseline": base["baseline"]}
+
+
+def _target_only_context(groups: Mapping[str, list]) -> dict:
+    """Reported, not gates: TO65, stop-wide A70, TO70 minus B, exits, non-overlap, liquidity thirds."""
+    to70, b_60 = groups["to70"], [_excess(r, 60) for r in groups["b"]]
+    to70_60, kept = [_excess(r, 60) for r in to70], non_overlapping(to70)
+    return {
+        "b_excess_60bp": _stats(b_60),
+        "to70_minus_b_mean": round(statistics.fmean(to70_60) - statistics.fmean(b_60), 3) if to70_60 and b_60 else None,
+        "to70_exit_reasons": {k: sum(r["reason"] == k for r in to70) for k in sorted({r["reason"] for r in to70})},
+        "to70_non_overlapping_60bp": None if kept is None else _stats([_excess(r, 60) for r in kept]),
+        "to65_excess_60bp": _stats([_excess(r, 60) for r in groups["to65"]]),
+        "stop_wide70_excess_60bp": _stats([_excess(r, 60) for r in groups["stop_wide70"]]),
+        "to70_by_liquidity": liquidity_split(to70),
+        "to70_liquid_third_100bp": _stats([_excess(r, 100) for r in _terciles(to70)[2]]),
+    }
+
+
+def target_only_test(rows: Sequence[Mapping[str, Any]], *, complete: bool, universe: str, period: str) -> dict:
+    """PREREG test A: would dropping only the target cap add trades that beat NIFTY? Decisive only on a
+    complete `live` out-of-time run."""
+    groups = target_only_groups(rows)
+    return _group_test(rows, groups, key="to70", label="TO70", complete=complete, universe=universe, period=period,
+                       decisive=universe == "live" and period == "out_of_time",
+                       context=_target_only_context(groups) if complete else {})
+
+
+def _edge_blockers(size: Mapping[str, int], complete: bool) -> list[str]:
+    """Why test B cannot decide (NO DECISION), empty when it can."""
+    total = size["buys"] + size["no_outcome"]
+    censored = Fraction(size["no_outcome"], total) if size["no_outcome"] else 0
+    return [reason for reason, bad in (
+        ("run incomplete", not complete),
+        ("over 2% of Buys have no outcome (possible hidden losses)",
+         censored > Fraction(EDGE["max_no_outcome_share"]).limit_denominator(1000)),
+        (f"under {EDGE['min_buys']} Buys", size["buys"] < EDGE["min_buys"]),
+        (f"Buys in under {EDGE['min_months']} months", size["months"] < EDGE["min_months"]),
+    ) if bad]
+
+
+def _edge_checks(b: Sequence[Mapping[str, Any]], baseline: Sequence[Mapping[str, Any]],
+                 intervals: Mapping[str, dict | None], spec: Mapping[str, Any]) -> tuple[dict, dict]:
+    """Test B checks 1-4 on unrounded values, with the inputs they compared."""
+    years = {y: _mean([_excess(r, 60) for r in b if _year(r["day"]) == y]) for y in spec["years"]}
+    lows = [i["low"] if i else None for i in intervals.values()]
+    gate = {"mean_60": _mean([_excess(r, 60) for r in b]), "mean_100": _mean([_excess(r, 100) for r in b]),
+            "baseline_mean_60": _mean([_excess(r, 60) for r in baseline]),
+            "interval_lows": dict(zip(intervals, lows)), "year_means": years,
+            "liquid_tercile_mean_60": _mean([_excess(r, 60) for r in _terciles(b)[2]])}
+    checks = {
+        "edge_mean_60bp_above_0": _above(gate["mean_60"], 0.0),
+        "edge_widest_interval_above_0": bool(lows) and None not in lows and min(lows) > 0,
+        "edge_mean_100bp_above_0": _above(gate["mean_100"], 0.0),
+        "edge_above_baseline": _above(gate["mean_60"], gate["baseline_mean_60"]),
+        "edge_positive_years": sum(_above(v, 0.0) for v in years.values()) >= spec["min_positive_years"],
+        "edge_liquid_third_above_0": _above(gate["liquid_tercile_mean_60"], 0.0),
+    }
+    return checks, gate
+
+
+def _difference(a: float | None, b: float | None) -> float | None:
+    """a - b rounded for display, None when either is missing."""
+    return None if a is None or b is None else _rounded(a - b)
+
+
+def _score_bands(passes: Sequence[Mapping[str, Any]]) -> dict:
+    """60 bp excess of incumbent passes with an outcome by score band (does a higher score earn more?)."""
+    bands = (("70-100", 70.0, math.inf), ("50-69", 50.0, 70.0), ("under-50", -math.inf, 50.0))
+    return {name: _stats([_excess(r, 60) for r in passes if low <= r["score"] < high]) for name, low, high in bands}
+
+
+def scanner_edge_test(rows: Sequence[Mapping[str, Any]], *, complete: bool, universe: str, period: str) -> dict:
+    """PREREG test B: do the live rule's Buys (incumbent) beat NIFTY after costs? EDGE / NO_EDGE /
+    NO_DECISION; decisive only on a complete `live` out-of-time run. Incomplete: blockers and size only."""
+    spec = PERIODS[period]
+    passes = [r for r in rows if r.get("variant") == WIDTH_VARIANT and r.get("pass")]
+    b = [r for r in passes if r.get("action") == "Buy" and "gross_pct" in r]
+    size = {"buys": len(b), "months": len({r["day"][:7] for r in b}),
+            "no_outcome": sum(r.get("action") == "Buy" and "gross_pct" not in r for r in passes)}
+    blockers = _edge_blockers(size, complete)
+    decisive = universe == "live" and period == "out_of_time"
+    head = {"universe": universe, "period": period, "decisive": decisive, "blockers": blockers, "size": size}
+    if not complete:
+        return {**head, "verdict": "NO_DECISION" if decisive else "CONTEXT_ONLY (run incomplete)"}
+    intervals = {f"{block}m": block_interval(b, _run_months(rows), block, seed=spec["seed"]) for block in BLOCK_MONTHS}
+    baseline = [r for r in rows if r.get("variant") == BASELINE and r.get("pass")]
+    checks, gate = _edge_checks(b, baseline, intervals, spec)
+    verdict = "NO_DECISION" if blockers else ("EDGE" if all(checks.values()) else "NO_EDGE")
+    b_60 = [_excess(r, 60) for r in b]
+    median = statistics.median(b_60) if b_60 else None
+    return {**head, "verdict": _verdict_line(verdict, decisive, universe, period), "checks": checks,
+            "b_excess_60bp": _stats(b_60), "b_excess_100bp": _stats([_excess(r, 100) for r in b]),
+            "baseline_excess_60bp": _stats([_excess(r, 60) for r in baseline]),
+            "b_interval_90": _shown_intervals(intervals),
+            "b_by_year": {y: _stats([_excess(r, 60) for r in b if _year(r["day"]) == y]) for y in spec["years"]},
+            "b_worst_decile_60bp": _rounded(_worst_decile(b_60)),
+            "b_exit_reasons": {k: sum(r["reason"] == k for r in b) for k in sorted({r["reason"] for r in b})},
+            "b_by_liquidity": liquidity_split(b),
+            "passes_by_score_60bp": _score_bands([r for r in passes if "gross_pct" in r]),
+            "b_minus_passes_mean": _difference(gate["mean_60"], _mean([_excess(r, 60) for r in passes if "gross_pct" in r])),
             "gate_inputs": gate,
-            "notes": _width_notes(a70, gate),
-            "limits": "Stage-1 ranking is not replayed (every stock is evaluated every 5th session); "
-                      "survivorship (stocks listed today); daily bars; D-open entry without spread; flat costs."}
+            "notes": (["skewed: a few big winners carry the mean (mean > 0, median < 0)"]
+                      if _above(gate["mean_60"], 0.0) and median is not None and median < 0 else []),
+            "limits": LIMITS_LINE}
 
 
 COUNT_KEYS = ("decisions", "passes", "errors", "rejects", "buys", "actions")
 
 
-def summarise(rows: Iterable[Mapping[str, Any]], *, complete: bool = True, universe: str = "nifty500") -> dict:
+def summarise(rows: Iterable[Mapping[str, Any]], *, complete: bool = True, universe: str = "nifty500",
+              period: str = "recent") -> dict:
     """Per variant summary, the unconditional baseline, the pre-registered choice rule's winner
     (None if no variant qualifies or the run is incomplete) and the width test. An incomplete run
     is blind: counts only, no outcome statistic anywhere (a repeat run must not have seen them)."""
@@ -796,8 +973,8 @@ def summarise(rows: Iterable[Mapping[str, Any]], *, complete: bool = True, unive
         return {"version": VERSION, "horizon": HORIZON, "step": STEP, "costs_bps": COSTS_BPS,
                 "stocks": len({r["ticker"] for r in rows}), "days": len({r["day"] for r in rows}),
                 "complete": False, "variants": {v: {k: e[k] for k in COUNT_KEYS} for v, e in variants.items()},
-                "baseline_excess_60bp": None, "choice_rule_winner": None, "universe": universe,
-                "width_test": width_test(rows, complete=False, universe=universe)}
+                "baseline_excess_60bp": None, "choice_rule_winner": None, "universe": universe, "period": period,
+                **_tests(rows, complete=False, universe=universe, period=period)}
     base = [r for r in rows if r["variant"] == BASELINE and r.get("pass")]
     eligible = {v: e for v, e in variants.items()
                 if e["buy_excess_60bp"].get("n", 0) >= MIN_TRADES and e["buy_excess_100bp"].get("mean", -1) > 0}
@@ -811,7 +988,13 @@ def summarise(rows: Iterable[Mapping[str, Any]], *, complete: bool = True, unive
             "complete": complete, "variants": variants, "baseline_excess_60bp": baseline_60,
             "choice_rule_winner": (max(eligible, key=lambda v: eligible[v]["buy_excess_60bp"]["mean"])
                                    if eligible and complete else None),
-            "universe": universe, "width_test": width_test(rows, complete=complete, universe=universe)}
+            "universe": universe, "period": period, **_tests(rows, complete=complete, universe=universe, period=period)}
+
+
+def _tests(rows: Sequence[Mapping[str, Any]], **kwargs: Any) -> dict:
+    """The three pre-registered tests' sections (each says itself whether this run decides it)."""
+    return {"width_test": width_test(rows, **kwargs), "target_only_test": target_only_test(rows, **kwargs),
+            "scanner_edge_test": scanner_edge_test(rows, **kwargs)}
 
 
 # --------------------------------------------------------------------- data fetch ---
@@ -844,16 +1027,28 @@ def holdout(client, nifty: Sequence[tuple[str, str]] | None = None) -> list[tupl
     return members
 
 
-def resolve_members(client, universe_name: str, token: str) -> dict:
+def live(client) -> list[tuple[str, str]]:
+    """(symbol, Upstox instrument key) for the whole live collector NSE EQ universe (NIFTY 500 and
+    holdout together), sorted so every shard splits the same list."""
+    members = sorted({(str(row["trading_symbol"]), str(row["instrument_key"])) for row in fetch_nse_universe(client)})
+    if len(members) < 2000:
+        raise RuntimeError(f"live universe looks wrong: {len(members)} members")
+    return members
+
+
+def resolve_members(client, universe_name: str, token: str, end: dt.date | None = None) -> dict:
     """The `members` step: the universe's list, resolved ONCE per run (every shard then splits the
     same list, whatever day it starts), its digest, the NIFTY 500 digest it was built against (for the
     holdout: equal to the 17 Nov shards' universe_sha256 means exactly the seen list was removed), the
     shard count, and as_of = NIFTY's last published daily bar: every shard cuts its data there, so a
-    run crossing the next day's publication (~07:00 IST) still replays one data set."""
-    index_bars = load_bars(client, token, NIFTY_KEY, today=dt.datetime.now(IST).date(), days=30)
+    run crossing the next day's publication (~07:00 IST) still replays one data set. `end` (out-of-time
+    runs) caps as_of at NIFTY's last bar on or before that date."""
+    index_bars = load_bars(client, token, NIFTY_KEY, today=end or dt.datetime.now(IST).date(), days=30)
     as_of = index_bars.index[-1].date()
+    if end is not None and as_of > end:
+        raise RuntimeError(f"NIFTY's last bar {as_of} is after the requested end {end}")
     nifty = nifty500(client)
-    members = holdout(client, nifty) if universe_name == "holdout" else nifty
+    members = {"holdout": lambda: holdout(client, nifty), "live": lambda: live(client)}.get(universe_name, lambda: nifty)()
     return {"universe": universe_name, "members": [list(m) for m in members], "sha256": universe_digest(members),
             "nifty500_sha256": universe_digest(nifty), "shards": UNIVERSES[universe_name],
             "as_of": as_of.isoformat()}
@@ -968,7 +1163,7 @@ def run_shard(client, token: str, *, shard: int, shards: int, out: Path, today: 
         LOGGER.info("replayed %s (%d rows so far)", symbol, len(rows))
     out.write_text(json.dumps({"version": VERSION, "shard": shard, "shards": shards, "universe": universe_name,
                                "universe_sha256": universe_digest(universe), "universe_size": len(universe),
-                               "nifty500_sha256": nifty500_sha256, "as_of": str(today),
+                               "nifty500_sha256": nifty500_sha256, "as_of": str(today), "days": days,
                                "nifty_last_day": str(nifty.index[-1].date()) if len(nifty) else None,
                                "rows": rows, "failed": failed}, default=str))
     return {"stocks": len(members), "failed": len(failed), "rows": len(rows)}
@@ -989,20 +1184,24 @@ def _run(args) -> int:
 
 
 def _members(args) -> int:
-    """The `members` command: resolve the list once; with --github-output also write the shard matrix
-    (shards=N, matrix=[0..N-1]) so the workflow's matrix and shard count come from UNIVERSES alone."""
+    """The `members` command: resolve the list once (data ending at the period's end, if any); with
+    --github-output also write the shard matrix (shards=N, matrix=[0..N-1]) and the history to fetch
+    (days=D), so the workflow takes them from UNIVERSES and PERIODS alone."""
     import requests
     token = os.environ.get("UPSTOX_ANALYTICS_TOKEN", "")
     if not token:
         print("UPSTOX_ANALYTICS_TOKEN is not set", file=sys.stderr)
         return 2
-    payload = resolve_members(requests.Session(), args.universe, token)
+    spec = PERIODS[args.period]
+    end = dt.date.fromisoformat(spec["end"]) if spec["end"] else None
+    payload = resolve_members(requests.Session(), args.universe, token, end=end)
     args.out.write_text(json.dumps(payload))
-    print(json.dumps({k: payload[k] for k in ("universe", "sha256", "nifty500_sha256", "shards")}
+    print(json.dumps({k: payload[k] for k in ("universe", "sha256", "nifty500_sha256", "shards", "as_of")}
                      | {"members": len(payload["members"])}))
     if args.github_output is not None:
         with args.github_output.open("a", encoding="utf-8") as handle:
-            handle.write(f"shards={payload['shards']}\nmatrix={json.dumps(list(range(payload['shards'])))}\n")
+            handle.write(f"shards={payload['shards']}\nmatrix={json.dumps(list(range(payload['shards'])))}\n"
+                         f"days={spec['days']}\n")
     return 0
 
 
@@ -1043,7 +1242,7 @@ def _summarise_files(files: Sequence[Path], out: Path, *, shards: int | None = N
     """The `summarise` command: merge shard files, write the report, print the headline. With
     `seen_sha256` (the 17 Nov shards' universe_sha256) a holdout report says whether exactly that
     NIFTY 500 list was removed (seen_list_removed)."""
-    rows, failed, seen, sizes, removed, ends = [], [], [], set(), set(), set()
+    rows, failed, seen, sizes, removed, ends, lengths = [], [], [], set(), set(), set(), set()
     for path in files:
         payload = json.loads(path.read_text())
         if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
@@ -1053,6 +1252,7 @@ def _summarise_files(files: Sequence[Path], out: Path, *, shards: int | None = N
         sizes.add(payload.get("universe_size"))
         removed.add(payload.get("nifty500_sha256"))
         ends.add((payload.get("as_of"), payload.get("nifty_last_day")))
+        lengths.add(payload.get("days"))
         rows.extend(payload["rows"])
         failed.extend(payload.get("failed", []))
     # The 2% failure rule counts against the whole member list (v2 headers carry it); v1 headers do
@@ -1064,9 +1264,23 @@ def _summarise_files(files: Sequence[Path], out: Path, *, shards: int | None = N
         problems.append("shards disagree on the universe size")
     if len(ends) > 1:
         problems.append("shards disagree on as_of or NIFTY's last day (different data sets)")
+    if len(lengths) > 1:
+        problems.append("shards disagree on the history length (days)")
+    if any(d is not None and (isinstance(d, bool) or not isinstance(d, int)) for d in lengths):
+        problems.append("a shard header's days is not a whole number")
     universes = {s[4] for s in seen}
     universe = next(iter(universes)) if len(universes) == 1 else "mixed"
-    report = summarise(rows, complete=not problems, universe=universe)
+    as_ofs = {end[0] for end in ends}
+    period = (period_of(next(iter(as_ofs)), next(iter(lengths)))
+              if len(as_ofs) == 1 and len(lengths) == 1 else "recent")
+    if period != "out_of_time" and any(a and a < SEEN_FROM for a in as_ofs):
+        problems.append("data ends before the first seen day but is not the pre-registered out-of-time data "
+                        f"(as_of {PERIODS['out_of_time']['end']}, {PERIODS['out_of_time']['days']} days): "
+                        "no pre-registered period")
+    if period == "recent" and any(isinstance(d, int) and d > PERIODS["recent"]["days"] for d in lengths):
+        problems.append(f"a recent run with more than {PERIODS['recent']['days']} days of history reaches back "
+                        "into the unseen out-of-time days")
+    report = summarise(rows, complete=not problems, universe=universe, period=period)
     report.update(fetch_failures=len(failed), shards_present=sorted(s[1] for s in seen if s[1] is not None),
                   problems=problems, universe_size=size, source_run=source_run,
                   universe_sha256=sorted({str(s[3]) for s in seen}), nifty500_sha256=sorted(map(str, removed)),
@@ -1076,10 +1290,20 @@ def _summarise_files(files: Sequence[Path], out: Path, *, shards: int | None = N
                       for v, e in report["variants"].items()}, indent=2))
     print("choice_rule_winner:", report["choice_rule_winner"], "| universe_sha256:", report["universe_sha256"],
           "| nifty500_sha256:", report["nifty500_sha256"], "| seen_list_removed:", report["seen_list_removed"])
-    width = report["width_test"]
-    print("width_test:", json.dumps({k: width.get(k) for k in ("universe", "verdict", "blockers", "checks", "size",
-                                                               "a70_excess_60bp", "a70_widest_low")}, indent=2))
+    for name, key in (("width_test", "a70"), ("target_only_test", "to70"), ("scanner_edge_test", "b")):
+        test = report[name]
+        print(f"{name}:", json.dumps({k: test.get(k) for k in ("universe", "period", "verdict", "blockers", "checks",
+                                                               "size", f"{key}_excess_60bp", f"{key}_widest_low",
+                                                               "notes")}, indent=2))
     return 0
+
+
+def _days_arg(value: str) -> int:
+    """History length in days: 30 .. UPSTOX_MAX_DAYS (a longer request is refused by Upstox)."""
+    days = int(value)
+    if not 30 <= days <= UPSTOX_MAX_DAYS:
+        raise argparse.ArgumentTypeError(f"days must be 30-{UPSTOX_MAX_DAYS}")
+    return days
 
 
 def _sha256_arg(value: str) -> str | None:
@@ -1099,7 +1323,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     run = sub.add_parser("run")
     run.add_argument("--shard", type=int, required=True)
     run.add_argument("--shards", type=int, required=True)
-    run.add_argument("--days", type=int, default=3000)
+    run.add_argument("--days", type=_days_arg, default=3000,
+                     help=f"history to fetch (30-{UPSTOX_MAX_DAYS}: Upstox serves one decade of daily bars per request)")
     run.add_argument("--out", type=Path, required=True)
     run.add_argument("--universe", choices=sorted(UNIVERSES), default="nifty500")
     run.add_argument("--members-file", type=Path, default=None,
@@ -1108,6 +1333,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     listing.add_argument("--universe", choices=sorted(UNIVERSES), required=True)
     listing.add_argument("--out", type=Path, required=True)
     listing.add_argument("--github-output", type=Path, default=None)
+    listing.add_argument("--period", choices=sorted(PERIODS), default="recent",
+                         help="out_of_time: data ends at NIFTY's last bar on or before PERIODS' end (unseen days only)")
     summary = sub.add_parser("summarise")
     summary.add_argument("files", type=Path, nargs="+")
     summary.add_argument("--out", type=Path, required=True)
