@@ -3151,3 +3151,83 @@ def test_the_superseded_app_contract_label_is_named_only_as_history():
             if "net-excess-app-contract-v1" in line:
                 name = path.relative_to(ROOT).as_posix()
                 assert line.lstrip().startswith("#"), (name, line)
+
+
+# ---------- PREREG3 rows (sql/stage2_forward_test_rows.sql) on the local PGlite harness ----------
+
+def _stage1_batch(pg, aggregate, key, average_volume):
+    """A Stage-1 ledger batch holding one candidate's 20-day average volume."""
+    payload = {"candidates": [{"instrument_key": key, "inputs_used": {"average_volume_20d": average_volume}}]}
+    pg.execute("INSERT INTO quant_app.evidence_ledger_events VALUES (gen_random_uuid(),%s,1,"
+               "'DECISION_BATCH_EVALUATED',now(),now(),'t','a',%s,%s::jsonb,'p',%s,'sha256',1,NULL)",
+               (aggregate, aggregate, json.dumps(payload), aggregate))
+
+
+def _point_at_stage1(pg, run, obs, entry, stage1):
+    """Record the entry and the Stage-1 batch on one decision of the run's Stage-2 batch."""
+    aggregate = f"scan:{run}{s2.STAGE2_RUN_SUFFIX}"
+    (payload,), = pg.execute("SELECT payload FROM quant_app.evidence_ledger_events WHERE aggregate_id=%s",
+                             (aggregate,)).fetchall()
+    payload = payload if isinstance(payload, dict) else json.loads(payload)
+    for candidate in payload["candidates"]:
+        if candidate["decision_id"] == obs:
+            candidate["inputs_used"].update(entry=entry, stage1_decision_scan=stage1)
+    pg.execute("UPDATE quant_app.evidence_ledger_events SET payload=%s::jsonb WHERE aggregate_id=%s",
+               (json.dumps(payload), aggregate))
+
+
+@needs_sql
+def test_forward_rows_query_keeps_the_report_population_and_marks_settled_decisions(roles_db):
+    """PREREG3 rows: the report's first scan of each stock-day only (22+ days, passes, shadow); scan time in
+    IST; incumbent and atr15 excess; settled (v1.2) = both policies labelled, or older than 60 days (a
+    disposition never settles: it can be overwritten); traded value = entry x the Stage-1 batch's 20-day
+    average volume; one query timestamp."""
+    pg = roles_db
+    today = _ist_today()
+    _scan_days(pg, today - dt.timedelta(days=70), today)
+    d30, d61, d60 = (today - dt.timedelta(days=n) for n in (30, 61, 60))
+    a = _seed(pg, run="f1", symbol="A", day=d30, score=72.0, action="Watch")             # 04:37Z = 10:07 IST
+    _seed(pg, run="f2", symbol="A", day=d30, observed=f"{d30}T09:07:57Z", score=80.0)    # later scan: not a decision
+    b = _seed(pg, run="f2", symbol="B", day=d30, observed=f"{d30}T09:07:57Z", score=55.0, action="Watch")
+    c = _seed(pg, run="f3", symbol="C", day=d61, score=61.0)                             # beyond the retry window
+    edge = _seed(pg, run="f5", symbol="G", day=d60, score=61.0)                           # still retried at 60 days
+    d = _seed(pg, run="f1", symbol="D", day=d30, score=50.0)
+    one = _seed(pg, run="f1", symbol="H", day=d30, score=50.0)                            # incumbent label only
+    _seed(pg, run="f4", symbol="E", day=today - dt.timedelta(days=21))                    # too young
+    _seed(pg, run="f1", symbol="R", day=d30, passed=False)                                # rejected
+    _label(pg, a, m.INCUMBENT, "horizon", 0.012, 0.01)
+    _label(pg, a, m.CHALLENGER, "stop", -0.03, -0.02)
+    _label(pg, b, m.CHALLENGER, "target", 0.05, 0.04)                                     # no incumbent label
+    _label(pg, one, m.INCUMBENT, "stop", -0.02, -0.03)
+    _label(pg, d, TARGET_VERSION, "target", 0.05, 0.04)                                   # production: ignored
+    m.save_dispositions(SqlRepo(pg), [m._disposition_row(b, "no_fill", {}, []),
+                                      m._disposition_row(d, "corporate_action", {}, [])], None)
+    _stage1_batch(pg, "scan:f1", "NSE_EQ|A", 1000.0)
+    _point_at_stage1(pg, "f1", a, 12.5, "scan:f1")
+    _point_at_stage1(pg, "f1", d, 20.0, "scan:f1")                                        # D not in the Stage-1 batch
+    fetched = pg.execute((ROOT / "sql/stage2_forward_test_rows.sql").read_text()).fetchall()
+    rows = {r[0]: r[1:-2] for r in fetched}
+    assert set(rows) == {a, b, c, d, edge, one}
+    assert len({r[-2] for r in fetched}) == 1 and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", fetched[0][-2])
+    assert {r[-1] for r in fetched} == {len(fetched)}                                     # total_rows
+    # day, eligible, scan_time, score, action, incumbent outcome / excess, atr15 excess, disposition, settled, traded value
+    assert rows[a] == (str(d30), True, "10:07", 72.0, "Watch", "horizon", 0.01, -0.02, None, True, 12500.0)
+    assert rows[b] == (str(d30), True, "14:37", 55.0, "Watch", None, None, 0.04, "no_fill", False, None)
+    assert rows[c][-2] is True and rows[edge][-2] is False                                # 61 days settled, 60 not
+    assert rows[d][8:] == ("corporate_action", False, None)                               # 30 days, no labels
+    assert rows[one][5:7] == ("stop", -0.03) and rows[one][-2] is False                   # atr15 still retried
+    assert [r[0] for r in fetched] == sorted(rows, key=lambda o: (rows[o][0], o))         # day, then id
+
+
+@needs_sql
+def test_forward_rows_flag_an_earlier_day_that_is_not_eligible_yet(roles_db):
+    """A later day can become eligible first (a full-window label) while an earlier day still lacks 15
+    sessions: both rows come back, the earlier one with eligible = false, so the tool can hold the look."""
+    pg = roles_db
+    today = _ist_today()
+    early, late = today - dt.timedelta(days=24), today - dt.timedelta(days=22)
+    first = _seed(pg, run="w1", symbol="EARLY", day=early)
+    second = _seed(pg, run="w2", symbol="LATE", day=late)
+    _label(pg, second, m.INCUMBENT, end=str(late + dt.timedelta(days=21)))
+    rows = {r[0]: r for r in pg.execute((ROOT / "sql/stage2_forward_test_rows.sql").read_text()).fetchall()}
+    assert (rows[first][2], rows[second][2]) == (False, True)
