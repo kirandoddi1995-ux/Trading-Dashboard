@@ -41,8 +41,8 @@ dispatch)"), so a close/manual/feature-branch run cannot stand in for a missed s
 - A failed run can give two messages (in-job + watchdog); accepted, because a failed checkout
   gives only the watchdog's.
 - Slot times are pinned by a test against `supabase/*-cron.sql`; change both together.
-- Not covered: pg_cron jobs that don't dispatch GitHub (purge 7, VACUUM 8), and a GitHub
-  schedule that GitHub drops entirely.
+- Not covered here: pg_cron jobs that don't dispatch GitHub (VACUUM 8: see the nightly DB
+  maintenance check below; purge 7 retired), and a GitHub schedule that GitHub drops entirely.
 - `RUN_ALERT_NOT_CONFIGURED missing=<names>` names the absent secret(s) (never values).
 
 ## On-time watchdog start (18 Nov, later)
@@ -58,3 +58,34 @@ checks that one slot only, as a scheduled run does. The GitHub schedule stays as
 - Manual run with `slot` empty: checks every slot (unchanged).
 - Owner steps: redeploy the Edge Function first, then run `supabase/run-watchdog-cron.sql` in
   the SQL Editor and check the three rows it prints are active.
+
+## Nightly DB maintenance check (24 Nov)
+
+pg_cron job 8 `nightly-vacuum-growing-tables` (22:45 UTC) runs inside Supabase and dispatches
+nothing, so no alert saw it. The runtime role cannot read the cron schema (`cron.job_run_details`),
+so `db_maintenance_watch.py` checks, read-only, what the job leaves behind:
+`pg_stat_user_tables.last_vacuum` (manual VACUUM, not autovacuum) of the four tables in job 8 is at
+most 26 h old. It catches a failed, paused, deleted or edited job and a stopped scheduler. A
+statistics reset (crash recovery) reads as LATE until the next VACUUM.
+
+`run-watchdog.yml` runs it after the GitHub check in the 04:00 IST slot (22:30 UTC; the previous
+VACUUM is then 23 h 45 m old, so a failed VACUUM shows the next night) and on every run that is
+not a scan slot (manual runs), with `DATABASE_URL` (runtime role, same secret as the collector)
+in that one step only, a read-only TLS session and 15 s / 2 s statement / lock limits.
+
+- LATE, or a database it cannot read (a failed read is retried once after 20 s; a missing secret
+  is not retried): one Telegram message from fixed text and numbers, never error text. OK: log only.
+- Exit 0, or 1 when a needed alert was not delivered: the run turns red and the new last step
+  (`if: failure() || cancelled()`, also for a failed `psycopg` install) tries once more.
+- A late GitHub fallback run of the same slot checks again (a real problem may alert twice).
+- If job 8 changes its tables or runs less than daily, change `db_maintenance_watch.py` too (a new
+  run time inside the day needs no change).
+- Option (not built): a SELECT-only login role + its own secret instead of the runtime role.
+
+Job 7 `purge_raw_quotes` (20:00 UTC, `UPDATE quant_app.market_quotes SET raw = NULL WHERE
+observed_at < now() - interval '3 days'`): Kiran chose to retire it (24 Nov). Since `typed_only_v1` every
+new quote row holds only the 35-byte marker `{"retention": "typed_only_v1"}` in `raw`, and the
+archive deletes quotes after 14 days, so the job saved at most ~2 MB while rewriting every row older
+than 3 days each night (23 Nov: 44,054 rows written, 5,520 newly purged). Owner step: run
+`supabase/retire-purge-raw-quotes-cron.sql` once in the SQL Editor (pre-check, `cron.unschedule`,
+check; rollback in its header; a second run stops at the pre-check, as expected).
