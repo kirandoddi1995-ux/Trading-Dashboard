@@ -25,8 +25,10 @@ ENV = {"DATABASE_URL": "postgresql://runtime@db.example/postgres",
 WORKFLOW = (ROOT / ".github/workflows/run-watchdog.yml").read_text(encoding="utf-8")
 RETIRE_FILE = (ROOT / "supabase/retire-purge-raw-quotes-cron.sql").read_text(encoding="utf-8")
 JOB7 = "UPDATE quant_app.market_quotes SET raw = NULL WHERE observed_at < now() - interval '3 days'"
-SLOT_IF = ("if: ${{ (github.event.schedule || inputs.slot) != '0 6 * * 1-5' && "
-           "(github.event.schedule || inputs.slot) != '30 10 * * 1-5' }}")
+INSTALL_IF = ("if: ${{ !cancelled() && steps.watch.outcome != 'skipped' && "
+              "(github.event.schedule || inputs.slot) != '0 6 * * 1-5' && "
+              "(github.event.schedule || inputs.slot) != '30 10 * * 1-5' }}")
+CHECK_IF = "if: ${{ !cancelled() && steps.driver.outcome == 'success' }}"
 
 
 def _archive_growing_tables():
@@ -250,13 +252,18 @@ def test_limit_covers_a_daily_job_and_the_tables_are_job_8s():
 
 
 def test_workflow_runs_the_check_in_every_run_but_the_scan_slots():
-    """Both new steps skip exactly the two scan slots, follow the GitHub check, and only the check step sees the DB secret."""
+    """The install skips the scan slots and a failed checkout; the check needs a good install; only it sees the DB secret."""
     scans = {cron for cron, slot in run_watchdog.WATCHES.items() if slot is not run_watchdog.ARCHIVE}
     assert scans == {"0 6 * * 1-5", "30 10 * * 1-5"} and run_watchdog.WATCHES["30 22 * * *"] is run_watchdog.ARCHIVE
     steps = WORKFLOW.split("      - ")
     install = next(s for s in steps if s.startswith("name: Install the database driver"))
     check = next(s for s in steps if s.startswith("name: Check the nightly DB maintenance job"))
-    assert SLOT_IF in install and SLOT_IF in check
+    assert INSTALL_IF in install and "id: driver" in install and CHECK_IF in check
+    watch = next(s for s in steps if s.startswith("name: Check the expected runs"))
+    assert watch.splitlines()[1] == "        id: watch" and "if:" not in watch and "continue-on-error" not in watch
+    runs = [line for line in watch.splitlines() if line.strip().startswith("run:")]
+    assert runs == ["        run: python run_watchdog.py"]   # its exit code reaches the job
+    assert "continue-on-error" not in WORKFLOW and "|| true" not in WORKFLOW and "timeout-minutes: 8" in WORKFLOW
     assert 'python -m pip install --quiet -c constraints.txt "psycopg[binary]"' in install
     assert "run: python db_maintenance_watch.py" in check
     assert "DATABASE_URL: ${{ secrets.DATABASE_URL }}" in check

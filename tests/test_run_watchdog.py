@@ -139,14 +139,34 @@ def test_stuck_in_queue_alerts():
 
 
 def test_unreachable_api_does_not_alert_or_raise():
-    """GitHub API trouble is reported in the log, not as a false phone alert."""
+    """GitHub API trouble after one retry is CHECK_UNAVAILABLE, not a false MISSING alert (main then exits 1)."""
+    tries = []
+
     def broken(*a):
         """Raise like a failed request."""
+        tries.append(a)
         raise OSError("down")
-    calls = []
+    calls, waits = [], []
     assert wd.check(ENV, (wd.SCAN_1437,), MON.replace(hour=10, minute=30), runs=broken,
-                    post=_sent(calls)) == ["collector 14:37 IST scan: CHECK_UNAVAILABLE"]
-    assert calls == []
+                    post=_sent(calls), wait=waits.append) == ["collector 14:37 IST scan: CHECK_UNAVAILABLE"]
+    assert calls == [] and waits == [15] and len(tries) == 2 and tries[0] == tries[1]
+
+
+def test_one_api_blip_is_retried_and_does_not_count():
+    """A single failed GitHub API read, then a good one: the slot is judged normally after one 15 s wait."""
+    start = MON.replace(hour=9, minute=7)
+    replies = [OSError("blip"), [_run(start)]]
+
+    def flaky(*a):
+        """Fail once, then answer."""
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+    calls, waits = [], []
+    assert wd.check(ENV, (wd.SCAN_1437,), MON.replace(hour=10, minute=30), runs=flaky,
+                    post=_sent(calls), wait=waits.append) == ["collector 14:37 IST scan: OK"]
+    assert calls == [] and waits == [15] and replies == []
 
 
 def test_bad_repository_checks_nothing():
@@ -159,14 +179,45 @@ def test_bad_repository_checks_nothing():
     ("30 22 * * *", ["nightly archive 01:45 IST"]),
     ("", ["collector 10:07 IST scan", "collector 14:37 IST scan", "nightly archive 01:45 IST"])])
 def test_main_checks_the_slot_its_schedule_watches(monkeypatch, capsys, schedule, names):
-    """A scheduled run checks only its slot (no repeat alerts); a manual run checks all; exit 0."""
+    """A scheduled run checks only its slot (no repeat alerts); a manual run checks all; undelivered -> exit 1."""
     monkeypatch.setattr(wd, "github_runs", lambda *a: [])
     monkeypatch.setattr(wd.alert, "telegram_https_post", lambda p, b: (500, b""))
     now = MON + timedelta(days=1, hours=23)
-    assert wd.main([], env=dict(ENV, WATCHDOG_SCHEDULE=schedule), now=now) == 0
+    assert wd.main([], env=dict(ENV, WATCHDOG_SCHEDULE=schedule), now=now) == 1
     out = capsys.readouterr().out.splitlines()
     assert [line.rsplit(": ", 1)[0] for line in out] == names
     assert all(line.endswith("RUN_ALERT_DELIVERY_UNVERIFIED") for line in out)
+
+
+@pytest.mark.parametrize("lines,code", [
+    (["collector 10:07 IST scan: OK"], 0),
+    (["collector 10:07 IST scan: RUNNING", "nightly archive 01:45 IST: OK"], 0),
+    (["collector 10:07 IST scan: MISSING RUN_ALERT_SENT"], 0),
+    (["collector 10:07 IST scan: OK", "nightly archive 01:45 IST: NOT_OK RUN_ALERT_SENT"], 0),
+    (["collector 10:07 IST scan: MISSING RUN_ALERT_DELIVERY_UNVERIFIED"], 1),
+    (["collector 10:07 IST scan: STUCK RUN_ALERT_NOT_CONFIGURED missing=TELEGRAM_CHAT_ID"], 1),
+    (["collector 10:07 IST scan: OK", "collector 14:37 IST scan: CHECK_UNAVAILABLE"], 1),
+    (["WATCHDOG_FIELDS_INVALID"], 1),
+    (["nightly archive 01:45 IST: NOT_OK RUN_ALERT_DESTINATION_INVALID"], 1),
+    (["nightly archive 01:45 IST: STUCK RUN_ALERT_DELIVERY_UNVERIFIED"], 1),
+    ([], 1),                                   # nothing checked is never "all fine"
+])
+def test_main_exits_1_only_when_blind_or_mute(monkeypatch, capsys, lines, code):
+    """Exit 1 when a slot was not checked or its alert was not delivered (the workflow's failure step then alerts)."""
+    monkeypatch.setattr(wd, "check", lambda env, slots, now: lines)
+    assert wd.main([], env=ENV, now=MON) == code
+    assert capsys.readouterr().out == "".join(line + "\n" for line in lines)
+
+
+def test_main_all_ok_exits_0(monkeypatch, capsys):
+    """Every slot settled with a successful run of its own dispatch: OK lines, no message, exit 0."""
+    now = MON + timedelta(days=1, hours=23)
+    runs = lambda repository, workflow, start, token: [
+        _run(start, title="Collector scan" if "collector" in workflow else "Nightly archive (on-time dispatch)")]
+    monkeypatch.setattr(wd, "github_runs", runs)
+    monkeypatch.setattr(wd.alert, "telegram_https_post", lambda p, b: pytest.fail("no message expected"))
+    assert wd.main([], env=ENV, now=now) == 0
+    assert all(line.endswith(": OK") for line in capsys.readouterr().out.splitlines())
 
 
 class _Connection:

@@ -28,7 +28,7 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v5
         with:
@@ -37,6 +37,7 @@ jobs:
         with:
           python-version: '3.13'
       - name: Check the expected runs
+        id: watch
         env:
           GITHUB_TOKEN: ${{ github.token }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -46,11 +47,14 @@ jobs:
       # pg_cron job 8 (nightly VACUUM) runs inside Supabase with no alert of its own:
       # check what it left behind (db_maintenance_watch.py, read-only) in the 04:00 IST slot and on
       # every run that is not a scan slot (manual runs), as run_watchdog.py checks all slots then.
+      # !cancelled(): still runs when run_watchdog.py turned the job red (it exits 1 when it is blind or mute),
+      # but not after a failed checkout (watch skipped) or a failed install (driver not success).
       - name: Install the database driver for the maintenance check
-        if: ${{ (github.event.schedule || inputs.slot) != '0 6 * * 1-5' && (github.event.schedule || inputs.slot) != '30 10 * * 1-5' }}
+        id: driver
+        if: ${{ !cancelled() && steps.watch.outcome != 'skipped' && (github.event.schedule || inputs.slot) != '0 6 * * 1-5' && (github.event.schedule || inputs.slot) != '30 10 * * 1-5' }}
         run: python -m pip install --quiet -c constraints.txt "psycopg[binary]"
       - name: Check the nightly DB maintenance job (VACUUM, pg_cron job 8)
-        if: ${{ (github.event.schedule || inputs.slot) != '0 6 * * 1-5' && (github.event.schedule || inputs.slot) != '30 10 * * 1-5' }}
+        if: ${{ !cancelled() && steps.driver.outcome == 'success' }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

@@ -23,7 +23,10 @@ alert, so a failure can give two messages (accepted: a failed checkout gives onl
 
 A run checks only the slot it watches: the on-time Supabase dispatch passes that slot's cron
 as input `slot`, the late GitHub fallback schedule passes it as github.event.schedule (both
-keys of WATCHES); a manual run with no slot checks every slot's latest instance. Always exits 0; prints one status word per slot. Standard library only.
+keys of WATCHES); a manual run with no slot checks every slot's latest instance. Prints one status
+word per slot; a failed GitHub API read is retried once after 15 s. Exits 1 when a slot could not be
+checked or a needed alert was not delivered (the run turns red and the workflow's failure step
+alerts: a blind or mute watchdog must be loud), else 0. Standard library only.
 """
 from __future__ import annotations
 
@@ -34,10 +37,13 @@ import http.client
 import json
 import os
 import ssl
+from time import sleep
 from typing import Callable, Mapping
 import urllib.parse
 
 import run_failure_alert as alert
+
+RETRY_WAIT = 15   # seconds before the one retry of a failed GitHub API read
 
 
 @dataclass(frozen=True)
@@ -126,8 +132,10 @@ def message(slot: Slot, start: datetime, result: str, repository: str, workflow_
 
 def check(env: Mapping[str, str], slots, now: datetime,
           runs: Callable[[str, str, datetime, str], list[dict]] | None = None,
-          post: Callable[[str, bytes], tuple[int, bytes]] | None = None) -> list[str]:
-    """One status line per slot: OK, RUNNING, MISSING/NOT_OK plus the send status, or CHECK_UNAVAILABLE."""
+          post: Callable[[str, bytes], tuple[int, bytes]] | None = None,
+          wait: Callable[[float], None] = sleep) -> list[str]:
+    """One status line per slot: OK, RUNNING, MISSING/NOT_OK plus the send status, or CHECK_UNAVAILABLE
+    (a failed GitHub API read is retried once after RETRY_WAIT seconds first)."""
     runs = runs or github_runs
     repository = env.get("GITHUB_REPOSITORY", "")
     if alert.REPOSITORY_PATTERN.fullmatch(repository) is None:
@@ -136,7 +144,12 @@ def check(env: Mapping[str, str], slots, now: datetime,
     for slot in slots:
         try:
             start = latest_instance(slot, now)
-            result = verdict(runs(repository, slot.workflow, start, env.get("GITHUB_TOKEN", "")), slot, start, now)
+            try:
+                found = runs(repository, slot.workflow, start, env.get("GITHUB_TOKEN", ""))
+            except Exception:
+                wait(RETRY_WAIT)   # one retry: a single API blip must not turn the run red at 04:00
+                found = runs(repository, slot.workflow, start, env.get("GITHUB_TOKEN", ""))
+            result = verdict(found, slot, start, now)
         except Exception:
             lines.append(f"{slot.name}: CHECK_UNAVAILABLE")
             continue
@@ -150,14 +163,15 @@ def check(env: Mapping[str, str], slots, now: datetime,
 
 def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None,
          now: datetime | None = None) -> int:
-    """CLI for run-watchdog.yml; always 0."""
+    """CLI for run-watchdog.yml; 1 when a slot was not checked or its alert was not delivered."""
     argparse.ArgumentParser(description=__doc__.splitlines()[0]).parse_args(argv)
     env = os.environ if env is None else env
     schedule = env.get("WATCHDOG_SCHEDULE", "")
     slots = (WATCHES[schedule],) if schedule in WATCHES else SLOTS
-    for line in check(env, slots, now or datetime.now(timezone.utc)):
+    lines = check(env, slots, now or datetime.now(timezone.utc))
+    for line in lines:
         print(line)
-    return 0
+    return 0 if lines and all(line.endswith((": OK", ": RUNNING", " RUN_ALERT_SENT")) for line in lines) else 1
 
 
 if __name__ == "__main__":

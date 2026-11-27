@@ -44,6 +44,11 @@ dispatch)"), so a close/manual/feature-branch run cannot stand in for a missed s
 - Not covered here: pg_cron jobs that don't dispatch GitHub (VACUUM 8: see the nightly DB
   maintenance check below; purge 7 retired), and a GitHub schedule that GitHub drops entirely.
 - `RUN_ALERT_NOT_CONFIGURED missing=<names>` names the absent secret(s) (never values).
+- Exit 1 (27 Nov) when a slot could not be checked (`CHECK_UNAVAILABLE` after one retry 15 s later,
+  `WATCHDOG_FIELDS_INVALID`) or a needed alert was not delivered: the run turns red and the workflow's
+  last step alerts, so a blind or mute watchdog is loud. The DB maintenance steps still run after it
+  (`!cancelled()`). If Telegram itself is down, that last step cannot deliver either: the red run (and
+  GitHub's own failed-run notice) is then the only signal.
 
 ## On-time watchdog start (18 Nov, later)
 
@@ -76,7 +81,9 @@ in that one step only, a read-only TLS session and 15 s / 2 s statement / lock l
 - LATE, or a database it cannot read (a failed read is retried once after 20 s; a missing secret
   is not retried): one Telegram message from fixed text and numbers, never error text. OK: log only.
 - Exit 0, or 1 when a needed alert was not delivered: the run turns red and the new last step
-  (`if: failure() || cancelled()`, also for a failed `psycopg` install) tries once more.
+  (`if: failure() || cancelled()`, also for a failed `psycopg` install, which skips the check) tries
+  once more. The two steps run only when the GitHub check step ran (not after a failed checkout);
+  the check step only when the install succeeded.
 - A late GitHub fallback run of the same slot checks again (a real problem may alert twice).
 - If job 8 changes its tables or runs less than daily, change `db_maintenance_watch.py` too (a new
   run time inside the day needs no change).
